@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EditError, editBlocker, freeSpot, getPosition, inertiaPositions, locateBlock, nameSpans, rename, setPosition } from './wardley-text';
+import { EditError, deleteNote, editBlocker, freeSpot, getPosition, inertiaPositions, isWardley, locateBlock, mermaidBlocks, nameSpans, rename, setMethod, setPosition, setTitle } from './wardley-text';
 import { SourceRegistry } from './wardley-render';
 
 /** Findings of the security review on 0.12.0 (DEV.md → 0.13.0). */
@@ -24,6 +24,15 @@ describe('F1/F2: no super-linear parsing of a crafted source', () => {
 	it('a long bare name without a position is read in linear time', () => {
 		fast(() => nameSpans(`component x${pad(45000)}y`));
 		fast(() => nameSpans(`A${pad(45000)}B -> C`));
+	});
+
+	it('the parsers added for the model (0.15.0) read in linear time', () => {
+		fast(() => setMethod(`wardley-beta\ncomponent B [0.1, 0.1]${pad(30000)}label [${pad(30000)}`, 'B', 'buy'));
+		fast(() => setMethod(`wardley-beta\ncomponent B [0.1, 0.1] label [1, 1]${pad(30000)}(${pad(30000)}`, 'B', null));
+		fast(() => setTitle(`wardley-beta\ntitle${pad(60000)}x`, 'T'));
+		fast(() => deleteNote(`wardley-beta\nnote ${pad(30000)}"${pad(30000)}`, 'x'));
+		fast(() => isWardley(`${pad(60000)}wardley-beta`));
+		fast(() => mermaidBlocks('```mermaid\n' + `${'`'.repeat(3)}x\n`.repeat(5000)));
 	});
 
 	it('parsing still reads the same values', () => {

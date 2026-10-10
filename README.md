@@ -28,6 +28,15 @@ The first version covers **Wardley maps** (`wardley-beta`). More diagram types a
 
 Every edit is checked with Mermaid's own parser before it is written; an edit that would break the diagram is refused with a notice. In live preview an edit can be undone with Cmd/Ctrl+Z. It works with mouse and touch, on desktop and mobile.
 
+**3. Wardley maps as data, for scripts and agents.** Two [Obsidian CLI](https://help.obsidian.md/cli) commands (desktop, Obsidian 1.12+) read a map as JSON and bring a map in line with a JSON model, by the same in-place edits: everything the model does not mention stays exactly as written.
+
+```bash
+obsidian mermaid-direct-edit:wardley-read  path="Maps/Tea Shop.md"
+obsidian mermaid-direct-edit:wardley-apply path="Maps/Tea Shop.md" model='{"elements":[…]}' dry-run
+```
+
+`wardley-read` lists elements, pipelines, links, evolve arrows, notes, accelerators and annotations with their line numbers, positions normalised to 0-1, plus the problems Mermaid would not tell you (a value outside 0-1, a link to an undeclared element). `wardley-apply` reports every change and every conflict, and removes nothing unless asked. The JSON shape is versioned: [docs/wardley-model.md](docs/wardley-model.md).
+
 ## Example
 
 ````markdown

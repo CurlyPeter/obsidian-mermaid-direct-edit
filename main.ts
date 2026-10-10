@@ -2,6 +2,7 @@ import { App, Plugin, PluginSettingTab, Setting } from 'obsidian';
 import type { Mermaid, MermaidConfig } from 'mermaid';
 import { registerCliCommands } from './cli';
 import { WardleyEditor } from './wardley-editor';
+import { wardleyCliSpecs } from './wardley-cli';
 
 declare const __MERMAID_VERSION__: string;
 declare const require: (id: string) => any;
@@ -72,7 +73,7 @@ export default class MermaidDirectEditPlugin extends Plugin {
 			action: 'status',
 			description: 'Pinned Mermaid version and whether it is rendering (JSON)',
 			run: () => this.status(),
-		}]);
+		}, ...wardleyCliSpecs(this.app, () => this.current())]);
 
 		const w = window as any;
 		const loadedFirst: Mermaid | undefined = w.mermaid;

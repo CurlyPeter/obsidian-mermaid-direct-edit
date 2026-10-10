@@ -45,6 +45,7 @@ In short:
 | `wardley-hit.ts` | what a press at a point means |
 | `wardley-gestures.ts` | one class per gesture (drag, tap, long press) |
 | `wardley-editor.ts` | connects DOM events, gestures, dialogs and writing into the note |
+| `wardley-model.ts`, `wardley-cli.ts` | the map as JSON for scripts and agents (`wardley-read`, `wardley-apply`, [docs/wardley-model.md](docs/wardley-model.md)) |
 
 ## A few rules
 

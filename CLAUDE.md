@@ -54,6 +54,8 @@ unpermitted vault keeps showing Obsidian's guard instead of the diagram.
 | `wardley-gestures.ts` | one class per gesture (drag, tap, long press), started by the editor | E2E |
 | `wardley-legend.ts`, `wardley-modals.ts`, `wardley-write.ts` | legend, dialogs, writing into the note | E2E |
 | `wardley-editor.ts` | wiring: DOM events → classify → gesture / dialog → `apply` | E2E |
+| `wardley-model.ts` | the map as data: `readModel` (Mermaid's parser AST → model with lines and errors), `applyModel` (target model → in-place edits) | vitest against the real parser (`wardley-model.test.ts`) |
+| `wardley-cli.ts` | CLI commands `wardley-read`, `wardley-apply`: block lookup in a note, Mermaid check, write | real `obsidian` call |
 
 `npm run e2e` (`scripts/e2e-wardley.py`) drives every gesture with real input through
 `obs dev:cdp` on a scratch note and checks the resulting source; run it after any change to
@@ -168,6 +170,16 @@ dialog has "Remove pipeline"; deleting the last child removes the block.
 - **`placeInertia` never re-serializes the SVG**: it reads with `DOMParser` and only swaps the
   numbers of `<line class="wardley-inertia" x1=… y1=… x2=…>`, so the sanitized output stays as
   DOMPurify left it. A new attribute order after a Mermaid bump makes it keep Mermaid's bar.
+- **The model (`wardley-read`/`wardley-apply`) is a public contract**, `docs/wardley-model.md`,
+  versioned by `SCHEMA`. A field changing meaning or disappearing bumps it; new optional fields
+  do not. Reading takes the AST of `@mermaid-js/parser` (pinned to the exact version Mermaid
+  depends on, so the bundle holds one copy; bump both together) and only adds what the AST
+  lacks: lines, the 0-1 normalisation, `mp-inertia`, and the checks Mermaid does not make.
+  Applying never re-emits: every change goes through the `wardley-text.ts` edits, and a
+  statement type the model does not know shows up in `unsupported` instead of being dropped.
+- **Mermaid's numbers need a decimal point** (`WARDLEY_NUMBER` is `[0-9]+\.[0-9]+`): `[50, 70]`
+  does not parse, a 0-100 map is written `[50.0, 70.0]`. Mermaid reads each value on its own
+  (at most 1 is decimal, above 1 percent).
 - Depends on Mermaid's wardley SVG classes (`wardley-node`, `wardley-node-label`,
   `wardley-link`, `wardley-trend`, `wardley-axes`). Re-check them on every Mermaid bump (DEV.md).
 
@@ -179,6 +191,7 @@ npm run e2e            # real-input regression of every gesture in the running O
 npm run build          # tsc + esbuild production; postbuild reloads this plugin via obs
 obs mermaid-direct-edit:status   # {pinnedVersion, state, obsidianMermaidLoaded, obsidianLoadedFirst, rendering, error}
 obs mermaid-direct-edit:info
+obs mermaid-direct-edit:wardley-read path="<note>"         # the map as data (docs/wardley-model.md)
 ```
 
 `obs` is a thin wrapper around the Obsidian CLI (Obsidian 1.12+, `obsidian <command>`) that

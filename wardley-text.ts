@@ -350,11 +350,16 @@ const unquote = (n: string) => (/^(["']).*\1$/.test(n) ? n.slice(1, -1) : n);
 
 /** Inertia bar positions set by the plugin extension, by component name. */
 export function inertiaPositions(source: string): Map<string, number> {
-	const out = new Map<string, number>();
-	for (const l of source.split('\n')) {
+	return new Map(inertiaMarkers(source).map(m => [m.name, m.evolution]));
+}
+
+/** Every `%% mp-inertia` comment with its 1-based line. */
+export function inertiaMarkers(source: string): { name: string; evolution: number; line: number }[] {
+	const out: { name: string; evolution: number; line: number }[] = [];
+	source.split('\n').forEach((l, i) => {
 		const m = inertiaComment(l);
-		if (m) out.set(unquote(m[2].trim()), Number(m[4]));
-	}
+		if (m) out.push({ name: unquote(m[2].trim()), evolution: Number(m[4]), line: i + 1 });
+	});
 	return out;
 }
 
@@ -436,6 +441,57 @@ export function setNotePosition(source: string, text: string, visibility: number
 	const m = position(after);
 	if (!m) throw new EditError(`The note "${text}" has no position.`);
 	lines[i] = lines[i].slice(0, end) + `${m[1]}${fmt(visibility)}${m[3]},${m[4] ?? ' '}${fmt(evolution)}${m[6] ?? ''}]` + after.slice(m[0].length);
+	return lines.join('\n');
+}
+
+/** Deletes the note whose text is exactly `text` (it must occur once). */
+export function deleteNote(source: string, text: string): string {
+	const lines = source.split('\n');
+	const hits = lines.map((l, i) => { const m = /^[ \t]*note[ \t]+("[^"]*"|'[^']*')/.exec(l); return m && m[1].slice(1, -1) === text ? i : -1; }).filter(i => i >= 0);
+	if (hits.length === 0) throw new EditError(`No note "${text}" in this map.`);
+	if (hits.length > 1) throw new EditError(`The note "${text}" occurs ${hits.length} times, edit it in the source.`);
+	lines.splice(hits[0], 1);
+	return lines.join('\n');
+}
+
+/** Sets the map's `title` line, or adds one right after `wardley-beta`; an empty title removes it. */
+export function setTitle(source: string, title: string): string {
+	const t = title.replace(/[\r\n]+/g, ' ').trim();
+	const lines = source.split('\n');
+	const at = lines.findIndex(l => /^[ \t]*title([ \t]|$)/.test(l));
+	if (at >= 0) {
+		if (t) lines[at] = `${/^[ \t]*/.exec(lines[at])?.[0] ?? ''}title ${t}`;
+		else lines.splice(at, 1);
+	} else if (t) {
+		const head = lines.findIndex(l => /^[ \t]*wardley-beta/.test(l));
+		lines.splice(head + 1, 0, `title ${t}`);
+	}
+	return lines.join('\n');
+}
+
+export type Method = 'build' | 'buy' | 'outsource' | 'market';
+const LABEL_AFTER = /^[ \t]+label[ \t]*\[[^\]]*\]/;
+const METHOD_AFTER = /^([ \t]+)\((build|buy|outsource|market)\)/;
+
+/**
+ * Sets or removes a component's sourcing decorator `(build)`, `(buy)`, `(outsource)` or
+ * `(market)`. It sits after the position and label offset, before `(inertia)`.
+ */
+export function setMethod(source: string, name: string, method: Method | null): string {
+	const lines = source.split('\n');
+	const { line, span } = findDeclaration(lines, name);
+	if (span.kind === 'anchor') throw new EditError('Anchors have no sourcing method, pick a component.');
+	const text = lines[line];
+	const after = text.slice(span.end);
+	const pos = position(after);
+	if (!pos) throw new EditError(`"${name}" has no position.`);
+	if (pos[5] === undefined) throw new EditError(`"${name}" is a pipeline component, which has no sourcing method in wardley-beta.`);
+	let at = span.end + pos[0].length;
+	const label = LABEL_AFTER.exec(text.slice(at));
+	if (label) at += label[0].length;
+	const existing = METHOD_AFTER.exec(text.slice(at));
+	const end = existing ? at + existing[0].length : at;
+	lines[line] = text.slice(0, at) + (method ? ` (${method})` : '') + text.slice(end);
 	return lines.join('\n');
 }
 
@@ -721,11 +777,24 @@ export function editBlocker(source: string): string | null {
  * search would find (and overwrite) the same text elsewhere, e.g. in a code example (review F3).
  */
 export function locateBlock(text: string, src: string): number | string {
+	const hits = mermaidBlocks(text).filter(b => b.body === src).map(b => b.from);
+	if (hits.length === 1) return hits[0];
+	if (hits.length > 1) return 'This map occurs more than once in the note, edit it in the source.';
+	if (text.includes(src)) return 'Only a map in a ```mermaid block of its own can be edited here (not in a callout, list or quote), edit it in the source.';
+	return 'The map changed in the meantime, nothing was written.';
+}
+
+/**
+ * Every fenced ```mermaid (or ~~~mermaid) block of its own in a note: the offset of its body
+ * and the body. Fences inside other code blocks are skipped; a block in a callout, list or
+ * quote has a prefix on its fence line and is not one of them.
+ */
+export function mermaidBlocks(text: string): { from: number; body: string }[] {
 	const lines = text.split('\n');
 	const starts: number[] = [];
 	let offset = 0;
 	for (const l of lines) { starts.push(offset); offset += l.length + 1; }
-	const hits: number[] = [];
+	const out: { from: number; body: string }[] = [];
 	for (let i = 0; i < lines.length; i++) {
 		const open = /^(`{3,}|~{3,})(.*)$/.exec(lines[i]);
 		if (!open) continue;
@@ -735,14 +804,21 @@ export function locateBlock(text: string, src: string): number | string {
 		if (/^mermaid(?:[ \t]|$)/.test(open[2].trim()) && i + 1 <= lines.length - 1) {
 			const from = starts[i + 1];
 			const body = close < lines.length ? text.slice(from, Math.max(from, starts[close] - 1)) : text.slice(from);
-			if (body === src) hits.push(from);
+			out.push({ from, body });
 		}
 		i = close;
 	}
-	if (hits.length === 1) return hits[0];
-	if (hits.length > 1) return 'This map occurs more than once in the note, edit it in the source.';
-	if (text.includes(src)) return 'Only a map in a ```mermaid block of its own can be edited here (not in a callout, list or quote), edit it in the source.';
-	return 'The map changed in the meantime, nothing was written.';
+	return out;
+}
+
+/** Whether a mermaid block body is a wardley-beta map (its first statement, after blanks and `%%` comments). */
+export function isWardley(body: string): boolean {
+	for (const l of body.split('\n')) {
+		const t = l.trim();
+		if (!t || t.startsWith('%%')) continue;
+		return /^wardley-beta(?:[ \t]|$)/.test(t);
+	}
+	return false;
 }
 
 const isClosingFence = (line: string, fence: string) => {

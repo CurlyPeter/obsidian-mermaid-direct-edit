@@ -1,6 +1,6 @@
 {
   "name": "mermaid-direct-edit",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "Edit Mermaid diagrams directly in Obsidian; renders with a pinned, current Mermaid",
   "main": "main.js",
   "private": true,
@@ -14,6 +14,7 @@
   "author": "Peter Beck",
   "license": "MIT",
   "dependencies": {
+    "@mermaid-js/parser": "2.0.1",
     "mermaid": "12.1.0"
   },
   "devDependencies": {

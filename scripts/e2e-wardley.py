@@ -25,6 +25,7 @@ NOTE = f'Mermaid Direct Edit E2E {time.strftime("%Y%m%d-%H%M%S")}.md'
 # The Obsidian CLI. `obs` is a wrapper that keeps stdin open (plain `obsidian` drops slow,
 # asynchronous answers when stdin is closed) and returns real exit codes.
 CLI = os.environ.get('OBSIDIAN_CLI', 'obs')
+PLUGIN_ID = 'mermaid-direct-edit'
 MAP = """wardley-beta
 title E2E
 
@@ -189,6 +190,8 @@ def on_scratch_note():
 
 
 def teardown():
+    # A case that unloads the plugin must never leave it unloaded (0.14.0 re-enabled the old id).
+    js('(async()=>{const id=' + json.dumps(PLUGIN_ID) + '; if(!app.plugins.plugins[id]) await app.plugins.enablePlugin(id); return "ok"})()')
     js("(async()=>{const p=" + json.dumps(NOTE) + "; const ls=[]; app.workspace.iterateAllLeaves(l=>{if(l.view?.file?.path===p) ls.push(l)});"
        " ls.forEach(l=>l.detach()); const f=app.vault.getAbstractFileByPath(p); if(f) await app.fileManager.trashFile(f); return 'ok'})()")
 
@@ -359,7 +362,7 @@ def case_unload_cleanup():
     click(*p['s']); wait(0.3)
     mouse('mouseMoved', *p['c']); wait(0.3)
     before = js('JSON.stringify({stub:document.querySelectorAll("line.mp-new-link").length, legend:document.querySelectorAll(".mp-wardley-legend").length})')
-    after = js('(async()=>{await app.plugins.disablePlugin("mermaid-direct-edit"); const r={stub:document.querySelectorAll("line.mp-new-link").length, legend:document.querySelectorAll(".mp-wardley-legend").length, host:document.querySelectorAll(".mp-wardley-host").length}; await app.plugins.enablePlugin("mermaid-pinned"); await new Promise(r=>setTimeout(r,1500)); return JSON.stringify(r)})()')
+    after = js('(async()=>{await app.plugins.disablePlugin(' + json.dumps(PLUGIN_ID) + '); const r={stub:document.querySelectorAll("line.mp-new-link").length, legend:document.querySelectorAll(".mp-wardley-legend").length, host:document.querySelectorAll(".mp-wardley-host").length}; await app.plugins.enablePlugin(' + json.dumps(PLUGIN_ID) + '); await new Promise(r=>setTimeout(r,1500)); return JSON.stringify(r)})()')
     a = json.loads(after)
     return json.loads(before)['stub'] == 1 and a == {'stub': 0, 'legend': 0, 'host': 0}, f'before {before}; after unload {after}'
 

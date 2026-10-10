@@ -318,7 +318,60 @@ Evidence: `wardley-text.security.test.ts` (16 tests; 14 failed against 0.12.0), 
 and strict `tsc` green, E2E 17/17 on the build, inertia placement checked on a live render
 (0.75 → x 651 on the 48-852 axis).
 
+## Wardley maps as data (0.15.0, 2026-10-10)
+
+Two CLI commands for scripts and agents: `wardley-read` (the map as JSON) and `wardley-apply`
+(bring the map in line with a JSON model). Requested by a script that syncs maps with an
+external whiteboard and had its own line parser; that parser misread a pipeline component's
+label offset as its position and re-emitted the whole block on write, losing pipelines,
+link labels and comments. Contract: `docs/wardley-model.md`.
+
+Decisions:
+
+- **Read from Mermaid's parser AST, not from the editor's line parsers.** The AST is exactly
+  what the renderer draws (pipeline components, label signs, flow ports), and every node
+  carries its CST range, so line numbers come for free. The model adds only what the AST
+  lacks: 0-1 normalisation, `mp-inertia`, and checks Mermaid skips silently (an `evolve` or
+  link on an undeclared name draws nothing; a pipeline component's `evolve` is ignored because
+  its node id is `Parent_Child`).
+- **`@mermaid-js/parser` as an own dependency, pinned to the version Mermaid uses** (2.0.1),
+  loaded with a dynamic `import()`: esbuild shares the one copy inside the bundle (main.js
+  grew by 24 KB, all of it the new code), and nothing is evaluated before the first call.
+- **A block Mermaid cannot parse is `ok:false parse-error`, not a model with errors.** An
+  empty model next to an error list is easy to mistake for an empty map, and a consumer that
+  syncs would then remove everything elsewhere. The message carries `line L, column C`.
+- **Scale by majority.** Mermaid reads each value on its own (at most 1 decimal, else percent),
+  so `[1.4, 0.2]` in a decimal map draws at 1.4 % without a complaint. The map's scale is what
+  most of its values use; a value on the other scale is an error. The model follows Mermaid's
+  reading, so it matches the drawing.
+- **Apply never re-emits.** Every difference becomes one of the editor's text edits; new
+  helpers `setTitle`, `setMethod`, `deleteNote`. A section absent from the target is left
+  alone and an absent field keeps the text, so a consumer that does not know link kinds or
+  label offsets cannot erase them. Removals are reported as conflicts unless `allow-delete`.
+- **Conflicts do not block the other changes.** A pipeline component off its parent's
+  visibility, a kind or pipeline change, a reversed link: reported, not applied; the rest is.
+
+Verification: 19 tests in `wardley-model.test.ts` against the real parser (the requester's
+acceptance cases: the Tea Shop map read with pipeline components at their parent's visibility
+and label offsets, link labels, forces, inertia; a one-value top-level component and a
+negative value as `parse-error` with line numbers; a value above 1 as an error with its line;
+apply with the read model is a no-op; moving two elements changes exactly those two lines).
+Live in Obsidian 1.14.4: `wardley-read` on the demo map (10 elements, 0 errors); `wardley-apply`
+on a scratch note moved two elements, `diff` showed exactly those two lines, a second run
+reported `inSync`. Gesture E2E 17/17 on the build (the note lookup is now shared with the editor),
+110 unit tests and strict `tsc` green.
+
 ## Changelog
+
+- **0.15.0 (2026-10-10)** CLI commands `wardley-read` and `wardley-apply`: a Wardley map as
+  versioned JSON (schema 1, `docs/wardley-model.md`) and in-place application of a target
+  model (see above). Note lookup shared with the editor (`mermaidBlocks`).
+  Same day, from the first consumer: an element entry without a `pipeline` key kept as
+  written (it was read as "top level" and reported a conflict for every pipeline component of a
+  model from a source without pipelines); `visibility` optional for existing elements. The
+  E2E unload case re-enabled the pre-rename id `mermaid-pinned` and left the plugin
+  unloaded; it uses the current id now, and the teardown re-enables the plugin if it is not
+  loaded.
 
 - **0.14.0 (2026-10-10)** Renamed from "Mermaid Pinned" (`mermaid-pinned`) to "Mermaid
   Direct Edit" (`mermaid-direct-edit`): the goal is direct editing of more diagram types,
