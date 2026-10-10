@@ -191,6 +191,54 @@ describe('wardley-apply', () => {
 		expect((await apply(TEA, explicit)).conflicts.map(c => c.what)).toEqual(['component Campfire Kettle']);
 		expect((await apply(TEA, { elements: [...m.elements, { name: 'New', evolution: 0.5 }] })).conflicts[0].message).toContain('needs a visibility');
 	});
+	it('inertiaAt: always read, default flagged; written only when the bar moves', async () => {
+		const src = 'wardley-beta\ncomponent A [0.5, 0.40] (inertia)\ncomponent B [0.5, 0.60] (build) (inertia)\ncomponent K [0.3, 0.50] (inertia)\npipeline K {\n  component K1 [0.20]\n  component K2 [0.60]\n}';
+		const m = await read(src);
+		// Mermaid 12.1 default: 21 px right of the node (37 with a decorator; 19.8 for a pipeline
+		// parent, drawn at the centre of its components), on an 804 px wide chart
+		expect(el(m, 'A')).toMatchObject({ inertiaAt: 0.4261, inertiaAtDefault: true });
+		expect(el(m, 'B')).toMatchObject({ inertiaAt: 0.646, inertiaAtDefault: true });
+		expect(el(m, 'K')).toMatchObject({ inertiaAt: 0.4246, inertiaAtDefault: true });
+		expect((await read('wardley-beta\nsize [500, 400]\ncomponent A [0.5, 0.40] (inertia)')).elements[0].inertiaAt).toBe(0.452);
+		expect(await apply(src, m)).toMatchObject({ changes: [], conflicts: [], source: src });
+		el(m, 'A')!.inertiaAt = 0.43;
+		expect((await apply(src, m)).changes).toEqual([]);
+		el(m, 'A')!.inertiaAt = 0.7;
+		const r = await apply(src, m);
+		expect(r.changes).toEqual([{ op: 'update', what: 'component A inertia position', from: 0.4261, to: 0.7, line: 2 }]);
+		expect(r.source).toBe(src.replace('(inertia)\n', '(inertia)\n%% mp-inertia A 0.70\n'));
+		const back = await read(r.source);
+		expect(el(back, 'A')).toMatchObject({ inertiaAt: 0.7 });
+		expect(el(back, 'A')?.inertiaAtDefault).toBeUndefined();
+		expect((await apply(r.source, back)).changes).toEqual([]);
+		el(back, 'A')!.inertiaAt = 0.75;
+		expect((await apply(r.source, back)).source).toContain('%% mp-inertia A 0.75');
+		expect((await apply(src, { elements: [{ name: 'Z', visibility: 0.5, evolution: 0.5, inertiaAt: 0.6 }] })).conflicts.find(c => c.what === 'component Z')?.message).toContain('no (inertia)');
+		const added = await apply('wardley-beta', { elements: [{ name: 'Z', visibility: 0.5, evolution: 0.5, inertia: true, inertiaAt: 0.6 }] });
+		expect(added.source).toBe('wardley-beta\ncomponent Z [0.50, 0.50] (inertia)\n%% mp-inertia Z 0.60');
+	});
+	it('a pipeline parent keeps its evolution (Mermaid draws it at the centre of its components)', async () => {
+		const m = await read(TEA);
+		el(m, 'Kettle')!.evolution = 0.525;
+		expect((await apply(TEA, m)).changes).toEqual([]);
+		el(m, 'Kettle')!.visibility = 0.4;
+		expect((await apply(TEA, m)).changes).toEqual([{ op: 'move', what: 'component Kettle', from: [0.38, 0.48], to: [0.4, 0.48], line: 9 }]);
+	});
+	it('a link kind that Mermaid draws the same is no change', async () => {
+		const src = "wardley-beta\nanchor A [0.9, 0.1]\ncomponent B [0.5, 0.5]\ncomponent C [0.4, 0.4]\ncomponent D [0.3, 0.3]\nA -> B\nB +'pays'> C\nC +< D; x";
+		const m = await read(src);
+		expect(m.links.map(l => [l.kind, l.label])).toEqual([['->', undefined], ["+'pays'>", 'pays'], ['+<', 'x']]);
+		const same = { links: [{ from: 'A', to: 'B', kind: '-->' }, { from: 'B', to: 'C', kind: '+>', label: 'pays' }, { from: 'C', to: 'D', kind: "+'x'<" }] };
+		expect(await apply(src, same)).toMatchObject({ changes: [], conflicts: [], source: src });
+		const other = { links: [{ from: 'A', to: 'B', kind: '-.->' }, { from: 'B', to: 'C', kind: '+<>' }, { from: 'C', to: 'D', kind: '+<', label: 'y' }] };
+		const r = await apply(src, other);
+		expect(r.changes.map(c => c.what)).toEqual(['link A -> B', "link B +'pays'> C", 'link C +< D']);
+		expect(r.source.split('\n').slice(5)).toEqual(['A -.-> B', 'B +<> C; pays', 'C +< D; y']);
+		const inl = await apply(src, { links: [{ from: 'A', to: 'B', kind: "+'go'<>" }] });
+		expect(inl.source.split('\n')[5]).toBe("A +'go'<> B");
+		expect((await read(inl.source)).links[0]).toMatchObject({ kind: "+'go'<>", label: 'go' });
+		for (const x of [r, inl]) await parse('wardley', x.source);
+	});
 	it('leaves sections the model does not carry alone', async () => {
 		const m = await read(TEA);
 		const r = await apply(TEA, { elements: m.elements });
@@ -223,8 +271,6 @@ describe('wardley-apply', () => {
 			links: x.links.map(({ line, ...l }) => l), evolves: x.evolves.map(({ line, ...e }) => e), notes: x.notes.map(({ line, ...n }) => n),
 			forces: x.forces.map(({ line, ...f }) => f), pipelines: x.pipelines.map(({ line, ...p }) => p) });
 		const want = strip(m), got = strip(back);
-		// inertiaAt is the plugin's comment extension, not part of what apply writes
-		delete want.elements.find(e => e.name === 'Power')!.inertiaAt;
 		expect(got.elements).toEqual(want.elements);
 		expect(got.links).toEqual(want.links);
 		expect(got.evolves).toEqual(want.evolves);

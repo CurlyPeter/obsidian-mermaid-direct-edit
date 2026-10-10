@@ -67,6 +67,7 @@ Requires Obsidian with Mermaid enabled for the vault. `main.js` is about 5 MB be
 ## Settings
 
 - **Edit Wardley maps** (on by default, per device): turn it off to keep the current rendering without any editing.
+- **Full-width diagrams without readable line length** (off by default): while Obsidian's *Readable line length* is off, every diagram fills the width of the note, small ones included, which suits presenting on a second screen. With it on, diagrams keep their usual size. Switch with Obsidian's command *Toggle readable line length* (assign it a hotkey under Settings → Hotkeys). Screen only; PDF export keeps the usual size.
 
 ## Good to know
 

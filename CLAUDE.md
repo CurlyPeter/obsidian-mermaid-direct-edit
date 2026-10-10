@@ -62,6 +62,12 @@ unpermitted vault keeps showing Obsidian's guard instead of the diagram.
 the editor and on every Mermaid bump. It locates elements from the rendered SVG only.
 
 
+Setting "Full-width diagrams without readable line length" (default off): a body class
+`mde-full-width`, and `styles.css` sizes every `.mermaid svg` to `width: 100%; height: auto`
+in views without Obsidian's `is-readable-line-width` class. CSS only, so toggling the setting or
+readable line length needs no redraw; the editor is unaffected because it projects through
+`getScreenCTM()` at use time. `@media screen`: print and PDF keep the usual size.
+
 Setting "Edit Wardley maps" (default on, per device in `data.json`). In a rendered
 `wardley-beta` map: **drag** an anchor, component or note to move it, **drag a component's
 label** to move only the label (`label [dx, dy]`), **drag the tip of an evolve arrow** to
@@ -177,6 +183,10 @@ dialog has "Remove pipeline"; deleting the last child removes the block.
   lacks: lines, the 0-1 normalisation, `mp-inertia`, and the checks Mermaid does not make.
   Applying never re-emits: every change goes through the `wardley-text.ts` edits, and a
   statement type the model does not know shows up in `unsupported` instead of being dropped.
+- **The default inertia position is computed from Mermaid's renderer constants** (`MERMAID` and
+  `defaultInertia` in `wardley-model.ts`: width 900, padding 48, node radius 6, the bar offsets).
+  Re-check them against `wardleyDiagram-*.mjs` on every Mermaid bump; a live render must give
+  the same `inertiaAt` as `wardley-read` (DEV.md 0.15.0).
 - **Mermaid's numbers need a decimal point** (`WARDLEY_NUMBER` is `[0-9]+\.[0-9]+`): `[50, 70]`
   does not parse, a 0-100 map is written `[50.0, 70.0]`. Mermaid reads each value on its own
   (at most 1 is decimal, above 1 percent).

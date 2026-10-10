@@ -43,9 +43,11 @@ type State = 'waiting' | 'active' | 'failed';
 interface Settings {
 	/** Drag and rename anchors and components in rendered wardley-beta maps. */
 	editWardley: boolean;
+	/** Diagrams fill the note width while Obsidian's "Readable line length" is off. */
+	fullWidth: boolean;
 }
 
-const DEFAULT_SETTINGS: Settings = { editWardley: true };
+const DEFAULT_SETTINGS: Settings = { editWardley: true, fullWidth: false };
 
 /**
  * Swaps the Mermaid that Obsidian renders with, without patching Obsidian.
@@ -117,8 +119,16 @@ export default class MermaidDirectEditPlugin extends Plugin {
 		await this.saveData(this.settings);
 	}
 
+	async setFullWidth(on: boolean) {
+		this.settings.fullWidth = on;
+		this.applyEditClass();
+		await this.saveData(this.settings);
+	}
+
+	/** Body classes for the settings; `styles.css` does the rest, so a change needs no redraw. */
 	private applyEditClass() {
 		document.body.toggleClass('mp-wardley-edit', this.settings.editWardley);
+		document.body.toggleClass('mde-full-width', this.settings.fullWidth);
 	}
 
 	onunload() {
@@ -132,6 +142,7 @@ export default class MermaidDirectEditPlugin extends Plugin {
 		}
 		// Never loaded: leave it undefined, Obsidian's loader assigns and initializes it.
 		document.body.removeClass('mp-wardley-edit');
+		document.body.removeClass('mde-full-width');
 		// No redraw here: Obsidian's bundled Mermaid cannot draw wardley-beta, so a redraw on
 		// every plugin reload or update flashed "Error parsing Mermaid diagram!" until the new
 		// instance redrew (measured 2026-10-10, UnknownDiagramError in the console). Diagrams
@@ -176,6 +187,7 @@ export default class MermaidDirectEditPlugin extends Plugin {
 			obsidianMermaidLoaded: !!this.obsidianMermaid,
 			obsidianLoadedFirst: this.obsidianLoadedFirst,
 			editWardley: this.settings.editWardley,
+			fullWidth: this.settings.fullWidth,
 			rendering: this.state === 'active' ? `pinned ${PINNED_VERSION}` : this.obsidianMermaid ? 'obsidian' : 'none yet',
 			error: this.error,
 		};
@@ -203,5 +215,9 @@ class MermaidDirectEditSettingTab extends PluginSettingTab {
 			.setName('Edit Wardley maps')
 			.setDesc('Drag elements, labels, arrow tips and link ends; double-click (double-tap) an element for its dialog; the legend in a bottom corner of a map adds elements. Changes go into the code block and can be undone.')
 			.addToggle(t => t.setValue(this.plugin.settings.editWardley).onChange(v => this.plugin.setEditWardley(v)));
+		new Setting(containerEl)
+			.setName('Full-width diagrams without readable line length')
+			.setDesc('While Obsidian\'s "Readable line length" is off, every diagram fills the width of the note, small ones included (for presenting, e.g. on a second screen). With it on, diagrams keep their usual size. Switch with the command "Toggle readable line length"; a hotkey for it can be set under Settings → Hotkeys.')
+			.addToggle(t => t.setValue(this.plugin.settings.fullWidth).onChange(v => this.plugin.setFullWidth(v)));
 	}
 }

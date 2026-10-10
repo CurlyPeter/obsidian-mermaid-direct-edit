@@ -15,8 +15,11 @@ export class EditError extends Error {}
 const KEYWORD_PREFIX = /^(?:wardley-beta|size|evolution|evolve|anchor|component|label|inertia|pipeline|note|annotations?|accelerator|deaccelerator|build|buy|outsource|market|title|accTitle|accDescr)/;
 const BARE_NAME = /^[A-Za-z](?:[A-Za-z0-9_()&]|-(?!>))*(?:[ \t]+[A-Za-z(](?:[A-Za-z0-9_()&]|-(?!>))*)*$/;
 
-/** Link and flow arrows, longest first so `-.->` is not read as `->` (sticky: tried at one index). */
-const ARROW = /-\.->|-->|->|\+<>|\+<|\+>|\+'[^']*'>|\+"[^"]*">/y;
+/**
+ * Link and flow arrows, longest first so `-.->` is not read as `->` (sticky: tried at one index).
+ * Mermaid 12.1's LINK_ARROW also has inline-label flows `+'x'<` and `+'x'<>` (0.15.0).
+ */
+const ARROW = /-\.->|-->|->|\+<>|\+<|\+>|\+'[^']*'(?:<>|<|>)|\+"[^"]*">/y;
 
 /**
  * Limits for graphical editing (security review on 0.12.0, F1/F2/F6). The parsers here are
@@ -686,13 +689,16 @@ export function getLink(source: string, a: string, b: string): LinkInfo {
  * empty). An inline flow label is folded into the `; label` form; the order of the two
  * names is kept, so "forward" keeps meaning "towards the second name".
  */
-export function setLink(source: string, a: string, b: string, kind: LinkKind, label: string): string {
+export function setLink(source: string, a: string, b: string, kind: LinkKind, label: string, arrow?: string): string {
 	const lines = source.split('\n');
 	const { i, sp } = findLink(lines, a, b);
 	const line = lines[i];
 	const l = label.replace(/[\r\n]+/g, ' ').trim();
 	const indent = /^[ \t]*/.exec(line)?.[0] ?? '';
-	lines[i] = `${indent}${line.slice(sp[0].start, sp[0].end)} ${ARROW_OF[kind]} ${line.slice(sp[1].start, sp[1].end)}${l ? `; ${l}` : ''}`;
+	// `arrow` writes an arrow exactly as given; an inline-label flow carries its label itself.
+	const written = arrow ?? ARROW_OF[kind];
+	const suffix = l && !/^\+'/.test(written) ? `; ${l}` : '';
+	lines[i] = `${indent}${line.slice(sp[0].start, sp[0].end)} ${written} ${line.slice(sp[1].start, sp[1].end)}${suffix}`;
 	return lines.join('\n');
 }
 

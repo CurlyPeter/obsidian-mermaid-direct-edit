@@ -5,6 +5,19 @@
 	cursor: default;
 }
 
+/* Setting "Full-width diagrams without readable line length": a view without
+   is-readable-line-width (Obsidian sets it per view) shows every diagram at the full note
+   width. CSS width beats the fixed width attribute of flowchart/sequence SVGs, and the height
+   follows the viewBox. Screen only: print and PDF export keep the usual size. */
+@media screen {
+	body.mde-full-width .markdown-source-view:not(.is-readable-line-width) .mermaid svg,
+	body.mde-full-width .markdown-preview-view:not(.is-readable-line-width) .mermaid svg {
+		width: 100% !important;
+		max-width: none !important;
+		height: auto !important;
+	}
+}
+
 /* Affordances for editable wardley-beta maps (setting "Edit Wardley maps"). */
 body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-node {
 	cursor: grab;

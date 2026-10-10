@@ -13,7 +13,7 @@
 import { CliError } from './cli';
 import {
 	EditError, Method, addElement, addEvolve, addForce, addLink, addNote, addToPipeline, deleteElement,
-	deleteEvolve, deleteForce, deleteNote, editBlocker, inertiaMarkers, setEvolveTarget,
+	deleteEvolve, deleteForce, deleteNote, editBlocker, inertiaMarkers, setEvolveTarget, setInertiaPosition,
 	setForcePosition, setInertia, setLabelOffset, setLink, setMethod, setNotePosition, setPosition,
 	setTitle, unlink, LinkKind,
 } from './wardley-text';
@@ -35,8 +35,13 @@ export interface ModelElement {
 	/** `label [dx, dy]`, map pixels relative to the node. */
 	label?: Pair;
 	inertia?: true;
-	/** Where the inertia bar sits on the evolution axis (`%% mp-inertia`, a plugin extension). */
+	/**
+	 * Where the inertia bar is drawn on the evolution axis, present whenever `inertia` is: from
+	 * the plugin's `%% mp-inertia` comment, else Mermaid's own default position.
+	 */
 	inertiaAt?: number;
+	/** `inertiaAt` is Mermaid's default (no `%% mp-inertia` comment). */
+	inertiaAtDefault?: true;
 	method?: Method;
 }
 
@@ -84,6 +89,22 @@ const COVERED = new Set(['Anchor', 'Component', 'Pipeline', 'PipelineComponent',
 
 const lineOf = (node: any): number => (node?.$cstNode?.range?.start?.line ?? -1) + 1;
 const round = (v: number) => Math.round(v * 10000) / 10000;
+
+/** Mermaid 12.1's wardley defaults (`getConfigValues`), which Obsidian does not override. */
+const MERMAID = { width: 900, padding: 48, nodeRadius: 6 };
+
+/**
+ * Where Mermaid 12.1 draws an inertia bar without `%% mp-inertia`, in evolution (0-1): a fixed
+ * pixel offset right of the node (more with a build/buy/outsource/market decorator), and a
+ * pipeline parent is drawn at the centre of its components, not at its own evolution.
+ */
+function defaultInertia(el: ModelElement, children: number[], chartWidth: number): number {
+	const parent = children.length > 0;
+	const x = parent ? (Math.min(...children) + Math.max(...children)) / 2 : el.evolution;
+	let offset = parent ? (MERMAID.nodeRadius * 1.6) / 2 + 15 : MERMAID.nodeRadius + 15;
+	if (el.method) offset += MERMAID.nodeRadius + 10;
+	return round(x + offset / chartWidth);
+}
 
 /**
  * Mermaid's parse error as "line L, column C: message" (block-relative, 1-based). An error at
@@ -184,6 +205,13 @@ export async function readModel(source: string, parse: ParseFn): Promise<Wardley
 		if (!el?.inertia) errors.push({ line: m.line, message: `mp-inertia "${m.name}": no component of that name with (inertia).` });
 		else el.inertiaAt = coord(m.evolution, m.line, `inertia of "${m.name}"`);
 	}
+	const chartWidth = (ast.size?.width ?? MERMAID.width) - 2 * MERMAID.padding;
+	for (const el of elements) {
+		if (!el.inertia || el.inertiaAt !== undefined) continue;
+		const kids = elements.filter(e => e.pipeline === el.name).map(e => e.evolution);
+		el.inertiaAt = defaultInertia(el, kids, chartWidth);
+		el.inertiaAtDefault = true;
+	}
 
 	const links: ModelLink[] = [];
 	const pairs = new Map<string, number>();
@@ -268,6 +296,17 @@ export async function readModel(source: string, parse: ParseFn): Promise<Wardley
 	return model;
 }
 
+/** How Mermaid 12.1 draws an arrow (`populateDb`): dashed or not, and its flow heads. */
+function rendering(arrow: string): string {
+	const dashed = arrow.includes('-.->') || arrow.includes('.-.');
+	const flow = !arrow.startsWith('+') ? 'none' : arrow.includes('<>') ? 'both' : arrow.includes('<') ? 'backward' : arrow.includes('>') ? 'forward' : 'none';
+	return `${dashed ? 'dashed' : 'solid'} ${flow}`;
+}
+/** The inline label of a flow arrow (`+'x'>`), or undefined. */
+const inlineLabel = (arrow: string) => /^\+'([^']*)'/.exec(arrow)?.[1];
+/** The same arrow without its inline label: `+'x'<` becomes `+<`. */
+const portForm = (arrow: string) => arrow.replace(/^\+'[^']*'/, '+');
+
 const pairKey = (a: string, b: string) => (a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`);
 
 /** The drawing of an arrow as the editor writes it (`setLink`). */
@@ -298,7 +337,7 @@ const FORCE_KINDS = ['accelerator', 'deaccelerator'];
 /** The target model, checked field by field; only what `apply` uses. */
 interface Target {
 	title?: string;
-	elements?: { name: string; kind?: 'anchor' | 'component'; visibility?: number; evolution: number; pipeline?: string | null; label?: Pair | null; inertia?: boolean; method?: Method | null }[];
+	elements?: { name: string; kind?: 'anchor' | 'component'; visibility?: number; evolution: number; pipeline?: string | null; label?: Pair | null; inertia?: boolean; inertiaAt?: number | null; method?: Method | null }[];
 	links?: { from: string; to: string; kind?: string; label?: string | null }[];
 	evolves?: { name: string; evolution: number }[];
 	notes?: { text: string; visibility: number; evolution: number }[];
@@ -320,11 +359,12 @@ function checkTarget(t: any): Target {
 		if (e.kind !== undefined && !KINDS.includes(e.kind)) bad(`elements[${i}].kind must be anchor or component.`);
 		if (e.label != null && !(Array.isArray(e.label) && e.label.length === 2 && e.label.every((v: any) => Number.isFinite(v)))) bad(`elements[${i}].label must be [dx, dy].`);
 		if (e.inertia !== undefined && typeof e.inertia !== 'boolean') bad(`elements[${i}].inertia must be a boolean.`);
+		if (e.inertiaAt != null) num(e.inertiaAt, `elements[${i}].inertiaAt`);
 		if (e.method != null && !METHODS.includes(e.method)) bad(`elements[${i}].method must be one of ${METHODS.join('|')}.`);
 	});
 	arr('links').forEach((l, i) => {
 		str(l?.from, `links[${i}].from`); str(l.to, `links[${i}].to`);
-		if (l.kind !== undefined && !/^(->|-->|-\.->|\+<>|\+<|\+>|\+'[^']*'>|\+"[^"]*">)$/.test(l.kind)) bad(`links[${i}].kind "${l.kind}" is not an arrow.`);
+		if (l.kind !== undefined && !/^(->|-->|-\.->|\+<>|\+<|\+>|\+'[^']*'(?:<>|<|>))$/.test(l.kind)) bad(`links[${i}].kind "${l.kind}" is not an arrow.`);
 		if (l.label != null && typeof l.label !== 'string') bad(`links[${i}].label must be a string.`);
 	});
 	arr('evolves').forEach((e, i) => { str(e?.name, `evolves[${i}].name`); num(e.evolution, `evolves[${i}].evolution`); });
@@ -382,6 +422,7 @@ export async function applyModel(source: string, targetIn: unknown, parse: Parse
 
 	// ---- elements: top level first, so a new pipeline's parent exists before its children
 	const curEl = new Map(cur.elements.map(e => [e.name, e]));
+	const parents = new Set(cur.pipelines.filter(p => p.children.length > 0).map(p => p.parent));
 	const tEls = target.elements;
 	const tByName = new Map((tEls ?? []).map(e => [e.name.trim(), e]));
 	const ordered = [...(tEls ?? [])].sort((a, b) => Number(!!a.pipeline) - Number(!!b.pipeline));
@@ -430,9 +471,11 @@ export async function applyModel(source: string, targetIn: unknown, parse: Parse
 			if (differs(t.visibility, pv)) {
 				conflicts.push({ what, message: `A pipeline component sits at its parent's visibility (${pv}), not ${t.visibility}; move the parent instead.`, line: c.line });
 			}
-		} else if (differs(t.visibility, c.visibility) || differs(t.evolution, c.evolution)) {
+		} else if (differs(t.visibility, c.visibility) || (differs(t.evolution, c.evolution) && !parents.has(name))) {
+			// A pipeline parent is drawn at the centre of its components, so its own evolution
+			// draws nothing and a model taken from a drawing cannot know it: left as written.
 			const v = differs(t.visibility, c.visibility) ? t.visibility! : c.visibility;
-			const e = differs(t.evolution, c.evolution) ? t.evolution : c.evolution;
+			const e = differs(t.evolution, c.evolution) && !parents.has(name) ? t.evolution : c.evolution;
 			if (edit(what, c.line, src => setPosition(src, name, v, e))) {
 				changes.push({ op: 'move', what, from: [c.visibility, c.evolution], to: [at2(v), at2(e)], line: c.line });
 			}
@@ -471,12 +514,18 @@ export async function applyModel(source: string, targetIn: unknown, parse: Parse
 			seen.add(key);
 			const c = curLinks.get(key);
 			const what = `link ${from} -> ${to}`;
-			const label = t.label === undefined ? undefined : (t.label ?? '').trim();
+			const inline = t.kind !== undefined ? inlineLabel(t.kind) : undefined;
+			// No `label` key: the inline label of the model's arrow, if it has one, else keep.
+			const label = t.label !== undefined ? (t.label ?? '').trim() : inline;
+			/** The model's arrow as given, unless its inline label would contradict `label`. */
+			const arrowFor = (arrow: string, lab: string) => (inlineLabel(arrow) !== undefined && inlineLabel(arrow) !== lab ? portForm(arrow) : arrow);
 			if (!c) {
 				if (!edit(what, undefined, src => addLink(src, from, to))) continue;
-				const kind = t.kind ? linkKindOf(t.kind) : 'line';
-				if (kind !== 'line' || label) edit(what, undefined, src => setLink(src, from, to, kind, label ?? ''));
-				const change: Change = { op: 'add', what: `link ${from} ${t.kind ?? '->'} ${to}${label ? `; ${label}` : ''}` };
+				if ((t.kind && t.kind !== '->') || label) {
+					const arrow = arrowFor(t.kind ?? '->', label ?? '');
+					edit(what, undefined, src => setLink(src, from, to, linkKindOf(arrow), label ?? '', arrow));
+				}
+				const change: Change = { op: 'add', what: `link ${from} ${t.kind ?? '->'} ${to}${label && !inline ? `; ${label}` : ''}` };
 				changes.push(change);
 				added.push({ change, find: m => m.links.find(l => pairKey(l.from, l.to) === key)?.line });
 				continue;
@@ -484,13 +533,16 @@ export async function applyModel(source: string, targetIn: unknown, parse: Parse
 			if (c.from !== from) {
 				conflicts.push({ what, message: `Written as ${c.from} ${c.kind} ${c.to}; the direction is not changed.`, line: c.line });
 			}
-			const kindChange = t.kind !== undefined && linkKindOf(t.kind) !== linkKindOf(c.kind);
+			// A kind counts as changed only when Mermaid draws it differently (`->` and `-->` are the same line).
+			const kindChange = t.kind !== undefined && rendering(t.kind) !== rendering(c.kind);
 			const labelChange = label !== undefined && label !== (c.label ?? '');
 			if (!kindChange && !labelChange) continue;
-			const kind = kindChange ? linkKindOf(t.kind!) : linkKindOf(c.kind);
-			if (edit(what, c.line, src => setLink(src, c.from, c.to, kind, labelChange ? label! : (c.label ?? '')))) {
+			const newLabel = labelChange ? label! : (c.label ?? '');
+			// A label change alone keeps the arrow as written (an inline-label flow becomes its port form plus `; label`).
+			const arrow = kindChange ? arrowFor(t.kind!, newLabel) : (inlineLabel(c.kind) !== undefined ? portForm(c.kind) : c.kind);
+			if (edit(what, c.line, src => setLink(src, c.from, c.to, linkKindOf(arrow), newLabel, arrow))) {
 				changes.push({ op: 'update', what: `link ${c.from} ${c.kind} ${c.to}`,
-					from: { kind: c.kind, label: c.label ?? '' }, to: { kind: kindChange ? t.kind : c.kind, label: labelChange ? label : (c.label ?? '') }, line: c.line });
+					from: { kind: c.kind, label: c.label ?? '' }, to: { kind: kindChange ? t.kind : c.kind, label: newLabel }, line: c.line });
 			}
 		}
 		for (const c of cur.links) {
@@ -571,6 +623,29 @@ export async function applyModel(source: string, targetIn: unknown, parse: Parse
 		for (const c of gone) {
 			if (cur.elements.filter(e => e.name === c.name).length > 1) continue;  // already an error in the read
 			notInTarget(`${c.kind} ${c.name}`, c.line, src => deleteElement(src, c.name));
+		}
+	}
+
+	// ---- inertia bar positions (`%% mp-inertia`), against the map as edited so far, where
+	// the default position already reflects any move: written only when the bar moves
+	if (tEls?.some(t => typeof t.inertiaAt === 'number')) {
+		let mid: WardleyModel;
+		try {
+			mid = await readModel(s, parse);
+		} catch (e) {
+			throw new CliError('invalid-result', `The edited map does not parse, nothing was written (${e instanceof Error ? e.message : e}).`);
+		}
+		for (const t of tEls) {
+			if (typeof t.inertiaAt !== 'number' || t.inertia === false) continue;
+			const name = t.name.trim();
+			const m = mid.elements.find(e => e.name === name);
+			if (!m) continue;
+			const what = `${m.kind} ${name}`;
+			if (!m.inertia) {
+				conflicts.push({ what, message: 'inertiaAt given, but the element has no (inertia); pass inertia: true.', line: m.line });
+			} else if (differs(t.inertiaAt, m.inertiaAt) && edit(what, m.line, src => setInertiaPosition(src, name, t.inertiaAt!))) {
+				changes.push({ op: 'update', what: `${what} inertia position`, from: m.inertiaAt, to: at2(t.inertiaAt), line: m.line });
+			}
 		}
 	}
 

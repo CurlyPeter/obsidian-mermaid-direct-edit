@@ -3,7 +3,7 @@
 Two Obsidian CLI commands (Obsidian 1.12+, desktop) for scripts and agents that work with
 `wardley-beta` maps in notes: read a map as JSON, and bring a map in line with a JSON model
 by editing the text in place. The JSON shape is a contract, versioned by `schema`
-(currently **1**). Since plugin version 0.15.0.
+(currently **1**). Since plugin version 0.15.0; `inertiaAt` on every element with inertia, `inertiaAtDefault`, and link-kind comparison by drawing since 0.16.0.
 
 ```bash
 obsidian mermaid-direct-edit:wardley-read  path="Maps/Tea Shop.md"
@@ -68,9 +68,9 @@ usually `wardley-beta`). Optional keys are absent when the map has nothing for t
 | `elements` | Anchors and components in source order. `visibility`/`evolution` are always 0-1. |
 | `pipeline` | The parent of a pipeline component. Its `visibility` is the parent's: that is where Mermaid draws it (the text gives a pipeline component only its evolution). |
 | `label` | `label [dx, dy]`: map pixels relative to the node. Components only. |
-| `inertia`, `inertiaAt` | The `(inertia)` decorator; `inertiaAt` is where this plugin draws its bar, from the plugin's `%% mp-inertia <name> <evolution>` comment (other renderers ignore it). |
+| `inertia`, `inertiaAt`, `inertiaAtDefault` | The `(inertia)` decorator. `inertiaAt` (present whenever `inertia` is) is where this plugin draws the bar on the evolution axis: from its `%% mp-inertia <name> <evolution>` comment (other renderers ignore it), else Mermaid's own default position, then with `inertiaAtDefault: true`. Mermaid 12.1 draws the bar 21 px right of the node, 37 px with a build/buy/outsource/market decorator, 19.8 px right of a pipeline parent's square (which sits at the centre of its components), on a chart 804 px wide (`size` width minus 96). |
 | `method` | `build`, `buy`, `outsource` or `market`. |
-| `links[].kind` | The arrow as written: `->`, `-->`, `-.->`, `+>`, `+<`, `+<>`, `+'label'>`. `flow` is set for the `+` arrows. |
+| `links[].kind` | The arrow as written: `->`, `-->`, `-.->`, `+>`, `+<`, `+<>`, `+'label'>`, `+'label'<`, `+'label'<>`. `flow` is set for the `+` arrows. |
 | `links[].label` | The `; label` after a link, or the inline label of a flow arrow. |
 | `forces` | Accelerators and deaccelerators. |
 | `errors` | `{line, message}`: the map parses but something in it is wrong (see below). `line` is `null` for the whole map. |
@@ -111,7 +111,7 @@ ask to change stays byte-identical, comments included.
 | Section | Entry fields | Identity |
 |---|---|---|
 | `title` | a string (`""` removes the title) | |
-| `elements` | `name`, `evolution`; `visibility` (needed for a new top-level element); optional `kind`, `pipeline`, `label`, `inertia`, `method` | name |
+| `elements` | `name`, `evolution`; `visibility` (needed for a new top-level element, optional otherwise, ignored for a pipeline component); optional `kind`, `pipeline`, `label`, `inertia`, `inertiaAt`, `method` | name |
 | `links` | `from`, `to`; optional `kind`, `label` | the unordered pair of names |
 | `evolves` | `name`, `evolution` | name |
 | `notes` | `text`, `visibility`, `evolution` | the exact text |
@@ -125,6 +125,32 @@ ask to change stays byte-identical, comments included.
   means top level.
 - A position counts as changed when it differs by more than `tolerance` (default 0.01).
   Positions are written with two decimals.
+- **A pipeline parent's evolution is left as written.** Mermaid draws the parent's square at
+  the centre of its components, so its own evolution changes nothing in the drawing, and a
+  model taken from a drawing cannot know it. Its visibility is applied (the components sit
+  at it).
+- **`inertiaAt`** is compared with where the bar is drawn now (the comment, else Mermaid's
+  default for the element's position after the other changes). Only a bar that moved by more
+  than `tolerance` writes or updates the `%% mp-inertia` comment, so a model that keeps the
+  default writes nothing. It needs `inertia` on the element (in the text or set by the same
+  model), otherwise it is a conflict.
+- **Link kinds are compared by how Mermaid draws them**, not by their text. Mermaid 12.1 draws
+  a solid or a dashed line, with flow heads forward, backward, both or none:
+
+  | Drawn as | Arrows |
+  |---|---|
+  | solid, no heads | `->`, `-->` |
+  | dashed, no heads | `-.->` |
+  | solid, head forward | `+>`, `+'label'>` |
+  | solid, head backward | `+<`, `+'label'<` |
+  | solid, heads both ways | `+<>`, `+'label'<>` |
+
+  An arrow in the same row as the text's is no change (`+'x'>` against `+> …; x` is the same
+  arrow and label). A kind in another row is written as given; when only the label changes,
+  the arrow stays as written (an inline-label flow becomes its plain form plus `; label`).
+  Without a `label` key, the inline label of the model's arrow counts as its label. Mermaid
+  decides the heads from the whole arrow text, so a label containing `<` (`+'a<b'>`) draws
+  backward; the comparison follows Mermaid.
 - **Additions** (in the model, not in the text) are added: an element after the last
   declaration (a pipeline component into its parent's pipeline, created when needed), a
   link after the last link, an `evolve` after the last one, a note or force after the last

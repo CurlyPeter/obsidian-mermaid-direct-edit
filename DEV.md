@@ -363,6 +363,24 @@ reported `inSync`. Gesture E2E 17/17 on the build (the note lookup is now shared
 
 ## Changelog
 
+- **0.16.0 (2026-10-10)** Setting "Full-width diagrams without readable line length": with
+  Obsidian's readable line length off, every diagram fills the note width (requested for
+  presenting on a second screen; coupled to readable line length rather than an own command,
+  since the maintainer writes with it on and toggles it with Obsidian's own command). Measured
+  before on Obsidian 1.14.4: wardley and pie are `width="100%"` with `max-width` = natural width
+  (wardley 900 px), flowchart and sequence a fixed pixel width (Obsidian passes
+  `useMaxWidth: false` for them). After: setting off 900 px, on and readable off 1531 px (the
+  note width), readable on 700 px (the text column); flowchart 426x70 became 616x101 in a
+  616 px pane, i.e. the viewBox keeps the aspect ratio.
+  Also for a consumer whose drawing shows inertia bars and arrow heads: `inertiaAt` always read (from
+  `%% mp-inertia`, else Mermaid's default bar position, flagged `inertiaAtDefault`; the default
+  computed from Mermaid 12.1's renderer constants and checked against a live render: 0.4261,
+  0.646, 0.4246 both ways) and applied (writes the comment only when the bar moved); link kinds
+  compared by how Mermaid draws them (`->` = `-->`, `+'x'>` = `+> …; x`), a changed kind
+  written as given; a pipeline parent's evolution left as written (Mermaid draws its square at
+  the centre of its components). The text parsers now also know the inline-label flows
+  `+'x'<` and `+'x'<>` of Mermaid's grammar (before, such a link was invisible to every edit).
+
 - **0.15.0 (2026-10-10)** CLI commands `wardley-read` and `wardley-apply`: a Wardley map as
   versioned JSON (schema 1, `docs/wardley-model.md`) and in-place application of a target
   model (see above). Note lookup shared with the editor (`mermaidBlocks`).
