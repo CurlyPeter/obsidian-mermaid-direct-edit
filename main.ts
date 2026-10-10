@@ -68,6 +68,8 @@ export default class MermaidDirectEditPlugin extends Plugin {
 	obsidianLoadedFirst = false;
 	error: string | null = null;
 	settings: Settings = { ...DEFAULT_SETTINGS };
+	/** The documents of the app's windows the editor is wired into (main window and pop-outs). */
+	private readonly docs = new Set<Document>();
 	private wardley = new WardleyEditor(this.app, () => this.pinned, () => this.settings.editWardley);
 
 	async onload() {
@@ -98,19 +100,34 @@ export default class MermaidDirectEditPlugin extends Plugin {
 		this.addSettingTab(new MermaidDirectEditSettingTab(this.app, this));
 
 		this.settings = { ...DEFAULT_SETTINGS, ...(await this.loadData()) };
+		// Every window of the app: the main one, pop-outs already open, and each one opened later.
+		this.attach(document);
+		this.app.workspace.onLayoutReady(() => this.app.workspace.iterateAllLeaves(l => this.attach(l.view.containerEl.ownerDocument)));
+		this.registerEvent(this.app.workspace.on('window-open', (_w, win) => this.attach(win.document)));
+		this.registerEvent(this.app.workspace.on('window-close', (_w, win) => { this.docs.delete(win.document); }));
+	}
+
+	/**
+	 * Wires the editor into one window of the app. A pop-out window has a document of its own,
+	 * and events there never reach the main document's listeners: until 0.16.1 a map in a
+	 * pop-out rendered but could not be edited.
+	 */
+	private attach(doc: Document) {
+		if (this.docs.has(doc)) return;
+		this.docs.add(doc);
 		this.applyEditClass();
 		// Capture phase: Live Preview would otherwise take the gesture and open the source.
 		const opts = { capture: true };
-		this.registerDomEvent(document, 'pointerdown', this.wardley.onPointerDown, opts);
-		this.registerDomEvent(document, 'pointermove', this.wardley.onPointerMove, opts);
-		this.registerDomEvent(document, 'pointerup', this.wardley.onPointerUp, opts);
-		this.registerDomEvent(document, 'pointercancel', this.wardley.onPointerCancel, opts);
+		this.registerDomEvent(doc, 'pointerdown', this.wardley.onPointerDown, opts);
+		this.registerDomEvent(doc, 'pointermove', this.wardley.onPointerMove, opts);
+		this.registerDomEvent(doc, 'pointerup', this.wardley.onPointerUp, opts);
+		this.registerDomEvent(doc, 'pointercancel', this.wardley.onPointerCancel, opts);
 		for (const type of ['mousedown', 'mouseup', 'click'] as const) {
-			this.registerDomEvent(document, type, this.wardley.onSwallow, opts);
+			this.registerDomEvent(doc, type, this.wardley.onSwallow, opts);
 		}
-		this.registerDomEvent(document, 'dblclick', this.wardley.onDblClick, opts);
-		this.registerDomEvent(document, 'touchstart', this.wardley.onTouchStart, { capture: true, passive: false });
-		this.registerDomEvent(document, 'keydown', this.wardley.onKeyDown);
+		this.registerDomEvent(doc, 'dblclick', this.wardley.onDblClick, opts);
+		this.registerDomEvent(doc, 'touchstart', this.wardley.onTouchStart, { capture: true, passive: false });
+		this.registerDomEvent(doc, 'keydown', this.wardley.onKeyDown);
 	}
 
 	async setEditWardley(on: boolean) {
@@ -127,12 +144,14 @@ export default class MermaidDirectEditPlugin extends Plugin {
 
 	/** Body classes for the settings; `styles.css` does the rest, so a change needs no redraw. */
 	private applyEditClass() {
-		document.body.toggleClass('mp-wardley-edit', this.settings.editWardley);
-		document.body.toggleClass('mde-full-width', this.settings.fullWidth);
+		for (const doc of this.docs) {
+			doc.body.toggleClass('mp-wardley-edit', this.settings.editWardley);
+			doc.body.toggleClass('mde-full-width', this.settings.fullWidth);
+		}
 	}
 
 	onunload() {
-		this.wardley.destroy();
+		this.wardley.destroy(this.docs);
 		const w = window as any;
 		delete w.mermaid;
 		if (this.obsidianMermaid) {
@@ -141,8 +160,11 @@ export default class MermaidDirectEditPlugin extends Plugin {
 			w.mermaid = this.obsidianMermaid;
 		}
 		// Never loaded: leave it undefined, Obsidian's loader assigns and initializes it.
-		document.body.removeClass('mp-wardley-edit');
-		document.body.removeClass('mde-full-width');
+		for (const doc of this.docs) {
+			doc.body.removeClass('mp-wardley-edit');
+			doc.body.removeClass('mde-full-width');
+		}
+		this.docs.clear();
 		// No redraw here: Obsidian's bundled Mermaid cannot draw wardley-beta, so a redraw on
 		// every plugin reload or update flashed "Error parsing Mermaid diagram!" until the new
 		// instance redrew (measured 2026-10-10, UnknownDiagramError in the console). Diagrams

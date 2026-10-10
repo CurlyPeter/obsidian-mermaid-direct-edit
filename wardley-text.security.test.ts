@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EditError, deleteNote, editBlocker, freeSpot, getPosition, inertiaPositions, isWardley, locateBlock, mermaidBlocks, nameSpans, rename, setMethod, setPosition, setTitle } from './wardley-text';
+import { EditError, deleteNote, getAnnotation, setAnnotationsBoxPosition, editBlocker, freeSpot, getPosition, inertiaPositions, isWardley, locateBlock, mermaidBlocks, nameSpans, rename, setMethod, setPosition, setTitle } from './wardley-text';
 import { SourceRegistry } from './wardley-render';
 
 /** Findings of the security review on 0.12.0 (DEV.md → 0.13.0). */
@@ -24,6 +24,13 @@ describe('F1/F2: no super-linear parsing of a crafted source', () => {
 	it('a long bare name without a position is read in linear time', () => {
 		fast(() => nameSpans(`component x${pad(45000)}y`));
 		fast(() => nameSpans(`A${pad(45000)}B -> C`));
+	});
+
+	it('the annotation parsers (0.17.0) read in linear time', () => {
+		fast(() => getAnnotation(`wardley-beta\nannotation 1,[0.1, 0.1] "${pad(30000)}`, 1));
+		fast(() => getAnnotation(`wardley-beta\nannotation 1,[${pad(30000)}0.1,${pad(30000)}`, 1));
+		fast(() => freeSpot(`wardley-beta\n${'annotation 1,[0.1, 0.1] "x"\n'.repeat(2000)}`, 'component'));
+		fast(() => setAnnotationsBoxPosition(`wardley-beta\nannotations [${pad(30000)}`, 0.1, 0.1));
 	});
 
 	it('the parsers added for the model (0.15.0) read in linear time', () => {

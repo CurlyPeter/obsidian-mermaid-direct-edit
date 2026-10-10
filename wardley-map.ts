@@ -10,18 +10,24 @@ export interface MapNode {
 }
 
 /**
+ * Whether `t` is an element. Not `instanceof Element`: a node in a pop-out window belongs to
+ * that window's `Element`, so the check is false there and every map in it looked uneditable.
+ */
+export const isElement = (t: EventTarget | null | undefined): t is Element => !!t && (t as Node).nodeType === 1;
+
+/**
  * The editable wardley SVG an event target belongs to, if any. A map embedded from another
  * note is left alone: its edit would be written into the host note (security review F3).
  */
 export function mapOf(target: EventTarget | null): SVGSVGElement | null {
-	if (!(target instanceof Element)) return null;
+	if (!isElement(target)) return null;
 	const svg = target.closest<SVGSVGElement>(`svg[${KEY_ATTR}]`);
 	return svg && svg.closest('.mermaid') && !svg.closest('.markdown-embed') ? svg : null;
 }
 
 /** The editable map in the `.mermaid` container around `target` (the legend sits beside the SVG). */
 export function mapIn(target: EventTarget | null): SVGSVGElement | null {
-	if (!(target instanceof Element)) return null;
+	if (!isElement(target)) return null;
 	return mapOf(target.closest('.mermaid')?.querySelector(`:scope > svg[${KEY_ATTR}]`) ?? null);
 }
 

@@ -2,18 +2,18 @@ import { App, Modal, Notice } from 'obsidian';
 import type { Mermaid } from 'mermaid';
 import { DBLCLICK_MS, STUB_GRAB, STUB_LENGTH, TapDetector } from './wardley-geometry';
 import {
-	DeletePress, ForceDrag, Gesture, GestureCtx, InertiaDrag, LinkEndDrag, NewLinkDrag, NodeDrag, NoteDrag, Stub, TapPress,
+	AnnotationDrag, DeletePress, ForceDrag, Gesture, GestureCtx, InertiaDrag, LinkEndDrag, NewLinkDrag, NodeDrag, NoteDrag, Stub, TapPress,
 	TrendTipDrag,
 } from './wardley-gestures';
 import { Hit, classify, componentAt } from './wardley-hit';
 import { Legend, LegendKind } from './wardley-legend';
-import { MapModel, MapNode, mapIn, mapOf } from './wardley-map';
+import { MapModel, MapNode, isElement, mapIn, mapOf } from './wardley-map';
 import { EditModal, LinkModal, NameModal } from './wardley-modals';
 import { KEY_ATTR, SourceRegistry, wrapRender } from './wardley-render';
 import {
-	EditError, ForceKind, addElement, addEvolve, addForce, addNote, addToPipeline, defaultEvolveTarget, deleteElement,
-	deleteEvolve, deleteForce, deletePipeline, freeSpot, getLink, hasInertia, nextPipelineEvolution, pipelineOf, rename,
-	renameForce, setInertia, setLink, unlink,
+	EditError, ForceKind, addAnnotation, addElement, addEvolve, addForce, addNote, addToPipeline, defaultEvolveTarget,
+	deleteAnnotation, deleteElement, deleteEvolve, deleteForce, deletePipeline, freeSpot, getAnnotation, getLink, getMethod, hasInertia, type Method,
+	nextPipelineEvolution, pipelineOf, rename, renameForce, setAnnotationText, setInertia, setLink, setMethod, unlink,
 } from './wardley-text';
 import { viewOf, writeBlock } from './wardley-write';
 
@@ -24,7 +24,7 @@ const CURSOR_ADD = svgCursor("<circle cx='10' cy='10' r='8' fill='white' stroke=
 
 /** Inline cursor per hit kind; '' leaves it to styles.css (nodes, labels, notes, bars, boxes). */
 const HOVER_CURSOR: Record<Hit['kind'], string> = {
-	note: '', force: '', inertia: '', node: '', box: '',
+	annotation: '', note: '', force: '', inertia: '', node: '', box: '',
 	'trend-tip': 'ew-resize', 'trend-shaft': CURSOR_DELETE, 'link-end': 'crosshair', 'link-middle': 'pointer', plus: CURSOR_ADD,
 };
 
@@ -90,6 +90,7 @@ export class WardleyEditor implements GestureCtx {
 		const hit = classify(model, e.target as Element, e.clientX, e.clientY);
 		if (!hit) return;
 		switch (hit.kind) {
+			case 'annotation': return this.start(e, new AnnotationDrag(model, e, this, hit), svg);
 			case 'note': return this.start(e, new NoteDrag(model, e, this, hit.el, hit.text), svg);
 			case 'force': return this.start(e, new ForceDrag(model, e, this, hit.force, hit.name, hit.parts, hit.origin), svg);
 			case 'inertia': return this.start(e, new InertiaDrag(model, e, this, hit.bar, hit.name), svg);
@@ -147,7 +148,7 @@ export class WardleyEditor implements GestureCtx {
 
 	/** Swallows the mouse events that would otherwise open the block's source in Live Preview. */
 	onSwallow = (e: Event) => {
-		if (!this.enabled() || !(e.target instanceof Element)) return;
+		if (!this.enabled() || !isElement(e.target)) return;
 		const recent = this.swallow && Date.now() < this.swallow.until && this.swallow.box.contains(e.target);
 		const svg = mapOf(e.target);
 		const onElement = svg && MapModel.of(svg, this.registry) && classify(MapModel.of(svg, this.registry)!, e.target, (e as MouseEvent).clientX, (e as MouseEvent).clientY);
@@ -160,7 +161,7 @@ export class WardleyEditor implements GestureCtx {
 	/** The system's double click (follows OS timing; the target is the map after pointer capture). */
 	onDblClick = (e: MouseEvent) => {
 		const box = this.tapBox;
-		const mine = this.enabled() && box && e.target instanceof Element && box.contains(e.target);
+		const mine = this.enabled() && box && isElement(e.target) && box.contains(e.target);
 		const t = mine ? this.taps.take(DBLCLICK_MS) : null;
 		if (t) {
 			e.preventDefault();
@@ -192,17 +193,19 @@ export class WardleyEditor implements GestureCtx {
 		this.disarm();
 	};
 
-	/** Undoes every trace of the editor (plugin unload, review finding #6). */
-	destroy() {
+	/** Undoes every trace of the editor in each of `docs`, the app's windows (plugin unload, review finding #6). */
+	destroy(docs: Iterable<Document>) {
 		this.active?.cancel();
 		this.active = null;
 		this.dropStub();
 		this.disarm();
 		this.taps.clear();
-		this.legend.destroy();
+		this.legend.destroy(docs);
 		for (const m of Array.from(this.modals)) m.close();
-		document.querySelectorAll<SVGSVGElement>(`svg[${KEY_ATTR}]`).forEach(svg => { svg.style.cursor = ''; });
-		document.querySelectorAll('.mp-drop-target, .mp-dragging').forEach(el => el.classList.remove('mp-drop-target', 'mp-dragging'));
+		for (const doc of docs) {
+			doc.querySelectorAll<SVGSVGElement>(`svg[${KEY_ATTR}]`).forEach(svg => { svg.style.cursor = ''; });
+			doc.querySelectorAll('.mp-drop-target, .mp-dragging').forEach(el => el.classList.remove('mp-drop-target', 'mp-dragging'));
+		}
 	}
 
 	// ---- GestureCtx ------------------------------------------------------------------------
@@ -250,14 +253,17 @@ export class WardleyEditor implements GestureCtx {
 		const isComponent = node.node.classList.contains('wardley-node--component');
 		let inertia: boolean | null = null;
 		let pipeline: string[] | null = null;
+		let method: Method | null | undefined;
 		if (isComponent) {
 			try { inertia = hasInertia(model.src, name); pipeline = pipelineOf(model.src, name); } catch { /* duplicate name */ }
+			try { method = getMethod(model.src, name); } catch { /* pipeline component: no type in wardley-beta */ }
 		}
 		this.open(new EditModal(this.app, {
 			title: `Edit "${name}"`,
 			name,
 			inertia,
 			onInertia: on => { void this.apply(model, s => setInertia(s, name, on)); },
+			method: method === undefined ? undefined : { value: method, onChange: m => { void this.apply(model, s => setMethod(s, name, m)); } },
 			onRename: newName => { void this.apply(model, s => rename(s, name, newName)); },
 			deleteConfirm: 'Really delete, with its links?',
 			onDelete: () => { void this.apply(model, s => deleteElement(s, name)).then(ok => { if (ok) this.info(`"${name}" deleted with its links.`); }); },
@@ -276,6 +282,20 @@ export class WardleyEditor implements GestureCtx {
 			onRename: newName => { void this.apply(model, s => renameForce(s, kind, name, newName)); },
 			deleteConfirm: 'Really delete?',
 			onDelete: () => { void this.apply(model, s => deleteForce(s, kind, name)).then(ok => { if (ok) this.info(`${kind} "${name}" deleted.`); }); },
+		}));
+	}
+
+	openAnnotationDialog(model: MapModel, number: number) {
+		let text: string;
+		try { text = getAnnotation(model.src, number); } catch (e) { return void this.fail(e instanceof EditError ? e.message : String(e)); }
+		this.open(new EditModal(this.app, {
+			title: `Edit annotation ${number}`,
+			name: text,
+			field: { label: 'Text', submit: 'Save' },
+			inertia: null,
+			onRename: next => { void this.apply(model, s => setAnnotationText(s, number, next)); },
+			deleteConfirm: 'Really delete?',
+			onDelete: () => { void this.apply(model, s => deleteAnnotation(s, number)).then(ok => { if (ok) this.info(`annotation ${number} deleted.`); }); },
 		}));
 	}
 
@@ -356,6 +376,13 @@ export class WardleyEditor implements GestureCtx {
 			}));
 			return;
 		}
+		if (kind === 'annotation') {
+			const at = freeSpot(model.src, 'component');
+			this.open(new NameModal(this.app, 'New annotation', 'Text', text => {
+				void this.apply(model, s => addAnnotation(s, text, at.visibility, at.evolution));
+			}));
+			return;
+		}
 		if (kind === 'note') {
 			const at = freeSpot(model.src, 'note');
 			this.open(new NameModal(this.app, 'New note', 'Text', text => {
@@ -387,7 +414,7 @@ export class WardleyEditor implements GestureCtx {
 
 	/** The legend of the map under the pointer (or of the legend under it), editable maps only. */
 	private updateLegend(e: PointerEvent) {
-		const target = e.target instanceof Element ? e.target : null;
+		const target = isElement(e.target) ? e.target : null;
 		const svg = this.enabled() ? mapOf(target) ?? mapIn(target) : null;
 		const box = svg && MapModel.of(svg, this.registry) ? svg.closest<HTMLElement>('.mermaid') : null;
 		this.legend.update(box, target, e.clientX, e.clientY);

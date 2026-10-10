@@ -51,6 +51,10 @@ evolve Delta 0.85
 
 note "A short note" [0.08, 0.04]
 accelerator Push [0.65, 0.04]
+
+annotations [0.97, 0.03]
+annotation 1,[0.30, 0.70] "First remark"
+annotation 2,[0.68, 0.62] "Second remark"
 """
 FILLER = '\n\n'.join(f'Filler line {i} so the map sits below the top.' for i in range(1, 41))
 
@@ -134,6 +138,9 @@ for (const [k, spec] of Object.entries(ARG)) {
   else if (what === 'inertia') { const l = node(a)?.querySelector('line.wardley-inertia'); out[k] = l && mid(l.getBoundingClientRect()); }
   else if (what === 'note') { const t = [...svg.querySelectorAll('g.wardley-notes > text')].find(t => t.textContent === a); const r = t?.getBoundingClientRect(); out[k] = r && [Math.round(r.left + 12), Math.round(r.top + r.height / 2)]; }
   else if (what === 'force') { const t = [...svg.querySelectorAll('g.wardley-accelerators > text, g.wardley-deaccelerators > text')].find(t => t.textContent.trim() === a); out[k] = t && mid(t.getBoundingClientRect()); }
+  else if (what === 'annotation') { const g = [...svg.querySelectorAll('g.wardley-annotation')].find(g => g.textContent.trim() === a); out[k] = g && mid(g.querySelector('circle').getBoundingClientRect()); }
+  else if (what === 'annotation-line') { const t = [...svg.querySelectorAll('g.wardley-annotations-box > text')].find(t => t.textContent.startsWith(a + '. ')); const r = t?.getBoundingClientRect(); out[k] = r && [Math.round(r.left + 20), Math.round(r.top + r.height / 2)]; }
+  else if (what === 'annotations-box') { const r = svg.querySelector('g.wardley-annotations-box > rect')?.getBoundingClientRect(); out[k] = r && [Math.round(r.right - 8), Math.round(r.bottom - 4)]; }
   else if (what === 'box') { const r = svg.querySelector('rect.wardley-pipeline-box')?.getBoundingClientRect(); out[k] = r && [Math.round(r.left + r.width / 2), Math.round(r.bottom - 4)]; }
   else if (what === 'corner') { const r = svg.closest('.mermaid').getBoundingClientRect(); out[k] = a === 'left' ? [Math.round(r.left + 10), Math.round(r.bottom - 10)] : [Math.round(r.right - 10), Math.round(r.bottom - 10)]; }
   else if (what === 'legend-item') { const i = svg.closest('.mermaid').querySelector(`.mp-wardley-legend [data-mp-add="${a}"]`); out[k] = i && mid(i.getBoundingClientRect()); }
@@ -292,6 +299,55 @@ def case_force_drag():
     return got != 'accelerator Push [0.65, 0.04]', got
 
 
+def case_annotation_drag():
+    p = locate(a=['annotation', '1'])
+    drag(*p['a'], 60, -40); wait()
+    got = line(r'^annotation 1,.*$')
+    return bool(got) and got != 'annotation 1,[0.30, 0.70] "First remark"' and got.endswith('"First remark"'), got
+
+
+def case_annotations_box_drag():
+    p = locate(b=['annotations-box'])
+    drag(*p['b'], 250, 180); wait()
+    got = line(r'^annotations .*$')
+    return bool(got) and got != 'annotations [0.97, 0.03]', got
+
+
+def case_annotation_dialog():
+    p = locate(a=['annotation', '2'])
+    click(*p['a'], 1); click(*p['a'], 2); wait(0.6)
+    title = modal_title()
+    js('(()=>{const i=document.querySelector(".modal input"); i.value="Changed remark"; i.dispatchEvent(new Event("input"));'
+       ' [...document.querySelectorAll(".modal button")].find(b=>b.textContent==="Save").click(); return "x"})()')
+    wait()
+    got = line(r'^annotation 2,.*$')
+    return title == 'Edit annotation 2' and got == 'annotation 2,[0.68, 0.62] "Changed remark"', f'{title!r}; {got}'
+
+
+def case_annotation_delete():
+    # Double click on the annotation's line in the box; Delete needs a confirming second click.
+    p = locate(l=['annotation-line', '1'])
+    click(*p['l'], 1); click(*p['l'], 2); wait(0.6)
+    title = modal_title()
+    js('(()=>{const b=[...document.querySelectorAll(".modal button")].find(b=>b.textContent==="Delete"); b.click(); b.click(); return "x"})()')
+    wait()
+    return title == 'Edit annotation 1' and line(r'^annotation 1,.*$') is None and line(r'^annotations .*$') is not None, title
+
+
+def case_legend_annotation():
+    p = locate(c=['corner', 'right'])
+    mouse('mouseMoved', *p['c']); wait(0.3)
+    item = locate(i=['legend-item', 'annotation'])['i']
+    if not item:
+        return False, 'legend not shown'
+    click(*item); wait(0.5)
+    title = modal_title()
+    cdp('Input.insertText', {'text': 'Added remark'})
+    key('Enter', 'Enter', 13); wait()
+    got = line(r'^annotation \d+,.*"Added remark"$')
+    return title == 'New annotation' and got is not None, f'{title!r}; {got}'
+
+
 def case_pipeline_box_drag():
     p = locate(b=['box'])
     drag(*p['b'], 50, 0); wait()
@@ -307,6 +363,23 @@ def case_rename_dialog():
        ' [...document.querySelectorAll(".modal button")].find(b=>b.textContent==="Rename").click(); return "x"})()')
     wait()
     return title.startswith('Edit') and line(r'^component Omega .*$') is not None and 'Epsilon' not in source(), title
+
+
+def case_type_dialog():
+    """The node dialog's Type dropdown writes the sourcing decorator, Mermaid draws its ring, Default removes it."""
+    def pick(value):
+        p = locate(n=['node', 'Alpha'])
+        click(*p['n'], 1); click(*p['n'], 2); wait(0.6)
+        shown = js('(()=>{const s=document.querySelector(".modal select"); if(!s) return "none"; const v=s.value;'
+                   ' s.value=' + json.dumps(value) + '; s.dispatchEvent(new Event("change")); return v})()')
+        wait(); park()
+        ring = js('String(!!app.workspace.activeLeaf.view.contentEl.querySelector(".mermaid svg .wardley-buy-overlay"))')
+        return shown, line(r'^component Alpha .*$'), ring
+    shown1, got1, ring1 = pick('buy')
+    shown2, got2, ring2 = pick('default')
+    ok = (shown1 == 'default' and got1 == 'component Alpha [0.80, 0.30] (buy)' and ring1 == 'true'
+          and shown2 == 'buy' and got2 == 'component Alpha [0.80, 0.30]' and ring2 == 'false')
+    return ok, f'{shown1} -> {got1} ring={ring1}; {shown2} -> {got2} ring={ring2}'
 
 
 def case_legend_corner():
@@ -356,6 +429,52 @@ def case_swallow_scope():
     return swallowed is False, f'text mousedown right after a gesture swallowed={swallowed}'
 
 
+# Runs entirely inside Obsidian: CDP input reaches only the main window, so the pop-out gets
+# DOM pointer events dispatched in its own document (the listeners are what was missing).
+POPOUT = r"""
+(async()=>{
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const main = app.workspace.activeLeaf;
+const leaf = app.workspace.openPopoutLeaf({size: {width: 1000, height: 800}});
+const out = {};
+try {
+  await leaf.openFile(main.view.file);
+  const st = leaf.getViewState(); st.state.mode = 'source'; st.state.source = false; await leaf.setViewState(st);
+  leaf.view.editor.setCursor({line: 0, ch: 0});
+  leaf.view.editor.scrollIntoView({from: {line: 84, ch: 0}, to: {line: 84, ch: 0}}, true);
+  await sleep(2000);
+  const doc = leaf.view.containerEl.ownerDocument, win = doc.defaultView;
+  out.popout = doc !== document;
+  out.bodyClass = doc.body.classList.contains('mp-wardley-edit');
+  const svg = leaf.view.contentEl.querySelector('.markdown-source-view .mermaid svg[aria-roledescription="wardley"]');
+  if (!svg) return JSON.stringify({...out, error: 'no map in pop-out'});
+  svg.scrollIntoView({block: 'center'}); await sleep(600);
+  const g = [...svg.querySelectorAll('g.wardley-node')].find(g => g.querySelector('text.wardley-node-label')?.textContent.trim() === 'Beta');
+  const c = [...g.querySelectorAll(':scope > circle')].filter(c => !c.getAttribute('class')).pop();
+  const p = svg.createSVGPoint(); p.x = +c.getAttribute('cx'); p.y = +c.getAttribute('cy');
+  const s = p.matrixTransform(svg.getScreenCTM());
+  const fire = (type, x, y, buttons) => {
+    const t = doc.elementFromPoint(x, y) ?? svg;
+    t.dispatchEvent(new win.PointerEvent(type, {bubbles: true, cancelable: true, composed: true, clientX: x, clientY: y,
+      pointerId: 1, pointerType: 'mouse', isPrimary: true, button: 0, buttons}));
+  };
+  fire('pointerdown', s.x, s.y, 1);
+  for (let i = 1; i <= 5; i++) { fire('pointermove', s.x - 8 * i, s.y + 6 * i, 1); await sleep(30); }
+  fire('pointerup', s.x - 40, s.y + 30, 0);
+  await sleep(1500);
+  out.beta = (leaf.view.editor.getValue().match(/^component Beta .*$/m) || [null])[0];
+  return JSON.stringify(out);
+} finally { leaf.detach(); app.workspace.setActiveLeaf(main, {focus: true}); await sleep(300); }
+})()
+"""
+
+
+def case_popout_window():
+    r = json.loads(js(POPOUT))
+    ok = r.get('popout') and r.get('bodyClass') and r.get('beta') not in (None, 'component Beta [0.80, 0.80]')
+    return ok, json.dumps(r)
+
+
 def case_unload_cleanup():
     # Review #6: unload leaves no stub, legend, drop highlight or open dialog behind.
     p = locate(s=['plus', 'Gamma'], c=['corner', 'left'])
@@ -372,8 +491,12 @@ CASES = [
     ('evolve_tip', case_evolve_tip), ('inertia_drag', case_inertia_drag), ('evolve_delete', case_evolve_delete),
     ('relink', case_relink), ('link_dialog', case_link_dialog), ('new_link_stub', case_new_link_stub),
     ('note_drag', case_note_drag), ('force_drag', case_force_drag), ('pipeline_box_drag', case_pipeline_box_drag),
-    ('rename_dialog', case_rename_dialog), ('legend_corner', case_legend_corner),
+    ('annotation_drag', case_annotation_drag), ('annotations_box_drag', case_annotations_box_drag),
+    ('annotation_dialog', case_annotation_dialog), ('annotation_delete', case_annotation_delete),
+    ('legend_annotation', case_legend_annotation),
+    ('rename_dialog', case_rename_dialog), ('type_dialog', case_type_dialog), ('legend_corner', case_legend_corner),
     ('component_on_shaft', case_component_on_shaft), ('swallow_scope', case_swallow_scope),
+    ('popout_window', case_popout_window),
     ('unload_cleanup', case_unload_cleanup),
 ]
 

@@ -6,6 +6,8 @@ import { ForceKind } from './wardley-text';
 export type Hit =
 	| { kind: 'note'; el: SVGTextElement; text: string }
 	| { kind: 'force'; force: ForceKind; name: string; parts: Element[]; origin: Pt }
+	/** A numbered annotation circle, or the box listing the texts (`number`: the line pressed, if any). */
+	| { kind: 'annotation'; part: Element; box: boolean; number: number | null; origin: Pt }
 	| { kind: 'inertia'; bar: SVGLineElement; name: string }
 	| { kind: 'node'; node: MapNode; label: SVGTextElement | null }
 	| { kind: 'trend-tip'; line: SVGLineElement; name: string }
@@ -20,7 +22,8 @@ export type Hit =
  * touch-start and hover (review finding #1: zones were checked before the element under the
  * pointer, so a click on a component could delete another component's evolve arrow):
  *
- * 1. elements under the pointer: note, accelerator/deaccelerator, inertia bar, node or label;
+ * 1. elements under the pointer: annotation (circle or box), note, accelerator/deaccelerator,
+ *    inertia bar, node or label;
  * 2. zones around thin lines: evolve tip, evolve shaft, link end, link middle;
  * 3. the "+" ring around a node; 4. a pipeline box (stands for its parent).
  *
@@ -37,6 +40,8 @@ export function classify(model: MapModel, target: Element, x: number, y: number)
 }
 
 function elementHit(model: MapModel, target: Element): Hit | null {
+	const annotation = annotationHit(target);
+	if (annotation) return annotation;
 	const note = target.closest<SVGTextElement>('g.wardley-notes > text');
 	if (note) return { kind: 'note', el: note, text: note.textContent ?? '' };
 	const group = target.closest('g.wardley-accelerators, g.wardley-deaccelerators');
@@ -65,6 +70,23 @@ function elementHit(model: MapModel, target: Element): Hit | null {
 	const label = target.closest<SVGTextElement>('text.wardley-node-label');
 	const offsettable = g.classList.contains('wardley-node--component') || g.classList.contains('wardley-node--pipeline-component');
 	return { kind: 'node', node, label: label && offsettable ? label : null };
+}
+
+/** Mermaid draws annotations last, so they lie on top of everything else. */
+function annotationHit(target: Element): Hit | null {
+	const circle = target.closest('g.wardley-annotation');
+	if (circle) {
+		const c = circle.querySelector('circle');
+		const number = Number(circle.textContent?.trim());
+		if (!c || !Number.isInteger(number)) return null;
+		return { kind: 'annotation', part: circle, box: false, number, origin: { x: Number(c.getAttribute('cx')), y: Number(c.getAttribute('cy')) } };
+	}
+	const box = target.closest('g.wardley-annotations-box');
+	const rect = box?.querySelector('rect');
+	if (!box || !rect) return null;
+	// Each line reads `N. text`; the rectangle around them has no number.
+	const line = /^(\d+)\./.exec(target.closest('text')?.textContent ?? '');
+	return { kind: 'annotation', part: box, box: true, number: line ? Number(line[1]) : null, origin: { x: Number(rect.getAttribute('x')), y: Number(rect.getAttribute('y')) } };
 }
 
 function trendHit(model: MapModel, p: Pt): Hit | null {

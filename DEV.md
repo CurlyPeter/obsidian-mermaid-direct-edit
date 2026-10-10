@@ -363,6 +363,39 @@ reported `inSync`. Gesture E2E 17/17 on the build (the note lookup is now shared
 
 ## Changelog
 
+- **0.17.0 (2026-10-10)** Annotations are editable. Drag a numbered circle
+  (`annotation N,[v, e]`) or the box that lists the texts (`annotations [v, e]`); double-click
+  a circle or a line in the box for a dialog to change the text or delete it (two clicks). The
+  legend adds an annotation (next number, free spot) and a box when the map has none; deleting
+  the last annotation removes the box, which would otherwise stay as an empty declaration. The
+  box is written where it is drawn, since Mermaid clamps it into the map: a declared
+  `[0.98, 0.03]` would otherwise jump on the first drag. Matched by number, not text, because
+  the number is what the reader sees and texts may repeat. Verified: 9 cases in
+  `wardley-annotations.test.ts` against the real parser (spacing, single quotes and a trailing
+  comment survive a move; a note that only looks like an annotation is untouched), a timing
+  case per new parser; E2E 23/23 with 5 new cases (circle drag, box drag, text dialog, delete
+  from a box line, legend).
+  The node dialog also sets a component's type: Default, build, buy, outsource or market,
+  i.e. the standard sourcing decorator `(build)` etc. (wardley-beta has it on top-level
+  components only, so pipeline components get no dropdown). `setMethod` existed for
+  `wardley-apply`; `getMethod` reads the current one for the dropdown. A label on an evolve
+  arrow or on inertia was asked for too and left out: wardley-beta has neither (evolve is
+  `evolve Name target`, inertia a flag), and the decision was against a plugin-only comment.
+  Verified: unit case for `getMethod` (125 tests); E2E `type_dialog` double-clicks a
+  component, picks buy (source gets `(buy)`, Mermaid draws `.wardley-buy-overlay`), then
+  Default (both gone); E2E 24/24.
+
+- **0.16.1 (2026-10-10)** Maps in a pop-out window are editable. A pop-out has a document of
+  its own, and the editor listened only on the main window's: the map rendered and was tagged
+  editable, but no press reached it. On top, every `instanceof Element` check was false there,
+  because a node in a pop-out belongs to that window's `Element` (now `isElement`, a
+  `nodeType` check). The plugin now wires each window: the main one, pop-outs open at load and
+  each `window-open`; body classes and the unload cleanup go to every window. Found presenting
+  on a second screen. The new E2E case `popout_window` drives a drag with pointer events
+  dispatched in the pop-out's own document, since CDP input (`obs dev:cdp`) reaches only the
+  main window: it failed on 0.16.0 and passes now; the node dialog opens in the pop-out.
+  E2E 18/18, 114 unit tests.
+
 - **0.16.0 (2026-10-10)** Setting "Full-width diagrams without readable line length": with
   Obsidian's readable line length off, every diagram fills the note width (requested for
   presenting on a second screen; coupled to readable line length rather than an own command,

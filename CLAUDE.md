@@ -59,7 +59,9 @@ unpermitted vault keeps showing Obsidian's guard instead of the diagram.
 
 `npm run e2e` (`scripts/e2e-wardley.py`) drives every gesture with real input through
 `obs dev:cdp` on a scratch note and checks the resulting source; run it after any change to
-the editor and on every Mermaid bump. It locates elements from the rendered SVG only.
+the editor and on every Mermaid bump. It locates elements from the rendered SVG only. CDP
+input reaches only the main window, so the pop-out case dispatches pointer events in the
+pop-out's own document instead.
 
 
 Setting "Full-width diagrams without readable line length" (default off): a body class
@@ -77,11 +79,13 @@ middle** to open its dialog (label, direction, delete), **click an evolve arrow'
 delete it (touch: long press, 550 ms), **drag an
 inertia bar** along the evolution axis, **press beside a node** (the "+" ring) to start a new link,
 **double-click / double-tap** a node to open its dialog (rename everywhere in the block,
-switch a component's inertia on or off, or delete it with its links and evolve arrow after a
+switch a component's inertia on or off, set its type (the sourcing decorator
+`(build|buy|outsource|market)` or none, via `getMethod`/`setMethod`; not offered for pipeline
+components, which have none in wardley-beta), or delete it with its links and evolve arrow after a
 confirming second click). A **legend**
 (shown only when the pointer reaches the very bottom-left or bottom-right corner, a 32 px
 zone about the size of Obsidian's edit button, in that corner; stays open while the pointer
-is on it; mobile: a tap in a corner) adds a component, anchor, note, accelerator or
+is on it; mobile: a tap in a corner) adds a component, anchor, note, annotation, accelerator or
 deaccelerator (name/text asked, placed on a free spot by `freeSpot`), or, armed, an evolve
 arrow, inertia or a pipeline component on the next component pressed.
 **Accelerators/deaccelerators** (`accelerator Name [v, e]`) drag as a whole and have a dialog
@@ -89,6 +93,9 @@ arrow, inertia or a pipeline component on the next component pressed.
 or the parent square to move the whole pipeline (parent position plus every child's
 evolution), drag a child along its evolution, its label like a component's; the parent's
 dialog has "Remove pipeline"; deleting the last child removes the block.
+**Annotations** (`annotation N,[v, e] "text"`, listed in the box `annotations [v, e]`): drag the
+numbered circle or the box; double-click a circle or a line in the box for its dialog (text,
+delete).
 
 - `wrapRender` tags every wardley SVG with `data-mp-src`, a key into a map of the exact
   source Obsidian passed to `render()`. An edit locates that source in the note; it must
@@ -106,8 +113,11 @@ dialog has "Remove pipeline"; deleting the last child removes the block.
 - Positions are projected from the declared coordinates and the two axis lines
   (`g.wardley-axes > line`), not from the drawn glyph: anchors, market nodes and pipeline
   parents have no plain circle.
-- Events are taken in the **capture phase** on `document` (else Live Preview opens the
-  source). Touch: `touch-action` is ignored inside SVG, so `touchstart` on a node is
+- Events are taken in the **capture phase** (else Live Preview opens the source) on the
+  `document` of **every window**: the main one and each pop-out, wired on load and on
+  `window-open`, since a pop-out's events never reach the main document. Never
+  `instanceof Element` on an event target: in a pop-out it is false (another window's
+  realm); use `isElement` from `wardley-map.ts`. Touch: `touch-action` is ignored inside SVG, so `touchstart` on a node is
   `preventDefault`ed (non-passive) to stop the scroll that would cancel the pointer stream.
   Double tap is detected by the plugin (400 ms); on desktop the system `dblclick` also opens
   the rename, which is what slow scripted clicks hit.
@@ -148,6 +158,13 @@ dialog has "Remove pipeline"; deleting the last child removes the block.
   too. `rename`, `setInertia(off)` and `deleteElement` keep the comment consistent.
 - **Notes** are plain `text` in `g.wardley-notes`, starting at the declared position; a drag
   rewrites `note "text" [v, e]`, matched by its exact text (must occur once).
+- **Annotations** are matched by their number (must occur once). Mermaid draws them last
+  (`g.wardley-annotations`: a `g.wardley-annotation` per circle, then `g.wardley-annotations-box`
+  with a `rect` and one `text` per line, `N. text`), so they lie on top and are classified
+  first. The box is clamped into the map by the renderer, so a drag writes the drawn corner
+  plus the offset, not the declared one. A new annotation gets the highest number plus one and,
+  when the map has no box, `annotations [0.97, 0.03]` (without a box Mermaid shows no text);
+  deleting the last one removes the box. Texts cannot hold `"` (the STRING terminal would end).
 - **Label offsets exist only for components and pipeline components** (grammar measured:
   Accelerator/Deaccelerator `name, x, y`; Anchor `name, visibility, evolution`; a note is
   its text). Names of accelerators are drawn 30 px right of / below the arrow's anchor point.
@@ -157,8 +174,8 @@ dialog has "Remove pipeline"; deleting the last child removes the block.
   link end there needs a hit within 3 px.
 - **Gesture priority** (`classify()` in `wardley-hit.ts`, shared by press, touch start and
   hover): before it, the waiting stub's free end, the legend and an armed legend action. Then
-  **elements under the pointer win over zones**: note, accelerator/deaccelerator, inertia bar,
-  node or label; then evolve tip, evolve shaft, link end, link middle; the "+" ring; a pipeline
+  **elements under the pointer win over zones**: annotation circle or box, note,
+  accelerator/deaccelerator, inertia bar, node or label; then evolve tip, evolve shaft, link end, link middle; the "+" ring; a pipeline
   box last. (Before 0.12.0 zones came first, so a click on a component lying on another's
   evolve arrow deleted that arrow.)
 - **One gesture at a time**: a press while one is active (a second finger) is ignored; clicks
@@ -191,7 +208,7 @@ dialog has "Remove pipeline"; deleting the last child removes the block.
   does not parse, a 0-100 map is written `[50.0, 70.0]`. Mermaid reads each value on its own
   (at most 1 is decimal, above 1 percent).
 - Depends on Mermaid's wardley SVG classes (`wardley-node`, `wardley-node-label`,
-  `wardley-link`, `wardley-trend`, `wardley-axes`). Re-check them on every Mermaid bump (DEV.md).
+  `wardley-link`, `wardley-trend`, `wardley-axes`, `wardley-annotation`, `wardley-annotations-box`). Re-check them on every Mermaid bump (DEV.md).
 
 ## Build and check
 

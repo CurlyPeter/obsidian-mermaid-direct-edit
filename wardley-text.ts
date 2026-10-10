@@ -457,6 +457,114 @@ export function deleteNote(source: string, text: string): string {
 	return lines.join('\n');
 }
 
+// ---- annotations ----------------------------------------------------------------------
+
+/**
+ * `annotation N,[v, e] "text"`: Mermaid draws a numbered circle at the position and lists the
+ * text in the box that `annotations [v, e]` places. Answers the number, where the position
+ * starts (`at`, the parts from `position()`) and the quoted text's span. Index scans after a
+ * fixed head, no backtracking (review F2).
+ */
+function annotationLine(l: string): { number: number; at: number; pos: string[]; text: [number, number] } | null {
+	const m = /^[ \t]*annotation[ \t]+(\d+)[ \t]*,/.exec(l);
+	if (!m) return null;
+	const at = m[0].length;
+	const pos = position(l.slice(at));
+	if (!pos || pos[5] === undefined) return null;
+	let i = at + pos[0].length;
+	while (i < l.length && isBlank(l[i])) i++;
+	const q = l[i];
+	if (q !== '"' && q !== "'") return null;
+	const close = l.indexOf(q, i + 1);
+	return close < 0 ? null : { number: Number(m[1]), at, pos, text: [i, close + 1] };
+}
+
+/** Line index of the single annotation numbered `n`. */
+function findAnnotation(lines: string[], n: number): number {
+	const hits = lines.map((l, i) => (annotationLine(l)?.number === n ? i : -1)).filter(i => i >= 0);
+	if (hits.length === 0) throw new EditError(`No annotation ${n} in this map.`);
+	if (hits.length > 1) throw new EditError(`Annotation ${n} occurs ${hits.length} times, edit it in the source.`);
+	return hits[0];
+}
+
+const ANNOTATIONS_BOX = /^[ \t]*annotations[ \t]*\[/;
+
+/** One line of annotation text: no line breaks, and no double quotes (they end the string). */
+function annotationText(text: string): string {
+	const t = text.trim().replace(/[\r\n]+/g, ' ');
+	if (!t) throw new EditError('The annotation must not be empty.');
+	if (t.includes('"')) throw new EditError('An annotation cannot contain double quotes.');
+	return t;
+}
+
+/** The text of annotation `n`, without its quotes. */
+export function getAnnotation(source: string, n: number): string {
+	const lines = source.split('\n');
+	const l = lines[findAnnotation(lines, n)];
+	const [from, to] = annotationLine(l)!.text;
+	return l.slice(from + 1, to - 1);
+}
+
+/** Moves the numbered circle of annotation `n`. */
+export function setAnnotationPosition(source: string, n: number, visibility: number, evolution: number): string {
+	const lines = source.split('\n');
+	const i = findAnnotation(lines, n);
+	const l = lines[i], { at, pos: m } = annotationLine(l)!;
+	lines[i] = l.slice(0, at) + `${m[1]}${fmt(visibility)}${m[3]},${m[4]}${fmt(evolution)}${m[6]}]` + l.slice(at + m[0].length);
+	return lines.join('\n');
+}
+
+/** Replaces the text of annotation `n`. */
+export function setAnnotationText(source: string, n: number, text: string): string {
+	const t = annotationText(text);
+	const lines = source.split('\n');
+	const i = findAnnotation(lines, n);
+	const l = lines[i], [from, to] = annotationLine(l)!.text;
+	lines[i] = `${l.slice(0, from)}"${t}"${l.slice(to)}`;
+	return lines.join('\n');
+}
+
+/** Deletes annotation `n`; with the last one goes the `annotations` box, which would list nothing. */
+export function deleteAnnotation(source: string, n: number): string {
+	const lines = source.split('\n');
+	lines.splice(findAnnotation(lines, n), 1);
+	if (!lines.some(l => annotationLine(l))) return lines.filter(l => !ANNOTATIONS_BOX.test(l)).join('\n');
+	return lines.join('\n');
+}
+
+/**
+ * Adds annotation N+1 (one above the highest number) at [visibility, evolution], after the last
+ * annotation, else at the end. Without an `annotations` box the text would not be shown, so one
+ * is added in the top left corner (Mermaid keeps the box inside the map).
+ */
+export function addAnnotation(source: string, text: string, visibility: number, evolution: number): string {
+	const t = annotationText(text);
+	const lines = source.split('\n');
+	const number = Math.max(0, ...lines.map(l => annotationLine(l)?.number ?? 0)) + 1;
+	let end = lines.length;
+	while (end > 0 && lines[end - 1].trim() === '') end--;
+	const tail = lines.splice(end);
+	if (!lines.some(l => ANNOTATIONS_BOX.test(l))) {
+		insertAfterLast(lines, 'annotations [0.97, 0.03]', l => annotationLine(l) !== null, () => false);
+	}
+	insertAfterLast(lines, `annotation ${number},[${fmt(visibility)}, ${fmt(evolution)}] "${t}"`,
+		l => annotationLine(l) !== null, l => ANNOTATIONS_BOX.test(l));
+	return [...lines, ...tail].join('\n');
+}
+
+/** Moves the box that lists the annotation texts (`annotations [v, e]`, its top left corner). */
+export function setAnnotationsBoxPosition(source: string, visibility: number, evolution: number): string {
+	const lines = source.split('\n');
+	const hits = lines.map((l, i) => (ANNOTATIONS_BOX.test(l) ? i : -1)).filter(i => i >= 0);
+	if (hits.length === 0) throw new EditError('This map has no annotations box.');
+	if (hits.length > 1) throw new EditError(`The annotations box is declared ${hits.length} times, edit it in the source.`);
+	const l = lines[hits[0]], at = l.indexOf('annotations') + 'annotations'.length;
+	const m = position(l.slice(at));
+	if (!m || m[5] === undefined) throw new EditError('The annotations box has no position.');
+	lines[hits[0]] = l.slice(0, at) + `${m[1]}${fmt(visibility)}${m[3]},${m[4]}${fmt(evolution)}${m[6]}]` + l.slice(at + m[0].length);
+	return lines.join('\n');
+}
+
 /** Sets the map's `title` line, or adds one right after `wardley-beta`; an empty title removes it. */
 export function setTitle(source: string, title: string): string {
 	const t = title.replace(/[\r\n]+/g, ' ').trim();
@@ -475,6 +583,23 @@ export function setTitle(source: string, title: string): string {
 export type Method = 'build' | 'buy' | 'outsource' | 'market';
 const LABEL_AFTER = /^[ \t]+label[ \t]*\[[^\]]*\]/;
 const METHOD_AFTER = /^([ \t]+)\((build|buy|outsource|market)\)/;
+
+/**
+ * A component's sourcing decorator, null for none. Throws for anchors and pipeline
+ * components, which have none in wardley-beta.
+ */
+export function getMethod(source: string, name: string): Method | null {
+	const lines = source.split('\n');
+	const { line, span } = findDeclaration(lines, name);
+	if (span.kind === 'anchor') throw new EditError('Anchors have no sourcing method.');
+	const text = lines[line];
+	const pos = position(text.slice(span.end));
+	if (!pos || pos[5] === undefined) throw new EditError(`"${name}" has no sourcing method in wardley-beta.`);
+	let at = span.end + pos[0].length;
+	const label = LABEL_AFTER.exec(text.slice(at));
+	if (label) at += label[0].length;
+	return (METHOD_AFTER.exec(text.slice(at))?.[2] as Method | undefined) ?? null;
+}
 
 /**
  * Sets or removes a component's sourcing decorator `(build)`, `(buy)`, `(outsource)` or
@@ -851,8 +976,8 @@ export function nextPipelineEvolution(source: string, parent: string): number {
 
 /**
  * A free place for a new element: anchors along the top, notes low on the right, everything
- * else near the middle, at least 0.08 away from every positioned element (notes and
- * (de)accelerators included).
+ * else near the middle, at least 0.08 away from every positioned element (notes,
+ * (de)accelerators and annotation circles included).
  */
 export function freeSpot(source: string, kind: 'anchor' | 'component' | 'note'): { visibility: number; evolution: number } {
 	const taken: { visibility: number; evolution: number }[] = [];
@@ -860,6 +985,8 @@ export function freeSpot(source: string, kind: 'anchor' | 'component' | 'note'):
 	for (const l of source.split('\n')) {
 		const m = /^[ \t]*(?:note|accelerator|deaccelerator)\b.*\[[ \t]*([-\d.]+)[ \t]*,[ \t]*([-\d.]+)[ \t]*\][ \t]*$/.exec(l);
 		if (m) taken.push({ visibility: Number(m[1]), evolution: Number(m[2]) });
+		const a = annotationLine(l);
+		if (a) taken.push({ visibility: Number(a.pos[2]), evolution: Number(a.pos[5]) });
 	}
 	const steps = [0, 0.1, -0.1, 0.2, -0.2, 0.3, -0.3, 0.4];
 	const base = kind === 'anchor' ? { v: 0.95, e: 0.5 } : kind === 'note' ? { v: 0.1, e: 0.8 } : { v: 0.5, e: 0.5 };

@@ -1,13 +1,17 @@
 import { App, Modal, Setting } from 'obsidian';
-import type { LinkKind } from './wardley-text';
+import type { LinkKind, Method } from './wardley-text';
 
-/** Edit an element: rename it, switch inertia (components), an extra action, or delete it. */
+/** Edit an element: rename it, switch inertia and type (components), an extra action, or delete it. */
 export interface EditOptions {
 	title: string;
 	name: string;
+	/** Label of the text field and of its button; an annotation edits its text, not a name. */
+	field?: { label: string; submit: string };
 	/** Current inertia of a component; null where the standard has none (anchors, forces). */
 	inertia: boolean | null;
 	onInertia?: (on: boolean) => void;
+	/** Current sourcing method of a component (null = default); absent where the standard has none. */
+	method?: { value: Method | null; onChange: (method: Method | null) => void };
 	onRename: (name: string) => void;
 	/** Label of the second, confirming click on Delete. */
 	deleteConfirm: string;
@@ -25,7 +29,7 @@ export class EditModal extends Modal {
 		this.setTitle(o.title);
 		let value = o.name;
 		const submit = () => { this.close(); if (value.trim() && value.trim() !== o.name) o.onRename(value); };
-		new Setting(this.contentEl).setName('Name').addText(t => {
+		new Setting(this.contentEl).setName(o.field?.label ?? 'Name').addText(t => {
 			t.setValue(o.name).onChange(v => { value = v; });
 			t.inputEl.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); submit(); } });
 			window.setTimeout(() => { t.inputEl.focus(); t.inputEl.select(); }, 0);
@@ -35,6 +39,16 @@ export class EditModal extends Modal {
 				.setName('Inertia')
 				.setDesc('Resistance to change, drawn as a bar on the evolution axis.')
 				.addToggle(t => t.setValue(o.inertia!).onChange(on => { this.close(); o.onInertia!(on); }));
+		}
+		if (o.method) {
+			const method = o.method;
+			new Setting(this.contentEl)
+				.setName('Type')
+				.setDesc('How the component is sourced, drawn as a ring around the circle.')
+				.addDropdown(d => d
+					.addOptions({ default: 'Default', build: 'Build', buy: 'Buy', outsource: 'Outsource', market: 'Market' })
+					.setValue(method.value ?? 'default')
+					.onChange(v => { this.close(); method.onChange(v === 'default' ? null : v as Method); }));
 		}
 		if (o.extra) {
 			const extra = o.extra;
@@ -48,7 +62,7 @@ export class EditModal extends Modal {
 				this.close();
 				o.onDelete();
 			}))
-			.addButton(b => b.setButtonText('Rename').setCta().onClick(submit))
+			.addButton(b => b.setButtonText(o.field?.submit ?? 'Rename').setCta().onClick(submit))
 			.addButton(b => b.setButtonText('Cancel').onClick(() => this.close()));
 	}
 

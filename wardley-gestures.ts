@@ -1,9 +1,9 @@
 import { DRAG_THRESHOLD, LONG_PRESS_MS, Pt, evolutionAt, trendTargetX, visibilityAt } from './wardley-geometry';
-import { dropTargetAt } from './wardley-hit';
+import { Hit, dropTargetAt } from './wardley-hit';
 import { MapModel, MapNode } from './wardley-map';
 import {
-	ForceKind, addLink, getPosition, relink, setEvolveTarget, setForcePosition, setInertiaPosition, setLabelOffset,
-	setNotePosition, setPosition, shiftPipeline,
+	ForceKind, addLink, getPosition, relink, setAnnotationPosition, setAnnotationsBoxPosition, setEvolveTarget, setForcePosition,
+	setInertiaPosition, setLabelOffset, setNotePosition, setPosition, shiftPipeline,
 } from './wardley-text';
 
 /** What a gesture may ask the editor to do. */
@@ -15,6 +15,7 @@ export interface GestureCtx {
 	tap(key: unknown, model: MapModel, open: () => void): void;
 	openNodeDialog(model: MapModel, node: MapNode): void;
 	openForceDialog(model: MapModel, kind: ForceKind, name: string): void;
+	openAnnotationDialog(model: MapModel, number: number): void;
 }
 
 /** One pointer interaction from press to release, owned by the editor's single `active` slot. */
@@ -163,6 +164,38 @@ export class ForceDrag extends DragGesture {
 	}
 }
 
+/**
+ * Moves an annotation's numbered circle (`annotation N,[v, e]`) or the box listing the texts
+ * (`annotations [v, e]`, its top left corner). The box is written where it is drawn: Mermaid
+ * keeps it inside the map, so the declared corner may lie outside. A double tap on a circle or
+ * on a line of the box opens that annotation's dialog.
+ */
+export class AnnotationDrag extends DragGesture {
+	constructor(model: MapModel, e: PointerEvent, ctx: GestureCtx, private hit: Extract<Hit, { kind: 'annotation' }>) {
+		super(model, e, ctx);
+	}
+
+	protected drag(d: Pt) {
+		translate(this.hit.part, d);
+	}
+
+	protected drop(d: Pt) {
+		const { box, number, origin } = this.hit;
+		const v = visibilityAt(this.box, origin.y + d.y), ev = evolutionAt(this.box, origin.x + d.x);
+		if (box) void this.ctx.apply(this.model, src => setAnnotationsBoxPosition(src, v, ev));
+		else if (number !== null) void this.ctx.apply(this.model, src => setAnnotationPosition(src, number, v, ev));
+	}
+
+	protected tap() {
+		const n = this.hit.number;
+		if (n !== null) this.ctx.tap(`annotation:${n}`, this.model, () => this.ctx.openAnnotationDialog(this.model, n));
+	}
+
+	protected restore() {
+		this.hit.part.removeAttribute('transform');
+	}
+}
+
 /** Moves an inertia bar along its component's evolution axis (plugin extension `%% mp-inertia`). */
 export class InertiaDrag extends DragGesture {
 	private readonly x: number;
@@ -290,7 +323,7 @@ export class Stub {
 	static draw(model: MapModel, node: MapNode, toward: Pt, length: number): Stub {
 		const dx = toward.x - node.center.x, dy = toward.y - node.center.y;
 		const len = Math.hypot(dx, dy) || 1;
-		const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+		const line = model.svg.ownerDocument.createElementNS('http://www.w3.org/2000/svg', 'line');
 		line.setAttribute('class', 'mp-new-link');
 		line.setAttribute('x1', String(node.center.x));
 		line.setAttribute('y1', String(node.center.y));

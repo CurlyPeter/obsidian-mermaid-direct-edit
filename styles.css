@@ -100,7 +100,9 @@ body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-node line.wardley-inert
 }
 body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-accelerators > *,
 body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-deaccelerators > *,
-body.mp-wardley-edit .mermaid svg[data-mp-src] rect.wardley-pipeline-box {
+body.mp-wardley-edit .mermaid svg[data-mp-src] rect.wardley-pipeline-box,
+body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-annotation,
+body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-annotations-box {
 	cursor: grab;
 }
 /* The box has no fill, so only its outline would take the pointer; the whole box moves it. */

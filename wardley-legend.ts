@@ -1,6 +1,7 @@
 import { legendSide } from './wardley-geometry';
+import { isElement } from './wardley-map';
 
-export type LegendKind = 'component' | 'anchor' | 'evolve' | 'inertia' | 'note' | 'accelerator' | 'deaccelerator' | 'pipeline';
+export type LegendKind = 'component' | 'anchor' | 'evolve' | 'inertia' | 'note' | 'annotation' | 'accelerator' | 'deaccelerator' | 'pipeline';
 
 /** Icons are fixed markup written here, never built from map text. */
 const ITEMS: [LegendKind, string, string][] = [
@@ -9,6 +10,7 @@ const ITEMS: [LegendKind, string, string][] = [
 	['evolve', 'Evolve', "<line x1='2' y1='8' x2='19' y2='8' stroke='#e45' stroke-dasharray='3 2'/><path d='M18 5l4 3-4 3z' fill='#e45'/>"],
 	['inertia', 'Inertia', "<line x1='12' y1='2' x2='12' y2='14' stroke='currentColor' stroke-width='4'/>"],
 	['note', 'Note', "<text x='12' y='12' text-anchor='middle' font-size='10' font-weight='bold' fill='currentColor'>Aa</text>"],
+	['annotation', 'Annotation', "<circle cx='12' cy='8' r='6.5' fill='white' stroke='currentColor' stroke-width='1.2'/><text x='12' y='11' text-anchor='middle' font-size='8' font-weight='bold' fill='#222'>1</text>"],
 	['accelerator', 'Accelerator', "<path d='M3 5h11V2l7 6-7 6v-3H3z' fill='white' stroke='currentColor'/>"],
 	['deaccelerator', 'Deaccelerator', "<path d='M21 5H10V2L3 8l7 6v-3h11z' fill='white' stroke='currentColor'/>"],
 	['pipeline', 'Pipeline', "<rect x='2' y='4' width='20' height='8' rx='2' fill='none' stroke='currentColor'/><circle cx='7' cy='8' r='2' fill='white' stroke='currentColor'/><circle cx='17' cy='8' r='2' fill='white' stroke='currentColor'/>"],
@@ -24,12 +26,12 @@ export class Legend {
 
 	/** The legend item under the target, if any. */
 	static itemAt(target: EventTarget | null): LegendKind | null {
-		if (!(target instanceof Element)) return null;
+		if (!isElement(target)) return null;
 		return (target.closest('.mp-wardley-legend [data-mp-add]')?.getAttribute('data-mp-add') as LegendKind | null) ?? null;
 	}
 
 	static contains(target: EventTarget | null): boolean {
-		return target instanceof Element && !!target.closest('.mp-wardley-legend');
+		return isElement(target) && !!target.closest('.mp-wardley-legend');
 	}
 
 	/** Shows the legend of `box` (the map's `.mermaid` container) in the corner the pointer is in, hides any other. */
@@ -62,10 +64,12 @@ export class Legend {
 		return legend;
 	}
 
-	/** Removes every legend the plugin added (unload). */
-	destroy() {
-		document.querySelectorAll('.mp-wardley-legend').forEach(el => el.remove());
-		document.querySelectorAll('.mp-wardley-host').forEach(el => el.removeClass('mp-wardley-host'));
+	/** Removes every legend the plugin added (unload), in each of `docs` (the app's windows). */
+	destroy(docs: Iterable<Document>) {
+		for (const doc of docs) {
+			doc.querySelectorAll('.mp-wardley-legend').forEach(el => el.remove());
+			doc.querySelectorAll('.mp-wardley-host').forEach(el => el.removeClass('mp-wardley-host'));
+		}
 		this.shown = null;
 	}
 }

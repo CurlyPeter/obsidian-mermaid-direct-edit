@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { parse } from '@mermaid-js/parser';
 import { CliError } from './cli';
 import { applyModel, readModel } from './wardley-model';
-import { isWardley, mermaidBlocks, setMethod, setTitle } from './wardley-text';
+import { getMethod, isWardley, mermaidBlocks, setMethod, setTitle } from './wardley-text';
 
 const TEA = `wardley-beta
 title Tea Shop
@@ -304,5 +304,14 @@ describe('text helpers used by the model', () => {
 		expect(setMethod(src, 'A', null)).toBe('wardley-beta\ncomponent A [0.4, 0.4] label [5, 5] (inertia)');
 		expect(setMethod('wardley-beta\ncomponent A [0.4, 0.4] (inertia)', 'A', 'buy')).toBe('wardley-beta\ncomponent A [0.4, 0.4] (buy) (inertia)');
 		for (const out of [setMethod(src, 'A', 'market'), setMethod(src, 'A', null)]) await parse('wardley', out);
+	});
+	it('reads the sourcing method the dialog shows', () => {
+		expect(getMethod('wardley-beta\ncomponent A [0.4, 0.4] label [5, 5] (outsource) (inertia)', 'A')).toBe('outsource');
+		expect(getMethod('wardley-beta\ncomponent A [0.4, 0.4] (inertia)', 'A')).toBeNull();
+		expect(getMethod('wardley-beta\ncomponent "B c" [0.4, 0.4] (market)', 'B c')).toBe('market');
+		const pipe = 'wardley-beta\ncomponent P [0.4, 0.4]\npipeline P {\n  component Q [0.3]\n}';
+		expect(getMethod(pipe, 'P')).toBeNull();
+		expect(() => getMethod(pipe, 'Q')).toThrow(/no sourcing method/);
+		expect(() => getMethod('wardley-beta\nanchor U [0.9, 0.5]', 'U')).toThrow(/Anchors/);
 	});
 });

@@ -19,12 +19,14 @@ The first version covers **Wardley maps** (`wardley-beta`). More diagram types a
 | Drag the tip of a red evolve arrow | `evolve Name 0.62` |
 | Drag the inertia bar along the evolve arrow | a plugin comment `%% mp-inertia Name 0.66` (see below) |
 | Drag a pipeline box | the pipeline and its components move together |
+| Drag an annotation's numbered circle, or the box listing the annotations | `annotation 1,[v, e] "…"`, or `annotations [v, e]` |
 | Grab a link's end and drop it on another element | `A -> B` becomes `A -> C` |
 | Click next to an element (a "+" appears), drag to another one | a new link `A -> B` |
 | Click the middle of a link | a dialog: label, direction (line, dashed, arrow either way or both), delete |
 | Click a red evolve arrow's shaft (long press on touch) | the evolve arrow is deleted |
-| Double-click (double-tap) an element | a dialog: rename everywhere, toggle inertia, delete |
-| Hover a bottom corner of the map | a legend to add a component, anchor, note, evolve arrow, inertia, accelerator, deaccelerator or pipeline |
+| Double-click (double-tap) an element | a dialog: rename everywhere, toggle inertia, set the type (`(build)`, `(buy)`, `(outsource)`, `(market)` or none), delete |
+| Double-click an annotation's circle or its line in the box | a dialog: edit the text, delete (the box goes with the last one) |
+| Hover a bottom corner of the map | a legend to add a component, anchor, note, annotation, evolve arrow, inertia, accelerator, deaccelerator or pipeline |
 
 Every edit is checked with Mermaid's own parser before it is written; an edit that would break the diagram is refused with a notice. In live preview an edit can be undone with Cmd/Ctrl+Z. It works with mouse and touch, on desktop and mobile.
 
