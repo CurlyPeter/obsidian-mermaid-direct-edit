@@ -1,0 +1,8 @@
+node_modules/
+data.json
+__pycache__/
+*.pyc
+.DS_Store
+
+# main.js is deliberately NOT ignored: it is the shipped artefact and carries the pinned
+# Mermaid bundle, so a clone or pull installs a working build. Releases attach it too.

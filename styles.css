@@ -1,0 +1,96 @@
+/* mermaid-direct-edit */
+
+/* A diagram is not text to edit: show the arrow, not the I-beam the browser picks over SVG text. */
+.mermaid svg {
+	cursor: default;
+}
+
+/* Affordances for editable wardley-beta maps (setting "Edit Wardley maps"). */
+body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-node {
+	cursor: grab;
+}
+body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-node.mp-dragging {
+	cursor: grabbing;
+	opacity: 0.7;
+}
+body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-node--component text.wardley-node-label,
+body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-node--pipeline-component text.wardley-node-label {
+	cursor: move;
+}
+body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-node.mp-drop-target {
+	filter: drop-shadow(0 0 4px var(--interactive-accent));
+}
+/* Provisional link from a click beside a node; written only once dropped on another node. */
+.mermaid svg[data-mp-src] line.mp-new-link {
+	stroke: var(--interactive-accent);
+	stroke-width: 2;
+	stroke-dasharray: 5 3;
+}
+
+/* Legend: add elements to the map. Shown only while the pointer is in a bottom corner zone
+   of the map (desktop: hover, mobile: a tap), in that corner. Never printed (PDF export). */
+.mermaid.mp-wardley-host {
+	position: relative;
+}
+.mp-wardley-legend {
+	position: absolute;
+	bottom: 8px;
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: 4px 6px;
+	font-size: var(--font-ui-smaller);
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	box-shadow: var(--shadow-s);
+	opacity: 0;
+	pointer-events: none;
+	transition: opacity 120ms;
+}
+.mp-wardley-legend.is-left {
+	left: 8px;
+}
+.mp-wardley-legend.is-right {
+	right: 8px;
+}
+.mp-wardley-legend.is-visible {
+	opacity: 1;
+	pointer-events: auto;
+}
+.mp-wardley-legend-item {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	padding: 1px 4px;
+	border-radius: var(--radius-s);
+	cursor: copy;
+	color: var(--text-normal);
+}
+.mp-wardley-legend-item:hover,
+.mp-wardley-legend-item.is-armed {
+	background: var(--background-modifier-hover);
+}
+.mp-wardley-legend-item.is-armed {
+	outline: 1px solid var(--interactive-accent);
+}
+@media print {
+	.mp-wardley-legend {
+		display: none;
+	}
+}
+body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-notes > text {
+	cursor: grab;
+}
+body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-node line.wardley-inertia {
+	cursor: ew-resize;
+}
+body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-accelerators > *,
+body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-deaccelerators > *,
+body.mp-wardley-edit .mermaid svg[data-mp-src] rect.wardley-pipeline-box {
+	cursor: grab;
+}
+/* The box has no fill, so only its outline would take the pointer; the whole box moves it. */
+body.mp-wardley-edit .mermaid svg[data-mp-src] rect.wardley-pipeline-box {
+	pointer-events: all;
+}

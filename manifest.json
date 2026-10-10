@@ -1,0 +1,10 @@
+{
+	"id": "mermaid-direct-edit",
+	"name": "Mermaid Direct Edit",
+	"version": "0.14.0",
+	"minAppVersion": "1.4.0",
+	"description": "Edit Mermaid diagrams directly in the rendered drawing, the code block stays the source. Starts with Wardley maps; renders with a current Mermaid.",
+	"author": "Peter Beck",
+	"isDesktopOnly": false,
+	"authorUrl": "https://github.com/CurlyPeter"
+}

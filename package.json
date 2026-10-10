@@ -1,0 +1,29 @@
+{
+  "name": "mermaid-direct-edit",
+  "version": "0.14.0",
+  "description": "Edit Mermaid diagrams directly in Obsidian; renders with a pinned, current Mermaid",
+  "main": "main.js",
+  "private": true,
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+    "postbuild": "obs plugin:reload id=mermaid-direct-edit >/dev/null 2>&1 && echo 'mermaid-direct-edit reloaded' || echo 'Note: plugin not reloaded (needs Obsidian running and the obs CLI wrapper; reload it by hand)'",
+    "test": "vitest run",
+    "e2e": "python3 -I scripts/e2e-wardley.py"
+  },
+  "author": "Peter Beck",
+  "license": "MIT",
+  "dependencies": {
+    "mermaid": "12.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "builtin-modules": "3.3.0",
+    "esbuild": "0.28.2",
+    "obsidian": "1.14.4",
+    "tslib": "2.4.0",
+    "typescript": "5.9.3",
+    "vite": "8.3.4",
+    "vitest": "5.0.3"
+  }
+}
