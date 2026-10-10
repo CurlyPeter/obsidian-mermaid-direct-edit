@@ -388,6 +388,11 @@ def case_legend_corner():
     item = locate(i=['legend-item', 'note'])['i']
     if not item:
         return False, 'legend not shown'
+    # Every icon keeps its 24x16, also with full-width diagrams on (0.17.1: they were stretched).
+    icons = js("JSON.stringify([...new Set([...app.workspace.activeLeaf.view.contentEl.querySelectorAll('.mp-wardley-legend svg')]"
+               ".map(s=>{const r=s.getBoundingClientRect(); return Math.round(r.width)+'x'+Math.round(r.height)}))])")
+    if icons != '["24x16"]':
+        return False, f'legend icons {icons}'
     click(*item); wait(0.5)
     title = modal_title()
     cdp('Input.insertText', {'text': 'Added note'})

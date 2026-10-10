@@ -363,6 +363,14 @@ reported `inSync`. Gesture E2E 17/17 on the build (the note lookup is now shared
 
 ## Changelog
 
+- **0.17.1 (2026-10-11)** With full-width diagrams on (readable line length off), the
+  legend's icons were stretched: the full-width rule matched every `svg` inside `.mermaid`,
+  and the legend's icons sit there too, so each grew to its row's width (measured 24x16 up
+  to 76x51). The rule now takes only the diagram, `.mermaid > svg`. Verified: icons 24x16
+  each again, the map still fills the pane in live preview and reading view
+  (`max-width: none`, svg width = container width); E2E `legend_corner` now also checks the
+  icon size; E2E 24/24.
+
 - **0.17.0 (2026-10-10)** Annotations are editable. Drag a numbered circle
   (`annotation N,[v, e]`) or the box that lists the texts (`annotations [v, e]`); double-click
   a circle or a line in the box for a dialog to change the text or delete it (two clicks). The
