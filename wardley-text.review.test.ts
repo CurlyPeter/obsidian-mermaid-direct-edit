@@ -6,8 +6,10 @@ import { describe, expect, it } from 'vitest';
 import { parse } from '@mermaid-js/parser';
 import {
 	addElement, addEvolve, addToPipeline, deleteElement, deletePipeline, defaultEvolveTarget, formatName, freeSpot,
-	getLink, locateBlock, nextPipelineEvolution, pipelineParents, rename, setLink, usesPercentScale,
+	getLink, getMethod, hasInertia, type Method, nextPipelineEvolution, pipelineParents, rename, setInertia, setLink, setMethod,
+	usesPercentScale,
 } from './wardley-text';
+import { locateBlock } from './blocks';
 
 const parses = async (src: string) => {
 	try { await parse('wardley', src + '\n'); return true; } catch { return false; }
@@ -89,5 +91,31 @@ describe('helpers moved out of the editor', () => {
 		const s = freeSpot(src, 'component');
 		for (const [v, e] of [[0.5, 0.5], [0.5, 0.6], [0.5, 0.4]]) expect(Math.hypot(s.visibility - v, s.evolution - e)).toBeGreaterThanOrEqual(0.08);
 		expect(freeSpot(src, 'anchor').visibility).toBe(0.95);
+	});
+});
+
+describe('the element dialog saves everything in one edit (0.18.0)', () => {
+	const methods: (Method | null)[] = [null, 'build', 'buy', 'outsource', 'market'];
+	const starts = [
+		'component Kettle [0.40, 0.35]',
+		'component Kettle [0.40, 0.35] label [-20, 10]',
+		'component Kettle [0.40, 0.35] (build) (inertia)',
+		'component Kettle [0.40, 0.35] label [5, 5] (market)',
+	];
+	it.each(starts)('inertia, type and rename together on %j parse and read back', async start => {
+		for (const inertia of [false, true]) {
+			for (const method of methods) {
+				for (const newName of [null, 'Electric kettle']) {
+					let s = `wardley-beta\n${start}\nanchor Tea [0.95, 0.50]\nTea -> Kettle\nevolve Kettle 0.60`;
+					// As the dialog does: only what changed, the rename last.
+					if (hasInertia(s, 'Kettle') !== inertia) s = setInertia(s, 'Kettle', inertia);
+					if (getMethod(s, 'Kettle') !== method) s = setMethod(s, 'Kettle', method);
+					if (newName) s = rename(s, 'Kettle', newName);
+					const name = newName ?? 'Kettle';
+					expect([start, inertia, method, newName, await parses(s)]).toEqual([start, inertia, method, newName, true]);
+					expect([start, inertia, method, hasInertia(s, name), getMethod(s, name)]).toEqual([start, inertia, method, inertia, method]);
+				}
+			}
+		}
 	});
 });

@@ -1,7 +1,7 @@
 {
   "name": "mermaid-direct-edit",
-  "version": "0.17.1",
-  "description": "Edit Mermaid diagrams directly in Obsidian; renders with a pinned, current Mermaid",
+  "version": "0.18.0",
+  "description": "Edit Mermaid diagrams (Wardley maps, flowcharts) directly in the rendered drawing in Obsidian; renders with a pinned, current Mermaid",
   "main": "main.js",
   "private": true,
   "scripts": {
@@ -9,7 +9,7 @@
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
     "postbuild": "obs plugin:reload id=mermaid-direct-edit >/dev/null 2>&1 && echo 'mermaid-direct-edit reloaded' || echo 'Note: plugin not reloaded (needs Obsidian running and the obs CLI wrapper; reload it by hand)'",
     "test": "vitest run",
-    "e2e": "python3 -I scripts/e2e-wardley.py"
+    "e2e": "python3 -I scripts/e2e-wardley.py && python3 -I scripts/e2e-flowchart.py"
   },
   "author": "Peter Beck",
   "license": "MIT",
@@ -21,6 +21,7 @@
     "@types/node": "24.19.2",
     "builtin-modules": "3.3.0",
     "esbuild": "0.28.2",
+    "happy-dom": "20.14.6",
     "obsidian": "1.14.4",
     "tslib": "2.4.0",
     "typescript": "5.9.3",

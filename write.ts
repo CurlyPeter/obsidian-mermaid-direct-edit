@@ -1,5 +1,5 @@
 import { App, MarkdownView } from 'obsidian';
-import { locateBlock } from './wardley-text';
+import { fenceBreak, locateBlock } from './blocks';
 
 /** The Markdown view whose content shows `el`. */
 export function viewOf(app: App, el: Element): MarkdownView | null {
@@ -28,6 +28,8 @@ export async function writeBlock(app: App, view: MarkdownView, src: string, next
 		await app.vault.process(view.file!, text => {
 			const at = locateBlock(text, src);
 			if (typeof at === 'string') { refused = at; return text; }
+			const broken = fenceBreak(text, at, next);
+			if (broken) { refused = broken; return text; }
 			return text.slice(0, at) + next + text.slice(at + src.length);
 		});
 		return refused;
@@ -36,6 +38,8 @@ export async function writeBlock(app: App, view: MarkdownView, src: string, next
 	const text = editor.getValue();
 	const at = locateBlock(text, src);
 	if (typeof at === 'string') return at;
+	const broken = fenceBreak(text, at, next);
+	if (broken) return broken;
 	const cm = (editor as unknown as { cm?: { dispatch: (tr: object) => void; scrollDOM?: HTMLElement } }).cm;
 	if (!cm) {
 		editor.replaceRange(next, editor.offsetToPos(at), editor.offsetToPos(at + src.length));

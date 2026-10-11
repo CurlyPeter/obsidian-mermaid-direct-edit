@@ -1,8 +1,12 @@
 import { App, Plugin, PluginSettingTab, Setting } from 'obsidian';
 import type { Mermaid, MermaidConfig } from 'mermaid';
 import { registerCliCommands } from './cli';
+import { DiagramEditor } from './editor';
+import { FlowchartEditor, flowchartRender } from './flowchart-editor';
+import { SourceRegistry, wrapRender } from './render';
 import { WardleyEditor } from './wardley-editor';
 import { wardleyCliSpecs } from './wardley-cli';
+import { wardleyRender } from './wardley-render';
 
 declare const __MERMAID_VERSION__: string;
 declare const require: (id: string) => any;
@@ -43,11 +47,13 @@ type State = 'waiting' | 'active' | 'failed';
 interface Settings {
 	/** Drag and rename anchors and components in rendered wardley-beta maps. */
 	editWardley: boolean;
+	/** Edit rendered flowcharts: dialogs, connecting, re-linking, groups. */
+	editFlowchart: boolean;
 	/** Diagrams fill the note width while Obsidian's "Readable line length" is off. */
 	fullWidth: boolean;
 }
 
-const DEFAULT_SETTINGS: Settings = { editWardley: true, fullWidth: false };
+const DEFAULT_SETTINGS: Settings = { editWardley: true, editFlowchart: true, fullWidth: false };
 
 /**
  * Swaps the Mermaid that Obsidian renders with, without patching Obsidian.
@@ -70,7 +76,12 @@ export default class MermaidDirectEditPlugin extends Plugin {
 	settings: Settings = { ...DEFAULT_SETTINGS };
 	/** The documents of the app's windows the editor is wired into (main window and pop-outs). */
 	private readonly docs = new Set<Document>();
-	private wardley = new WardleyEditor(this.app, () => this.pinned, () => this.settings.editWardley);
+	/** Sources of the editable diagrams on screen, shared by every editor. */
+	private readonly registry = new SourceRegistry();
+	private readonly wardley = new WardleyEditor(this.app, this.registry, () => this.pinned, () => this.settings.editWardley);
+	private readonly flowchart = new FlowchartEditor(this.app, this.registry, () => this.pinned, () => this.settings.editFlowchart);
+	/** One editor per diagram type; each handles only the diagrams tagged with its kind. */
+	private readonly editors: DiagramEditor<any>[] = [this.wardley, this.flowchart];
 
 	async onload() {
 		registerCliCommands(this, [{
@@ -118,20 +129,29 @@ export default class MermaidDirectEditPlugin extends Plugin {
 		this.applyEditClass();
 		// Capture phase: Live Preview would otherwise take the gesture and open the source.
 		const opts = { capture: true };
-		this.registerDomEvent(doc, 'pointerdown', this.wardley.onPointerDown, opts);
-		this.registerDomEvent(doc, 'pointermove', this.wardley.onPointerMove, opts);
-		this.registerDomEvent(doc, 'pointerup', this.wardley.onPointerUp, opts);
-		this.registerDomEvent(doc, 'pointercancel', this.wardley.onPointerCancel, opts);
-		for (const type of ['mousedown', 'mouseup', 'click'] as const) {
-			this.registerDomEvent(doc, type, this.wardley.onSwallow, opts);
+		for (const ed of this.editors) {
+			this.registerDomEvent(doc, 'pointerdown', ed.onPointerDown, opts);
+			this.registerDomEvent(doc, 'pointermove', ed.onPointerMove, opts);
+			this.registerDomEvent(doc, 'pointerup', ed.onPointerUp, opts);
+			this.registerDomEvent(doc, 'pointercancel', ed.onPointerCancel, opts);
+			for (const type of ['mousedown', 'mouseup', 'click'] as const) {
+				this.registerDomEvent(doc, type, ed.onSwallow, opts);
+			}
+			this.registerDomEvent(doc, 'dblclick', ed.onDblClick, opts);
+			this.registerDomEvent(doc, 'contextmenu', ed.onContextMenu, opts);
+			this.registerDomEvent(doc, 'touchstart', ed.onTouchStart, { capture: true, passive: false });
+			this.registerDomEvent(doc, 'keydown', ed.onKeyDown);
 		}
-		this.registerDomEvent(doc, 'dblclick', this.wardley.onDblClick, opts);
-		this.registerDomEvent(doc, 'touchstart', this.wardley.onTouchStart, { capture: true, passive: false });
-		this.registerDomEvent(doc, 'keydown', this.wardley.onKeyDown);
 	}
 
 	async setEditWardley(on: boolean) {
 		this.settings.editWardley = on;
+		this.applyEditClass();
+		await this.saveData(this.settings);
+	}
+
+	async setEditFlowchart(on: boolean) {
+		this.settings.editFlowchart = on;
 		this.applyEditClass();
 		await this.saveData(this.settings);
 	}
@@ -146,12 +166,13 @@ export default class MermaidDirectEditPlugin extends Plugin {
 	private applyEditClass() {
 		for (const doc of this.docs) {
 			doc.body.toggleClass('mp-wardley-edit', this.settings.editWardley);
+			doc.body.toggleClass('mp-flowchart-edit', this.settings.editFlowchart);
 			doc.body.toggleClass('mde-full-width', this.settings.fullWidth);
 		}
 	}
 
 	onunload() {
-		this.wardley.destroy(this.docs);
+		for (const ed of this.editors) ed.destroy(this.docs);
 		const w = window as any;
 		delete w.mermaid;
 		if (this.obsidianMermaid) {
@@ -162,6 +183,7 @@ export default class MermaidDirectEditPlugin extends Plugin {
 		// Never loaded: leave it undefined, Obsidian's loader assigns and initializes it.
 		for (const doc of this.docs) {
 			doc.body.removeClass('mp-wardley-edit');
+			doc.body.removeClass('mp-flowchart-edit');
 			doc.body.removeClass('mde-full-width');
 		}
 		this.docs.clear();
@@ -193,7 +215,7 @@ export default class MermaidDirectEditPlugin extends Plugin {
 		const m: Mermaid = require('mermaid').default;
 		const initialize = m.initialize.bind(m);
 		m.initialize = (config: MermaidConfig) => initialize({ ...config, ...CLASSIC });
-		this.wardley.wrapRender(m);
+		wrapRender(m, this.registry, [wardleyRender, flowchartRender]);
 		return m;
 	}
 
@@ -209,6 +231,7 @@ export default class MermaidDirectEditPlugin extends Plugin {
 			obsidianMermaidLoaded: !!this.obsidianMermaid,
 			obsidianLoadedFirst: this.obsidianLoadedFirst,
 			editWardley: this.settings.editWardley,
+			editFlowchart: this.settings.editFlowchart,
 			fullWidth: this.settings.fullWidth,
 			rendering: this.state === 'active' ? `pinned ${PINNED_VERSION}` : this.obsidianMermaid ? 'obsidian' : 'none yet',
 			error: this.error,
@@ -237,6 +260,10 @@ class MermaidDirectEditSettingTab extends PluginSettingTab {
 			.setName('Edit Wardley maps')
 			.setDesc('Drag elements, labels, arrow tips and link ends; double-click (double-tap) an element for its dialog; the legend in a bottom corner of a map adds elements. Changes go into the code block and can be undone.')
 			.addToggle(t => t.setValue(this.plugin.settings.editWardley).onChange(v => this.plugin.setEditWardley(v)));
+		new Setting(containerEl)
+			.setName('Edit flowcharts')
+			.setDesc('Double-click (double-tap) a node or a group\'s title, or click (tap) a link, for its dialog; right-click for a menu. Drag from the + beside a node to link it (into free space: a new node); drag a link\'s end onto another node; drag a node onto a group to move it there. The legend in a bottom corner adds nodes and groups and sets the direction. On a phone, swipes always scroll: edit with taps. Changes go into the code block and can be undone.')
+			.addToggle(t => t.setValue(this.plugin.settings.editFlowchart).onChange(v => this.plugin.setEditFlowchart(v)));
 		new Setting(containerEl)
 			.setName('Full-width diagrams without readable line length')
 			.setDesc('While Obsidian\'s "Readable line length" is off, every diagram fills the width of the note, small ones included (for presenting, e.g. on a second screen). With it on, diagrams keep their usual size. Switch with the command "Toggle readable line length"; a hotkey for it can be set under Settings → Hotkeys.')

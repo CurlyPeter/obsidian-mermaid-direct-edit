@@ -361,7 +361,127 @@ on a scratch note moved two elements, `diff` showed exactly those two lines, a s
 reported `inSync`. Gesture E2E 17/17 on the build (the note lookup is now shared with the editor),
 110 unit tests and strict `tsc` green.
 
+## Flowcharts and the shared editor core (0.18.0, 2026-10-11)
+
+Request: after Wardley maps, the standard flowchart, edited the same way; as much of the Wardley
+editor reused as possible; and the same "drag a new link into free space creates an element"
+gesture for Wardley components. Measured on Mermaid 12.1 before deciding:
+
+- A flowchart has no coordinates (dagre lays it out on every render), so "move a node to a spot"
+  does not exist; Mermaid's flowchart parser is the old JISON one and reports no positions in the
+  text; the drawing names every node, edge and group by its id (`…-flowchart-<id>-<n>`,
+  `data-id`, `…-<subgraph id>`).
+- The syntax is richer than wardley-beta: chains, `&` groups, two label forms, 14 bracket shapes
+  plus `@{ shape: … }`, `linkStyle` by edge number, `;` separators.
+
+Decisions (the maintainer agreed the plan; two choices were theirs):
+
+- **A1 Text stays the single source.** No layout is stored and no plugin comment is written: in a
+  flowchart dragging connects, re-links or moves a node into a group.
+- **A2 Identity from the drawing, places from an own scanner, both checked against each other.**
+  `flowchart-scan.ts` follows the 12.1 lexer for what the editor needs and predicts Mermaid's
+  edge ids; `FlowModel` requires drawing and scan to agree exactly, else the diagram is not
+  edited. *Rejected:* a full own parser (too big to keep right), a second Mermaid parse per
+  render (async, and still no positions).
+- **A3 Smallest possible edit**, statement rewrites only to split a chain or `&` group, edge
+  order kept, `linkStyle` carried along (details in CLAUDE.md).
+- **A4 A shared editor core and one module set per diagram type.** Moved out of the `wardley-*`
+  files: block location, geometry, render tagging, gestures, the editor's event handling, legend,
+  dialogs, writing. The Wardley suite proved the refactor (24/24 before, 25/25 after with the new
+  gesture).
+- **A5 Tests against Mermaid's real flowchart parser**, run in vitest with `happy-dom` as the DOM
+  its sanitizer needs (dev dependency only, not bundled).
+- **A6 New node ids from the label** (`Check stock` → `CheckStock`).
+- **Maintainer: a new link dropped into free space creates a linked element**, in flowcharts
+  (`A --> NewNode[Label]`, inside A's group) and in Wardley maps (`component Name [v, e]` at the
+  drop point plus `A -> Name`); a tap in the ring still leaves a waiting stub.
+- **Maintainer: scope P1 (node and edge dialogs, connect, re-link, legend, direction) + P2
+  (groups, colours)** in this round; an agent CLI for flowcharts and further diagram types later.
+
+Found while building:
+
+- **The lexer takes the longest token** (`A&B` is one node id, only `A & B` is a group), and a
+  line containing `direction LR` anywhere is read as a direction statement: the scan-vs-drawing
+  check catches such a diagram (E2E `not_editable`).
+- **Quadratic inline labels:** looking for the closing arrow at every position of a blank run
+  took 89 ms on a crafted 61 KB source; skipping the run once brought it under 20 ms (timing test
+  fails on the old code).
+- **The legend ran out of short diagrams:** a single column of 11 items over a 115 px high
+  flowchart put its upper items under the text above, unclickable. It now uses as many rows as
+  the diagram's height allows and more columns, sits on the popover layer, and closes once an
+  entry is chosen (an armed "Group" otherwise covered the node to be clicked next). This changes
+  the Wardley legend too.
+- **A group's title lies within the "+" ring of its first node:** titles are elements under the
+  pointer and now win over zones, as in Wardley.
+- **Obsidian 1.14 adds a hidden `select.is-measuring` after each dropdown;** test code must skip it.
+
+Reviews (fresh agents, read-only; findings verified against Mermaid's parser where possible):
+
+- **Code review: 12 findings, all fixed or answered.** The two high ones: a re-link inside a group
+  could pull the new end node into that group (28 of 192 possible re-links on the demo), and
+  changing only the words of an inline label could run them into the arrow (`--offer -->` reads
+  as a circle end). Medium: a label containing `direction LR` made Mermaid drop its line; moving a
+  node between groups could change which definition of another node wins; retitling a group with
+  a generated id could swallow a node of the new name; touch swipes could edit. Low: insertions
+  after the rest of a line landed in a group; ungroup could hand a node to a sibling group;
+  `e1@{ … }` edge metadata blocked editing; a drop back on the stub's own node opened the name
+  dialog; the setting text said double-click a link. Its main advice, taken: **a run-time guard**
+  (`flowchart-meaning.ts`) that compares the meaning before and after every edit, so a gap
+  becomes a refusal. It caught a scanner gap (quoted ellipse labels) on its first run. New tests:
+  a re-link sweep (974 re-links across the test diagrams, all correct, none refused), inline
+  labels without blanks, direction text, nodes with several definitions.
+- **Usability review: 17 findings (4 must-fix), all taken except two left for later.** Must-fix:
+  touch swipes could edit, reading view and phones had no undo, a click near a link's end did
+  nothing, leaving a group by drag gave no warning. Also: the "+" was invisible, the waiting stub
+  looked like a dotted link, new nodes appeared far away unannounced, no right-click route,
+  "Reverse"/"Ungroup" dropped typed changes, a group's direction is ignored by Mermaid when its
+  nodes link outside, legend icons lost their outline on a dark theme, wording ("Edge" vs "Link",
+  "Colour", "ranks"). The Wardley element dialog was moved to the flowchart's Save model in the
+  same release (maintainer's go, 11.10.): switching inertia or type no longer writes at once and
+  closes the dialog, which had dropped a name typed before (E2E `dialog_saves_all` fails on the
+  old dialog; 80 combinations of inertia, type and rename parse and read back, unit test).
+  **Left for later:** the legend stays in the bottom corners (a tall flowchart at full width
+  needs a scroll to reach it; the right-click menu is the other route).
+
+- **Security review: accept with fixes, both fixed before release.** No XSS (note text reaches the
+  DOM only through text-only calls; `innerHTML` holds fixed icons), the sanitized SVG is never
+  re-serialized, no Node APIs, `happy-dom` (with provenance, 176/176 signatures verified) is not
+  in `main.js`. Findings: **Ungroup could end the code block early** (it dedented continuation
+  lines of a multi-line directive, so an indented fence reached column 0 and what followed became
+  live Markdown) → Ungroup now dedents only statement starts, and every write and undo of both
+  editors refuses text with a line Markdown reads as the block's closing fence (`fenceBreak`,
+  CommonMark's rule: up to three spaces); **slow scans on crafted text** (`&` groups multiplied to
+  ~1M edges, quadratic link-id and dotted-label lookups, a rescan per node in the link dialog) →
+  edges capped at Mermaid's 500, linear lookups, scans cached per text. Its directive input took
+  our scanner 3-8 ms before the fix too: the 2.6 s per render it measured is Mermaid's own
+  processing of that block. Smaller: Undo checks the tab still shows the same note; the E2E
+  driver restores the settings it holds even when the scratch note fails. Tests for each fail on
+  the code before the fix (shown in a scratch copy).
+
+Decisions made in the implementation (for the maintainer to confirm or turn around):
+
+- **On touch, flowcharts have no drags at all** (the usability review proposed a long press before
+  a drag). Swipes always scroll; everything is reachable with taps: dialogs by double tap,
+  re-linking through the link dialog's From/To, groups through the node dialog, links by tapping
+  a "+" and then a node. Simpler and safe on a device the tests cannot drive. Wardley maps keep
+  their immediate touch drags.
+- **"Link" in the interface** for what Mermaid's syntax calls edges, as Mermaid's documentation
+  and the Wardley editor do; the code keeps "edge".
+
 ## Changelog
+
+- **0.18.0 (2026-10-11)** Flowcharts are editable (`flowchart` / `graph`): node dialog (label,
+  15 shapes, color, group, delete), link dialog (from/to, label, line, ends, minimum length,
+  delete), link from the "+" beside a node (drag, or click then click; into free space: a new
+  linked node that flashes once), re-link a link's end, move a node into or out of a group by
+  drag, group dialog (title, direction, ungroup, delete with nodes), legend (add a node of a shape,
+  new group, direction), right-click menus, Undo in the notice after structural edits, and a
+  run-time guard that refuses any edit changing more than it intends. On touch, swipes always
+  scroll. Setting "Edit flowcharts". The editor core is shared with Wardley maps (see above).
+  Wardley: a new link dropped into free space creates a component there; click, then click links;
+  the stub has a handle; the legend adapts to short maps, closes after a choice and has a 44 px
+  corner on touch; delete notices have Undo; the element dialog writes name, inertia and type
+  together with Save (Rename is gone).
 
 - **0.17.1 (2026-10-11)** With full-width diagrams on (readable line length off), the
   legend's icons were stretched: the full-width rule matched every `svg` inside `.mermaid`,

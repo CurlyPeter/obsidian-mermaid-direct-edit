@@ -1,61 +1,16 @@
-import type { Mermaid, RenderResult } from 'mermaid';
+import type { RenderHook } from './render';
 import { editBlocker, inertiaPositions } from './wardley-text';
 
-/** Attribute on a rendered wardley SVG that points to its source in the registry. */
-export const KEY_ATTR = 'data-mp-src';
-
 /**
- * The exact source text of every editable wardley SVG this plugin instance rendered, by key.
- * Keys carry a per-instance prefix: a map drawn before a plugin reload keeps its old key, and
- * a plain counter restarting at 1 would hand it another map's source (review finding #2).
- * Identical text shares one key, and each source is at most MAX_SOURCE long (`editBlocker`),
- * so redraws do not pile up copies (security review F6).
+ * Rendering of `wardley-beta` maps: editable unless `editBlocker` refuses (0-100 scale, too
+ * large, multi-line accDescr), with the plugin's inertia positions applied.
  */
-export class SourceRegistry {
-	private sources = new Map<string, string>();
-	private keys = new Map<string, string>();
-	private next = 0;
-	private readonly prefix = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}-`;
-
-	register(text: string): string {
-		const known = this.keys.get(text);
-		if (known) {
-			// most recently used last, so eviction takes the oldest
-			this.sources.delete(known);
-			this.sources.set(known, text);
-			return known;
-		}
-		const key = this.prefix + String(++this.next);
-		this.sources.set(key, text);
-		this.keys.set(text, key);
-		if (this.sources.size > 200) {
-			const [oldKey, oldText] = this.sources.entries().next().value as [string, string];
-			this.sources.delete(oldKey);
-			this.keys.delete(oldText);
-		}
-		return key;
-	}
-
-	sourceOf(svg: Element): string | undefined {
-		return this.sources.get(svg.getAttribute(KEY_ATTR) ?? '');
-	}
-}
-
-/**
- * Wraps `render` so each editable wardley SVG carries its source key, and applies the plugin's
- * inertia positions. A map `editBlocker` refuses (0-100 scale, too large, multi-line
- * accDescr) stays untagged: it renders, but the editor leaves it alone.
- */
-export function wrapRender(m: Mermaid, registry: SourceRegistry) {
-	const render = m.render.bind(m);
-	m.render = async (id: string, text: string, container?: Element): Promise<RenderResult> => {
-		const r = await render(id, text, container);
-		if (!r.svg.includes('aria-roledescription="wardley"')) return r;
-		const svg = placeInertia(r.svg, inertiaPositions(text)) ?? r.svg;
-		if (editBlocker(text)) return { ...r, svg };
-		return { ...r, svg: svg.replace('<svg ', `<svg ${KEY_ATTR}="${registry.register(text)}" `) };
-	};
-}
+export const wardleyRender: RenderHook = {
+	kind: 'wardley',
+	roles: ['wardley'],
+	blocker: editBlocker,
+	transform: (svg, text) => placeInertia(svg, inertiaPositions(text)),
+};
 
 /**
  * An inertia bar as Mermaid 12.1 writes it. Only the numbers in it are replaced: a digit run

@@ -14,18 +14,17 @@ the run; it never touches an existing note. Input goes to screen coordinates, so
 as soon as the active note is not the scratch note (a click elsewhere would otherwise land in a
 real note). Exit 0 when every selected case passed.
 """
+import importlib.util
 import json
 import os
 import re
-import subprocess
-import sys
-import time
 
-NOTE = f'Mermaid Direct Edit E2E {time.strftime("%Y%m%d-%H%M%S")}.md'
-# The Obsidian CLI. `obs` is a wrapper that keeps stdin open (plain `obsidian` drops slow,
-# asynchronous answers when stdin is closed) and returns real exit codes.
-CLI = os.environ.get('OBSIDIAN_CLI', 'obs')
-PLUGIN_ID = 'mermaid-direct-edit'
+_spec = importlib.util.spec_from_file_location('e2e_obsidian', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'e2e_obsidian.py'))
+E = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(E)
+obs, js, cdp, mouse, click, drag, key, modal_title, wait = E.obs, E.js, E.cdp, E.mouse, E.click, E.drag, E.key, E.modal_title, E.wait
+PLUGIN_ID = E.PLUGIN_ID
+
 MAP = """wardley-beta
 title E2E
 
@@ -57,48 +56,6 @@ annotation 1,[0.30, 0.70] "First remark"
 annotation 2,[0.68, 0.62] "Second remark"
 """
 FILLER = '\n\n'.join(f'Filler line {i} so the map sits below the top.' for i in range(1, 41))
-
-
-def obs(*args, timeout=60):
-    r = subprocess.run([CLI, *args], capture_output=True, text=True, timeout=timeout)
-    out = r.stdout.strip()
-    return out[3:] if out.startswith('=> ') else out
-
-
-def js(code):
-    return obs('eval', f'code={code}')
-
-
-def cdp(method, params):
-    obs('dev:cdp', f'method={method}', f'params={json.dumps(params)}')
-
-
-def mouse(kind, x, y, buttons=0, count=1):
-    p = {'type': kind, 'x': x, 'y': y}
-    if kind != 'mouseMoved' or buttons:
-        p.update(button='left', buttons=buttons, clickCount=count)
-    cdp('Input.dispatchMouseEvent', p)
-
-
-def click(x, y, count=1):
-    mouse('mouseMoved', x, y)
-    mouse('mousePressed', x, y, 1, count)
-    mouse('mouseReleased', x, y, 0, count)
-
-
-def drag(x, y, dx, dy, steps=5):
-    mouse('mouseMoved', x, y)
-    mouse('mousePressed', x, y, 1)
-    for i in range(1, steps + 1):
-        mouse('mouseMoved', round(x + dx * i / steps), round(y + dy * i / steps), 1)
-    mouse('mouseReleased', round(x + dx), round(y + dy), 0)
-
-
-def key(k, code, vk, modifiers=0, commands=None):
-    p = {'type': 'keyDown', 'key': k, 'code': code, 'windowsVirtualKeyCode': vk, 'modifiers': modifiers}
-    if commands:
-        p['commands'] = commands
-    cdp('Input.dispatchKeyEvent', p)
 
 
 # Locators run inside Obsidian and answer screen coordinates of rendered parts.
@@ -143,7 +100,7 @@ for (const [k, spec] of Object.entries(ARG)) {
   else if (what === 'annotations-box') { const r = svg.querySelector('g.wardley-annotations-box > rect')?.getBoundingClientRect(); out[k] = r && [Math.round(r.right - 8), Math.round(r.bottom - 4)]; }
   else if (what === 'box') { const r = svg.querySelector('rect.wardley-pipeline-box')?.getBoundingClientRect(); out[k] = r && [Math.round(r.left + r.width / 2), Math.round(r.bottom - 4)]; }
   else if (what === 'corner') { const r = svg.closest('.mermaid').getBoundingClientRect(); out[k] = a === 'left' ? [Math.round(r.left + 10), Math.round(r.bottom - 10)] : [Math.round(r.right - 10), Math.round(r.bottom - 10)]; }
-  else if (what === 'legend-item') { const i = svg.closest('.mermaid').querySelector(`.mp-wardley-legend [data-mp-add="${a}"]`); out[k] = i && mid(i.getBoundingClientRect()); }
+  else if (what === 'legend-item') { const i = svg.closest('.mermaid').querySelector(`.mp-legend [data-mp-add="${a}"]`); out[k] = i && mid(i.getBoundingClientRect()); }
   else if (what === 'plus') { const c = center(a); const s = scr(...c); out[k] = [s[0], s[1] + 15]; }
   else if (what === 'scroll') { out[k] = Math.round(root.querySelector('.cm-scroller').scrollTop); }
 }
@@ -170,10 +127,6 @@ def line(pattern):
     return m.group(0) if m else None
 
 
-def modal_title():
-    return js('document.querySelector(".modal-title")?.textContent ?? ""')
-
-
 def park():
     """Cursor to line 0 and the map into view, as a user would have it."""
     js("(async()=>{const l=app.workspace.activeLeaf; l.view.editor.setCursor({line:0,ch:0});"
@@ -182,30 +135,9 @@ def park():
        "await new Promise(r=>setTimeout(r,600)); return 'ok'})()")
 
 
-def setup():
-    content = ('E2E scratch note for mermaid-direct-edit (scripts/e2e-wardley.py), deleted after the run.\n\n'
-               + FILLER + '\n\n```mermaid\n' + MAP + '```\n\n' + FILLER + '\n')
-    js("(async()=>{const p=" + json.dumps(NOTE) + "; if(app.vault.getAbstractFileByPath(p)) return 'exists';"
-       " const f=await app.vault.create(p," + json.dumps(content) + "); await app.workspace.getLeaf('tab').openFile(f);"
-       " const l=app.workspace.activeLeaf; const s=l.getViewState(); s.state.mode='source'; s.state.source=false; await l.setViewState(s);"
-       " await new Promise(r=>setTimeout(r,1500)); return 'ok'})()")
-    park()
-
-
-def on_scratch_note():
-    return js("app.workspace.activeLeaf?.view?.file?.path ?? ''") == NOTE
-
-
-def teardown():
-    # A case that unloads the plugin must never leave it unloaded (0.14.0 re-enabled the old id).
-    js('(async()=>{const id=' + json.dumps(PLUGIN_ID) + '; if(!app.plugins.plugins[id]) await app.plugins.enablePlugin(id); return "ok"})()')
-    js("(async()=>{const p=" + json.dumps(NOTE) + "; const ls=[]; app.workspace.iterateAllLeaves(l=>{if(l.view?.file?.path===p) ls.push(l)});"
-       " ls.forEach(l=>l.detach()); const f=app.vault.getAbstractFileByPath(p); if(f) await app.fileManager.trashFile(f); return 'ok'})()")
-
-
-def wait(s=1.3):
-    time.sleep(s)
-
+CONTENT = ('E2E scratch note for mermaid-direct-edit (scripts/e2e-wardley.py), deleted after the run.\n\n'
+           + FILLER + '\n\n```mermaid\n' + MAP + '```\n\n' + FILLER + '\n')
+SCRATCH = E.Scratch('Mermaid Direct Edit E2E', CONTENT)
 
 # ---- cases ---------------------------------------------------------------------------
 
@@ -285,6 +217,31 @@ def case_new_link_stub():
     return got is not None, got
 
 
+def case_new_component_drop():
+    """A new link dragged from the "+" ring into free space asks for a name and creates the
+    component there, linked from the start (0.18.0, the same gesture as in flowcharts)."""
+    p = locate(s=['plus', 'Gamma'], g=['node', 'Gamma'])
+    sx, sy = p['s']
+    drag(sx, sy, 0, p['g'][1] - sy - 110); wait(0.6)
+    title = modal_title()
+    cdp('Input.insertText', {'text': 'Fresh'})
+    key('Enter', 'Enter', 13); wait()
+    comp, link = line(r'^component Fresh .*$'), line(r'^Gamma -> Fresh$')
+    m = re.match(r'component Fresh \[(\d\.\d+), (\d\.\d+)\]$', comp or '')
+    above = bool(m) and float(m.group(1)) > 0.6 and abs(float(m.group(2)) - 0.15) < 0.05
+    return title == 'New component linked from "Gamma"' and link is not None and above, f'{title!r}; {comp}; {link}'
+
+
+def case_click_click_link():
+    """Click beside a component (the stub waits), then click another one: they are linked (0.18.0)."""
+    p = locate(s=['plus', 'Gamma'])
+    click(*p['s']); wait(0.4)
+    t = locate(t=['node', 'Epsilon'])['t']
+    click(*t); wait()
+    got = line(r'^Gamma -> Epsilon$')
+    return got is not None, got
+
+
 def case_note_drag():
     p = locate(n=['note', 'A short note'])
     drag(*p['n'], 80, -40); wait()
@@ -360,7 +317,7 @@ def case_rename_dialog():
     click(*p['n'], 1); click(*p['n'], 2); wait(0.6)
     title = modal_title()
     js('(()=>{const i=document.querySelector(".modal input"); i.value="Omega"; i.dispatchEvent(new Event("input"));'
-       ' [...document.querySelectorAll(".modal button")].find(b=>b.textContent==="Rename").click(); return "x"})()')
+       ' [...document.querySelectorAll(".modal button")].find(b=>b.textContent==="Save").click(); return "x"})()')
     wait()
     return title.startswith('Edit') and line(r'^component Omega .*$') is not None and 'Epsilon' not in source(), title
 
@@ -371,7 +328,8 @@ def case_type_dialog():
         p = locate(n=['node', 'Alpha'])
         click(*p['n'], 1); click(*p['n'], 2); wait(0.6)
         shown = js('(()=>{const s=document.querySelector(".modal select"); if(!s) return "none"; const v=s.value;'
-                   ' s.value=' + json.dumps(value) + '; s.dispatchEvent(new Event("change")); return v})()')
+                   ' s.value=' + json.dumps(value) + '; s.dispatchEvent(new Event("change"));'
+                   ' [...document.querySelectorAll(".modal button")].find(b=>b.textContent==="Save").click(); return v})()')
         wait(); park()
         ring = js('String(!!app.workspace.activeLeaf.view.contentEl.querySelector(".mermaid svg .wardley-buy-overlay"))')
         return shown, line(r'^component Alpha .*$'), ring
@@ -382,6 +340,24 @@ def case_type_dialog():
     return ok, f'{shown1} -> {got1} ring={ring1}; {shown2} -> {got2} ring={ring2}'
 
 
+def case_dialog_saves_all():
+    """Name, type and inertia changed in one dialog are written together with Save (0.18.0: switching
+    the type used to write at once and close the dialog, losing the name typed before)."""
+    p = locate(n=['node', 'Delta'])
+    click(*p['n'], 1); click(*p['n'], 2); wait(0.6)
+    js('(()=>{const m=document.querySelector(".modal"); const i=m.querySelector("input[type=text], input:not([type])");'
+       ' i.value="Delta two"; i.dispatchEvent(new Event("input"));'
+       ' const s=m.querySelector("select:not(.is-measuring)"); s.value="build"; s.dispatchEvent(new Event("change"));'
+       ' m.querySelector(".checkbox-container").click(); return "x"})()')
+    still_open = modal_title()
+    js('(()=>{[...document.querySelectorAll(".modal button")].find(b=>b.textContent==="Save").click(); return "x"})()')
+    wait()
+    got = line(r'^component Delta two .*$')
+    leftover = line(r'^%% mp-inertia Delta.*$')
+    ok = still_open == 'Edit "Delta"' and got == 'component Delta two [0.55, 0.55] (build)' and leftover is None
+    return ok, f'open after changes: {still_open!r}; {got}; inertia comment: {leftover}'
+
+
 def case_legend_corner():
     p = locate(c=['corner', 'left'])
     mouse('mouseMoved', *p['c']); wait(0.3)
@@ -389,7 +365,7 @@ def case_legend_corner():
     if not item:
         return False, 'legend not shown'
     # Every icon keeps its 24x16, also with full-width diagrams on (0.17.1: they were stretched).
-    icons = js("JSON.stringify([...new Set([...app.workspace.activeLeaf.view.contentEl.querySelectorAll('.mp-wardley-legend svg')]"
+    icons = js("JSON.stringify([...new Set([...app.workspace.activeLeaf.view.contentEl.querySelectorAll('.mp-legend svg')]"
                ".map(s=>{const r=s.getBoundingClientRect(); return Math.round(r.width)+'x'+Math.round(r.height)}))])")
     if icons != '["24x16"]':
         return False, f'legend icons {icons}'
@@ -485,8 +461,8 @@ def case_unload_cleanup():
     p = locate(s=['plus', 'Gamma'], c=['corner', 'left'])
     click(*p['s']); wait(0.3)
     mouse('mouseMoved', *p['c']); wait(0.3)
-    before = js('JSON.stringify({stub:document.querySelectorAll("line.mp-new-link").length, legend:document.querySelectorAll(".mp-wardley-legend").length})')
-    after = js('(async()=>{await app.plugins.disablePlugin(' + json.dumps(PLUGIN_ID) + '); const r={stub:document.querySelectorAll("line.mp-new-link").length, legend:document.querySelectorAll(".mp-wardley-legend").length, host:document.querySelectorAll(".mp-wardley-host").length}; await app.plugins.enablePlugin(' + json.dumps(PLUGIN_ID) + '); await new Promise(r=>setTimeout(r,1500)); return JSON.stringify(r)})()')
+    before = js('JSON.stringify({stub:document.querySelectorAll("line.mp-new-link").length, legend:document.querySelectorAll(".mp-legend").length})')
+    after = js('(async()=>{await app.plugins.disablePlugin(' + json.dumps(PLUGIN_ID) + '); const r={stub:document.querySelectorAll("line.mp-new-link").length, legend:document.querySelectorAll(".mp-legend").length, host:document.querySelectorAll(".mp-legend-host").length}; await app.plugins.enablePlugin(' + json.dumps(PLUGIN_ID) + '); await new Promise(r=>setTimeout(r,1500)); return JSON.stringify(r)})()')
     a = json.loads(after)
     return json.loads(before)['stub'] == 1 and a == {'stub': 0, 'legend': 0, 'host': 0}, f'before {before}; after unload {after}'
 
@@ -495,6 +471,9 @@ CASES = [
     ('node_drag', case_node_drag), ('undo', case_undo), ('label_drag', case_label_drag),
     ('evolve_tip', case_evolve_tip), ('inertia_drag', case_inertia_drag), ('evolve_delete', case_evolve_delete),
     ('relink', case_relink), ('link_dialog', case_link_dialog), ('new_link_stub', case_new_link_stub),
+    ('new_component_drop', case_new_component_drop), ('click_click_link', case_click_click_link),
+    # Before the annotation cases: the dragged annotations box later lies over Delta.
+    ('dialog_saves_all', case_dialog_saves_all),
     ('note_drag', case_note_drag), ('force_drag', case_force_drag), ('pipeline_box_drag', case_pipeline_box_drag),
     ('annotation_drag', case_annotation_drag), ('annotations_box_drag', case_annotations_box_drag),
     ('annotation_dialog', case_annotation_dialog), ('annotation_delete', case_annotation_delete),
@@ -506,31 +485,5 @@ CASES = [
 ]
 
 
-def main():
-    sel = sys.argv[1] if len(sys.argv) > 1 else ''
-    setup()
-    failed = 0
-    try:
-        for name, fn in CASES:
-            if sel not in name:
-                continue
-            if not on_scratch_note():
-                print(f'ABORT {name:18} the active note is not the scratch note, stopping before input lands elsewhere')
-                failed += 1
-                break
-            park()
-            try:
-                ok, detail = fn()
-            except Exception as e:  # a crashed case is a failed case
-                ok, detail = False, f'{type(e).__name__}: {e}'
-            print(f'{"PASS" if ok else "FAIL"}  {name:18} {detail}')
-            failed += 0 if ok else 1
-            js('(()=>{document.querySelectorAll(".modal-container").length && [...document.querySelectorAll(".modal button")].find(b=>b.textContent==="Cancel")?.click(); return "x"})()')
-    finally:
-        teardown()
-    print(f'{"OK" if failed == 0 else "FAILED"}: {failed} failed')
-    sys.exit(1 if failed else 0)
-
-
 if __name__ == '__main__':
-    main()
+    E.run(CASES, SCRATCH, park)

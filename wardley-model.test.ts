@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { parse } from '@mermaid-js/parser';
 import { CliError } from './cli';
 import { applyModel, readModel } from './wardley-model';
-import { getMethod, isWardley, mermaidBlocks, setMethod, setTitle } from './wardley-text';
+import { mermaidBlocks } from './blocks';
+import { getMethod, isWardley, setMethod, setTitle } from './wardley-text';
 
 const TEA = `wardley-beta
 title Tea Shop

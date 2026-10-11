@@ -10,8 +10,8 @@ Obsidian plugin (id `mermaid-direct-edit`, formerly `mermaid-pinned`) with two p
    maps, Mermaid >= 11.14) and other new diagram types work in reading view, live preview and
    PDF export.
 2. **Direct editing:** a rendered diagram can be edited with mouse or finger, and every edit
-   is written back into the code block as text. Version 1 covers Wardley maps; the goal is
-   more diagram types (see `CONTRIBUTING.md`).
+   is written back into the code block as text. Wardley maps (since 0.2.0) and flowcharts
+   (since 0.18.0); the goal is more diagram types (see `CONTRIBUTING.md`).
 
 Runs on desktop and mobile.
 
@@ -40,28 +40,47 @@ Redraw = `workspace.trigger('post-processor-change')`, the same event Obsidian f
 the vault's Mermaid permission is toggled. That permission (since 1.13) is untouched: an
 unpermitted vault keeps showing Obsidian's guard instead of the diagram.
 
+## The editor core (shared by every diagram type)
+
+Since 0.18.0 the parts that do not depend on the diagram type live in shared modules, and each
+diagram type adds one set of `<type>-*.ts` modules on top. An editor handles only the SVGs tagged
+with its kind (`data-mp-kind`), so the editors never see each other's diagrams.
+
+| File | Role | Tested by |
+|---|---|---|
+| `render.ts` | `wrapRender` with one `RenderHook` per diagram type (which `aria-roledescription`, when it stays untagged, SVG transforms), `SourceRegistry`, `diagramOf`/`diagramIn`, `isElement` | E2E |
+| `editor.ts` | `DiagramEditor`: the DOM handlers (registered by `main.ts` on every window, incl. `contextmenu`), one active gesture, the waiting stub, legend, double tap, swallowing the clicks a gesture leaves, dialogs closed on unload, `apply` (edit → `mermaid.parse` → write) and `applyThen` (the same with a notice that has an Undo button). A subclass implements `modelOf`, `press`, `claims`, `cursorAt`, `legendAction`, `stubDrag`, and may add `stubPress` (click, then click links), `hoverAt`, `contextMenu`, `stubWaits` and refuse a diagram (`blockedReason`) | E2E (both suites) |
+| `gestures.ts` | `DragGesture` (tap vs drag threshold), `Stub` (with a round handle at its free end) and `NewLinkDrag` (the "+" link, its end under the pointer: onto an element links, into free space creates one, back on its own element waits), `TapPress`, `DeletePress`, `DropHighlight` | E2E |
+| `legend.ts`, `modals.ts`, `write.ts`, `blocks.ts`, `geometry.ts` | legend (rows as the diagram's height allows, on the popover layer, closed once an entry is chosen, a 44 px corner on touch), `NameModal` and the two-click Delete, writing into the note, `locateBlock`/`mermaidBlocks`/limits/`EditError`, thresholds and `TapDetector` | vitest (`blocks`, `geometry`), E2E |
+
+`npm run e2e` runs both suites (`scripts/e2e-wardley.py`, `scripts/e2e-flowchart.py`, sharing
+`scripts/e2e_obsidian.py`); each drives every gesture with real input through `obs dev:cdp` on a
+scratch note and checks the resulting source. Run them after any change to an editor and on
+every Mermaid bump. They locate elements from the rendered SVG only, and refuse to send input
+to a point outside the scratch note's visible editor (input there lands in another tab). The
+flowchart suite holds three settings for its run and restores them: full width on and readable
+line length off (its diagram then fits the window), native menus off (a macOS menu is not in the
+page). CDP
+input reaches only the main window, so the pop-out case dispatches pointer events in the
+pop-out's own document instead; a touch double tap is dispatched in the page too (CDP is too
+slow for 400 ms).
+
 ## Editing Wardley maps
 
 **Modules** (refactored 0.12.0 after a code review, behaviour unchanged except the fixes):
 
 | File | Role | Tested by |
 |---|---|---|
-| `wardley-text.ts` | every edit as a pure text function on the block source; `editBlocker` (which maps are editable), `locateBlock` (where a block sits in the note) | vitest, outputs parsed by the real `@mermaid-js/parser`; `*.security.test.ts` |
-| `wardley-geometry.ts` | zones and tunables (screen px), projection, `TapDetector` | vitest |
-| `wardley-render.ts` | `wrapRender` (tags editable SVGs, applies `%% mp-inertia`), `SourceRegistry` | E2E |
+| `wardley-text.ts` | every edit as a pure text function on the block source; `editBlocker` (which maps are editable) | vitest, outputs parsed by the real `@mermaid-js/parser`; `*.security.test.ts` |
+| `wardley-geometry.ts` | zones and tunables (screen px), projection | vitest |
+| `wardley-render.ts` | its `RenderHook`: `editBlocker`, `placeInertia` (applies `%% mp-inertia`) | E2E |
 | `wardley-map.ts` | `MapModel`: source, plot box, node centres, cached per SVG | E2E |
 | `wardley-hit.ts` | `classify()`: what a press means, the one priority order | E2E |
 | `wardley-gestures.ts` | one class per gesture (drag, tap, long press), started by the editor | E2E |
-| `wardley-legend.ts`, `wardley-modals.ts`, `wardley-write.ts` | legend, dialogs, writing into the note | E2E |
-| `wardley-editor.ts` | wiring: DOM events → classify → gesture / dialog → `apply` | E2E |
+| `wardley-legend.ts`, `wardley-modals.ts` | legend items, dialogs | E2E |
+| `wardley-editor.ts` | `WardleyEditor extends DiagramEditor`: classify → gesture / dialog → `apply` | E2E |
 | `wardley-model.ts` | the map as data: `readModel` (Mermaid's parser AST → model with lines and errors), `applyModel` (target model → in-place edits) | vitest against the real parser (`wardley-model.test.ts`) |
 | `wardley-cli.ts` | CLI commands `wardley-read`, `wardley-apply`: block lookup in a note, Mermaid check, write | real `obsidian` call |
-
-`npm run e2e` (`scripts/e2e-wardley.py`) drives every gesture with real input through
-`obs dev:cdp` on a scratch note and checks the resulting source; run it after any change to
-the editor and on every Mermaid bump. It locates elements from the rendered SVG only. CDP
-input reaches only the main window, so the pop-out case dispatches pointer events in the
-pop-out's own document instead.
 
 
 Setting "Full-width diagrams without readable line length" (default off): a body class
@@ -77,12 +96,15 @@ lengthen or shorten it (`evolve Name 0.62`), **drag a link's end onto another no
 re-link it (`A -> B` becomes `A -> C`, either end, any arrow kind), **click or tap a link's
 middle** to open its dialog (label, direction, delete), **click an evolve arrow's shaft** to
 delete it (touch: long press, 550 ms), **drag an
-inertia bar** along the evolution axis, **press beside a node** (the "+" ring) to start a new link,
+inertia bar** along the evolution axis, **press beside a node** (the "+" ring) to start a new link (dropped on free space it asks for a
+name and creates a component there, linked from the first, since 0.18.0),
 **double-click / double-tap** a node to open its dialog (rename everywhere in the block,
 switch a component's inertia on or off, set its type (the sourcing decorator
 `(build|buy|outsource|market)` or none, via `getMethod`/`setMethod`; not offered for pipeline
 components, which have none in wardley-beta), or delete it with its links and evolve arrow after a
-confirming second click). A **legend**
+confirming second click). Name, inertia and type are written together with Save, as one edit
+(since 0.18.0; before, switching inertia or type wrote at once and closed the dialog, dropping a
+name typed just before); the rename goes last, so the other edits find the old name. A **legend**
 (shown only when the pointer reaches the very bottom-left or bottom-right corner, a 32 px
 zone about the size of Obsidian's edit button, in that corner; stays open while the pointer
 is on it; mobile: a tap in a corner) adds a component, anchor, note, annotation, accelerator or
@@ -97,13 +119,18 @@ dialog has "Remove pipeline"; deleting the last child removes the block.
 numbered circle or the box; double-click a circle or a line in the box for its dialog (text,
 delete).
 
-- `wrapRender` tags every wardley SVG with `data-mp-src`, a key into a map of the exact
-  source Obsidian passed to `render()`. An edit locates that source in the note; it must
+- `wrapRender` tags every editable SVG with `data-mp-src`, a key into a map of the exact
+  source Obsidian passed to `render()` (400 entries, shared by both editors), and `data-mp-kind`;
+  a Wardley map drawn before 0.18.0 has no kind and counts as Wardley (it asks for a redraw). An edit locates that source in the note; it must
   occur exactly once, otherwise the edit is refused (embeds, duplicated blocks).
 - All text logic is pure and unit-tested in `wardley-text.ts` (`getPosition`,
   `setPosition`, `rename`, `formatName` following Mermaid's `NAME_WITH_SPACES` terminal:
   umlauts, dots etc. force quotes). Every result is validated with `mermaid.parse()`
   before it is written.
+- **No write may close its own block (security review 0.18.0):** `writeBlock` refuses text holding
+  a line CommonMark reads as the block's closing fence (`fenceBreak` in `blocks.ts`: up to three
+  spaces, the same fence character, at least as long), for both editors and for Undo; an
+  Ungroup had moved an indented fence to column 0.
 - **Write path differs by mode:** Live Preview/source dispatches to CodeMirror directly
   (undoable with Cmd+Z); reading view writes the file with `vault.process`, because the
   editor buffer is not saved from there. **Never `Editor.replaceRange`:** it scrolls the
@@ -117,7 +144,7 @@ delete).
   `document` of **every window**: the main one and each pop-out, wired on load and on
   `window-open`, since a pop-out's events never reach the main document. Never
   `instanceof Element` on an event target: in a pop-out it is false (another window's
-  realm); use `isElement` from `wardley-map.ts`. Touch: `touch-action` is ignored inside SVG, so `touchstart` on a node is
+  realm); use `isElement` from `render.ts`. Touch: `touch-action` is ignored inside SVG, so `touchstart` on a node is
   `preventDefault`ed (non-passive) to stop the scroll that would cancel the pointer stream.
   Double tap is detected by the plugin (400 ms); on desktop the system `dblclick` also opens
   the rename, which is what slow scripted clicks hit.
@@ -207,14 +234,128 @@ delete).
 - **Mermaid's numbers need a decimal point** (`WARDLEY_NUMBER` is `[0-9]+\.[0-9]+`): `[50, 70]`
   does not parse, a 0-100 map is written `[50.0, 70.0]`. Mermaid reads each value on its own
   (at most 1 is decimal, above 1 percent).
+- Unit tests that run Mermaid's flowchart parser need a DOM for its sanitizer: they start with
+  `// @vitest-environment happy-dom` (dev dependency only). happy-dom's sanitizer drops text
+  before a `<br/>`, so such labels are compared as one token (`test-mermaid.ts`).
 - Depends on Mermaid's wardley SVG classes (`wardley-node`, `wardley-node-label`,
   `wardley-link`, `wardley-trend`, `wardley-axes`, `wardley-annotation`, `wardley-annotations-box`). Re-check them on every Mermaid bump (DEV.md).
+
+## Editing flowcharts
+
+Setting "Edit flowcharts" (default on, per device). In a rendered `flowchart` / `graph` (the UI
+says "link" for an edge, Mermaid's own word):
+
+- **Node:** double-click / double-tap for its dialog (label, shape, color, group incl. "New
+  group…", delete with its links); drag onto a group to move it in, outside every group to move
+  it out (a hint at the pointer says which, the group being left is outlined; onto another node:
+  nothing, a notice points to the ring).
+- **"+" ring** beside a node (hovering a node shows small "+" marks where it works): drag onto
+  another node to link them, into free space to create a node linked from the first
+  (`A --> NewNode[Label]`, inside A's group when A is in one; the new node flashes once after the
+  redraw); a click leaves the stub waiting with a round handle, then drag the handle or click the
+  target node. Dropped back on its own node the stub waits.
+- **Link:** a click on its middle, its label or near an end opens its dialog (from, to with a
+  swap button, label, line, ends, minimum length, delete); dragging an end re-links it.
+- **Group:** double-click its title or its border for its dialog (title, direction with a note
+  when Mermaid will ignore it, ungroup, delete with its nodes).
+- **Legend** (bottom corners, as for Wardley maps; 44 px corner zone on touch): add a node of a
+  shape, put the next node clicked into a new group, the diagram's direction.
+- **Right-click** anywhere on the diagram: the same actions as an Obsidian menu (a node's, a
+  link's, a group's, or the legend's on empty space).
+- **Structural edits** (delete, re-link, group moves, ungroup, links and nodes added) confirm with
+  a notice that has an **Undo** button: reading view and phones have no Cmd+Z. Undo writes the old
+  source back if the block is still the new one.
+- **Touch:** nothing in a flowchart is dragged except a waiting stub's handle, and no touch blocks
+  scrolling: a swipe that starts on the diagram scrolls, it never edits. Everything is reachable
+  with taps (double tap for dialogs, the link dialog's From/To for re-linking, the node dialog's
+  Group). Wardley maps keep their immediate touch drags (positions are their core gesture).
+
+**Modules:**
+
+| File | Role | Tested by |
+|---|---|---|
+| `flowchart-scan.ts` | `scan()`: the source as statements, nodes (id, shape, label, `@{…}`, `:::class`) and edges (arrow, label, id) with offsets; subgraphs and their membership; Mermaid's edge ids predicted | vitest: agrees with Mermaid's own parser on the test diagrams, real-world shapes and ~50 edge cases (`flowchart-scan.test.ts`) |
+| `flowchart-text.ts` | every edit as a pure text function: node label/shape/color, edges (look, label, reverse, relink, add, delete), nodes (add, add linked, delete), groups (move into/out, add, title, direction, ungroup, delete), direction; `flowchartBlocker` | vitest: every edit on every node/edge/group of the test diagrams (re-links: ~1000), each result read by Mermaid's parser and compared (`flowchart-text.test.ts`); `*.security.test.ts` |
+| `flowchart-meaning.ts` | the run-time guard: what a flowchart means (labels, shapes, groups, links, `linkStyle` targets, named group ids); `checked()` refuses an edit whose result changes anything but what it intends | through every edit test |
+| `flowchart-map.ts` | `FlowModel`: which drawn element is which node, edge and group; refuses the diagram when drawing and scan disagree; edge path sampling for hit tests | E2E |
+| `flowchart-hit.ts` | `classifyFlow()`: the one priority order | E2E |
+| `flowchart-gestures.ts` | node drag (into a group), edge-end drag (re-link) | E2E |
+| `flowchart-modals.ts`, `flowchart-editor.ts` | dialogs; `FlowchartEditor extends DiagramEditor` and the render hook | E2E |
+
+- **A flowchart has no positions.** Mermaid (dagre or ELK) lays it out on every render, so
+  nothing positional is stored and no plugin comments are written: dragging connects, re-links or
+  moves a node into a group.
+- **Identity from the drawing, places from the scanner, checked against each other.** Mermaid's
+  flowchart parser (JISON, not `@mermaid-js/parser`) reports no source positions, so
+  `flowchart-scan.ts` finds them. The drawing names everything: a node's group id is
+  `<svg id>-flowchart-<node id>-<counter>`, an edge's path has `data-id` = the edge's id
+  (`L_<from>_<to>_<n>`, n = 0 for the first such pair, else their count + 1; or a user id from
+  `e1@-->`), a group's cluster id is `<svg id>-<subgraph id>`, an empty subgraph is drawn as a
+  node named by its id alone. `FlowModel` requires the drawn nodes and edges to equal the scan's
+  exactly; otherwise the diagram is not edited (one notice per drawing, the press is left to
+  Obsidian), never guessed. Example: a label containing `direction LR` makes Mermaid's lexer read
+  the whole line as a direction statement.
+- **Lexer facts the scanner follows (measured on 12.1):** the lexer takes the longest token, so
+  `A&B` is one node id and only `A & B` (blank after `&`) is a group; no blank between an id and
+  its shape (`A [x]` is an error); a `;` inside `[…]` is label text; `---oB` is a circle-ended
+  link to `B`; `-- text -->` is closed by the first token that looks like an arrow end (`go-->`
+  ends at `o-->`); trailing `%%` comments are errors; a `style X` statement creates node X, `class`
+  does not; a node belongs to the first subgraph, in closing order, whose own statements mention
+  it; a subgraph without brackets and with a blank in its text gets the id `subGraph<N>`, N
+  counting subgraphs in the order they close.
+- **Every edit is checked at run time (`checked`, code review 0.18.0).** The meaning of the new
+  source must equal the old one changed exactly as the edit intends; otherwise the edit is
+  refused with "This edit would also change …". It turns a gap in the scanner's ordering rules
+  (which definition of a node wins, which group claims it, how `linkStyle` counts) into a
+  refusal instead of a silent change to parts nobody touched, and it found one gap on its first
+  run (a quoted ellipse label).
+- **Edits change as little as possible.** A label, an arrow or a name is replaced in place. Only
+  when an edit splits a chain (`A --> B --> C`) or an `&` group does it rewrite that one statement:
+  same edge order, each node's definition with its first mention, and a bare mention kept for a
+  node that would otherwise vanish or leave its group. A user edge id stays with its edge.
+- **`linkStyle` counts edges in source order.** Deleting edges renumbers it (a statement left
+  with none is removed); new edges go after every other edge (after the subgraph block holding
+  the last one), except a node created from a node in a group, which goes into that group and
+  shifts later numbers; moving a node out of a group moves statements with edges behind all
+  others. Every one of these keeps each `linkStyle` on the same edge (tested).
+- **Labels:** bare when the text is safe (letters, digits, blanks, `.,:!?'+*#&%$=~^_-`) and was
+  bare, else quoted; `"` becomes `#quot;`; a markdown label (`"\`…\`"`) stays markdown. An inline
+  edge label stays inline while it holds none of `-=.|"` or brackets, else it becomes `|label|`.
+- **Node colours** are `style <id> fill:…,stroke:…,color:…` with a dark text colour, so the label
+  stays readable in dark themes; other properties of that `style` stay.
+- **New ids** come from the label (`Check stock` → `CheckStock`, umlauts folded, unique, not a
+  keyword), so the source stays readable for people and agents.
+- **Hit testing:** an edge is grabbed within 6 screen px of its path (sampled every 4 SVG units),
+  its ends within min(24 px, a third of it), its middle between; the "+" ring is a 14 px band
+  outside a node's box, but only inside the SVG (a node at the diagram's edge has no ring on that
+  side); a group's border within 5 px. Zones double on touch. Elements under the pointer (edge
+  label, node, group title) win over zones, then edges, the ring, a group's border.
+- **Relinking inside a group:** rewritten in place when that keeps every node in its group;
+  otherwise the edge moves behind all others at the top level (`linkStyle` follows), since a
+  mention inside a group's block pulls a node into that group.
+- **Text Mermaid reads as a direction:** a label or title containing `direction` + TB/BT/LR/RL/TD
+  is refused (the lexer reads the whole line as a direction statement, quotes or not).
+- **Moving statements keeps the winning definitions:** Mermaid uses a node's last definition;
+  moved text keeps only definitions that win, so a move cannot relabel another node.
+- **Inserted statements** go right after their anchor statement, not after the rest of its line
+  (`A --> B; subgraph S` would take them into S); a new `direction` gets a line of its own.
+- **Edge metadata** (`e1@{ animate: true }`, after the edge `e1`) is a statement of its own, not a
+  node.
+- **Not editable:** over 64 KB or a line over 1000 characters, more than 500 links (Mermaid's own
+  `maxEdges`), a source the scanner cannot read, a drawing that disagrees with the scan; plus the
+  general rules (callout/list, embeds).
+- **Scans are cached** by source text (`scanCached`, 16 entries; a `Flow` is never changed after
+  `scan`), so a dialog reading every node and each edit's guard scan a text once.
+- **Linear on crafted text (security review 0.18.0):** the next `}%%` is looked up once, link ids
+  come from forward-only lookups on the cursor, an inline label's closer skips runs of blanks and
+  dots in one step, `&` groups are counted before they multiply. Add a timing case to
+  `flowchart-text.security.test.ts` for any new lookup.
 
 ## Build and check
 
 ```bash
-npm test               # vitest: text edits (checked by the real parser), geometry
-npm run e2e            # real-input regression of every gesture in the running Obsidian
+npm test               # vitest: text edits (checked by the real parsers), geometry
+npm run e2e            # real-input regression of every gesture in the running Obsidian (both editors)
 npm run build          # tsc + esbuild production; postbuild reloads this plugin via obs
 obs mermaid-direct-edit:status   # {pinnedVersion, state, obsidianMermaidLoaded, obsidianLoadedFirst, rendering, error}
 obs mermaid-direct-edit:info
@@ -238,8 +379,10 @@ bundled version is read from `node_modules/mermaid/package.json` at build time
    (`~/Library/Application Support/obsidian/obsidian-<ver>.asar`, `app.js`, search
    `/lib/mermaid.min.js`) and update `OBSIDIAN_CONFIG`.
 3. `npm test && npm run build && npm run e2e`, then check several mermaid notes and drag /
-   rename once in a wardley map (DEV.md → Verification). If the wardley SVG classes
-   changed, `wardley-editor.ts` stops finding nodes silently: check that first.
+   rename once in a wardley map and a flowchart (DEV.md → Verification). If the wardley SVG
+   classes changed, `wardley-editor.ts` stops finding nodes silently: check that first. For
+   flowcharts, `flowchart-scan.test.ts` against the new parser comes first (lexer rules and edge
+   ids), then the SVG naming in `flowchart-map.ts` (a mismatch shows as "not editable here").
 
 ## Rules
 

@@ -5,7 +5,9 @@
  * `mermaid.parse()` before writing it, so a gap in these rules cannot corrupt a note.
  */
 
-export class EditError extends Error {}
+import { EditError, MAX_LINE, MAX_SOURCE, trimTail } from './blocks';
+
+export { EditError, MAX_LINE, MAX_SOURCE };
 
 /**
  * Mermaid's NAME_WITH_SPACES terminal: a name that needs no quotes. The lexer matches its
@@ -21,21 +23,7 @@ const BARE_NAME = /^[A-Za-z](?:[A-Za-z0-9_()&]|-(?!>))*(?:[ \t]+[A-Za-z(](?:[A-Z
  */
 const ARROW = /-\.->|-->|->|\+<>|\+<|\+>|\+'[^']*'(?:<>|<|>)|\+"[^"]*">/y;
 
-/**
- * Limits for graphical editing (security review on 0.12.0, F1/F2/F6). The parsers here are
- * linear, and these bounds keep the few remaining per-line regexes cheap. A map beyond them
- * still renders, it is just not editable (`editBlocker`).
- */
-export const MAX_LINE = 1000;
-export const MAX_SOURCE = 64 * 1024;
-
 const isBlank = (c: string) => c === ' ' || c === '\t';
-/** `s` without trailing blanks. A loop, because `/[ \t]+$/` is quadratic on a long blank run. */
-const trimTail = (s: string) => {
-	let e = s.length;
-	while (e > 0 && isBlank(s[e - 1])) e--;
-	return s.slice(0, e);
-};
 
 export interface NameSpan {
 	/** Offsets into the line, covering the quotes when the name is quoted. */
@@ -901,47 +889,6 @@ export function editBlocker(source: string): string | null {
 	return null;
 }
 
-/**
- * Where `src` sits in `text`: the offset of the body of the one fenced ```mermaid block whose
- * body is exactly `src`, or why it cannot be edited there. Only a block of its own counts: a
- * map in a callout, list or quote is drawn from text with a prefix on every line, and a plain
- * search would find (and overwrite) the same text elsewhere, e.g. in a code example (review F3).
- */
-export function locateBlock(text: string, src: string): number | string {
-	const hits = mermaidBlocks(text).filter(b => b.body === src).map(b => b.from);
-	if (hits.length === 1) return hits[0];
-	if (hits.length > 1) return 'This map occurs more than once in the note, edit it in the source.';
-	if (text.includes(src)) return 'Only a map in a ```mermaid block of its own can be edited here (not in a callout, list or quote), edit it in the source.';
-	return 'The map changed in the meantime, nothing was written.';
-}
-
-/**
- * Every fenced ```mermaid (or ~~~mermaid) block of its own in a note: the offset of its body
- * and the body. Fences inside other code blocks are skipped; a block in a callout, list or
- * quote has a prefix on its fence line and is not one of them.
- */
-export function mermaidBlocks(text: string): { from: number; body: string }[] {
-	const lines = text.split('\n');
-	const starts: number[] = [];
-	let offset = 0;
-	for (const l of lines) { starts.push(offset); offset += l.length + 1; }
-	const out: { from: number; body: string }[] = [];
-	for (let i = 0; i < lines.length; i++) {
-		const open = /^(`{3,}|~{3,})(.*)$/.exec(lines[i]);
-		if (!open) continue;
-		const fence = open[1];
-		let close = i + 1;
-		while (close < lines.length && !isClosingFence(lines[close], fence)) close++;
-		if (/^mermaid(?:[ \t]|$)/.test(open[2].trim()) && i + 1 <= lines.length - 1) {
-			const from = starts[i + 1];
-			const body = close < lines.length ? text.slice(from, Math.max(from, starts[close] - 1)) : text.slice(from);
-			out.push({ from, body });
-		}
-		i = close;
-	}
-	return out;
-}
-
 /** Whether a mermaid block body is a wardley-beta map (its first statement, after blanks and `%%` comments). */
 export function isWardley(body: string): boolean {
 	for (const l of body.split('\n')) {
@@ -951,11 +898,6 @@ export function isWardley(body: string): boolean {
 	}
 	return false;
 }
-
-const isClosingFence = (line: string, fence: string) => {
-	const t = trimTail(line);
-	return t.length >= fence.length && t[0] === fence[0] && [...t].every(c => c === fence[0]);
-};
 
 /** Parents of the `pipeline` blocks in source order (= the order Mermaid draws their boxes). */
 export function pipelineParents(source: string): string[] {

@@ -35,24 +35,33 @@ body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-node--pipeline-componen
 body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-node.mp-drop-target {
 	filter: drop-shadow(0 0 4px var(--interactive-accent));
 }
-/* Provisional link from a click beside a node; written only once dropped on another node. */
+/* Provisional link from a click beside a node; written only once dropped on another node. Its
+   free end carries a round handle, so it reads as something to grab rather than a dashed link. */
 .mermaid svg[data-mp-src] line.mp-new-link {
 	stroke: var(--interactive-accent);
 	stroke-width: 2;
 	stroke-dasharray: 5 3;
 }
+.mermaid svg[data-mp-src] circle.mp-new-link-end {
+	fill: var(--interactive-accent);
+	stroke: var(--background-primary);
+	stroke-width: 1.5;
+	cursor: grab;
+}
 
 /* Legend: add elements to the map. Shown only while the pointer is in a bottom corner zone
    of the map (desktop: hover, mobile: a tap), in that corner. Never printed (PDF export). */
-.mermaid.mp-wardley-host {
+.mermaid.mp-legend-host {
 	position: relative;
 }
-.mp-wardley-legend {
+.mp-legend {
 	position: absolute;
 	bottom: 8px;
-	display: flex;
-	flex-direction: column;
-	gap: 2px;
+	z-index: var(--layer-popover);
+	/* Rows as the diagram's height allows (set by the plugin), then more columns. */
+	display: grid;
+	grid-auto-flow: column;
+	gap: 2px 8px;
 	padding: 4px 6px;
 	font-size: var(--font-ui-smaller);
 	background: var(--background-primary);
@@ -63,17 +72,17 @@ body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-node.mp-drop-target {
 	pointer-events: none;
 	transition: opacity 120ms;
 }
-.mp-wardley-legend.is-left {
+.mp-legend.is-left {
 	left: 8px;
 }
-.mp-wardley-legend.is-right {
+.mp-legend.is-right {
 	right: 8px;
 }
-.mp-wardley-legend.is-visible {
+.mp-legend.is-visible {
 	opacity: 1;
 	pointer-events: auto;
 }
-.mp-wardley-legend-item {
+.mp-legend-item {
 	display: flex;
 	align-items: center;
 	gap: 6px;
@@ -82,15 +91,15 @@ body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-node.mp-drop-target {
 	cursor: copy;
 	color: var(--text-normal);
 }
-.mp-wardley-legend-item:hover,
-.mp-wardley-legend-item.is-armed {
+.mp-legend-item:hover,
+.mp-legend-item.is-armed {
 	background: var(--background-modifier-hover);
 }
-.mp-wardley-legend-item.is-armed {
+.mp-legend-item.is-armed {
 	outline: 1px solid var(--interactive-accent);
 }
 @media print {
-	.mp-wardley-legend {
+	.mp-legend {
 		display: none;
 	}
 }
@@ -111,3 +120,76 @@ body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-annotations-box {
 body.mp-wardley-edit .mermaid svg[data-mp-src] rect.wardley-pipeline-box {
 	pointer-events: all;
 }
+
+/* Affordances for editable flowcharts (setting "Edit flowcharts"). A flowchart has no positions:
+   dragging a node moves it into a group, so nodes show the grab cursor; a flowchart the editor
+   refuses (data-mp-blocked) shows none. */
+body.mp-flowchart-edit .mermaid svg[data-mp-kind="flowchart"]:not([data-mp-blocked]) g.node {
+	cursor: grab;
+}
+body.mp-flowchart-edit .mermaid svg[data-mp-kind="flowchart"] g.node * {
+	cursor: inherit;
+}
+body.mp-flowchart-edit .mermaid svg[data-mp-kind="flowchart"] g.node.mp-dragging {
+	cursor: grabbing;
+	opacity: 0.6;
+}
+body.mp-flowchart-edit .mermaid svg[data-mp-kind="flowchart"] g.node.mp-drop-target {
+	filter: drop-shadow(0 0 5px var(--interactive-accent));
+}
+body.mp-flowchart-edit .mermaid svg[data-mp-kind="flowchart"] g.cluster.mp-drop-target > rect {
+	stroke: var(--interactive-accent) !important;
+	stroke-width: 3px !important;
+}
+body.mp-flowchart-edit .mermaid svg[data-mp-kind="flowchart"] path.mp-dragging {
+	opacity: 0.25;
+}
+body.mp-flowchart-edit .mermaid svg[data-mp-kind="flowchart"] g.edgeLabel,
+body.mp-flowchart-edit .mermaid svg[data-mp-kind="flowchart"] g.edgeLabel *,
+body.mp-flowchart-edit .mermaid svg[data-mp-kind="flowchart"] .cluster-label,
+body.mp-flowchart-edit .mermaid svg[data-mp-kind="flowchart"] .cluster-label * {
+	cursor: pointer;
+}
+body.mp-flowchart-edit .mermaid svg[data-mp-kind="flowchart"] g.cluster.mp-leaving > rect {
+	stroke-dasharray: 6 4 !important;
+	stroke-width: 2px !important;
+}
+/* "+" marks beside a hovered (or tapped) node: where a press starts a link. Not clickable
+   themselves: the press goes to the ring under them. */
+.mermaid svg[data-mp-kind="flowchart"] g.mp-plus-handle {
+	pointer-events: none;
+}
+.mermaid svg[data-mp-kind="flowchart"] g.mp-plus-handle circle {
+	fill: var(--interactive-accent);
+	stroke: var(--background-primary);
+	stroke-width: 1.5;
+}
+.mermaid svg[data-mp-kind="flowchart"] g.mp-plus-handle path {
+	stroke: var(--text-on-accent);
+	stroke-width: 1.6;
+}
+/* A node just added flashes once in the redrawn diagram. */
+.mermaid svg[data-mp-kind="flowchart"] g.node.mp-flash {
+	animation: mp-flash 0.8s ease-in-out 2;
+}
+@keyframes mp-flash {
+	50% { filter: drop-shadow(0 0 8px var(--interactive-accent)); }
+}
+/* What dropping a dragged node would do, next to the pointer. */
+.mp-drag-hint {
+	position: fixed;
+	z-index: var(--layer-tooltip);
+	pointer-events: none;
+	padding: 2px 8px;
+	font-size: var(--font-ui-smaller);
+	color: var(--text-normal);
+	background: var(--background-primary);
+	border: 1px solid var(--background-modifier-border);
+	border-radius: var(--radius-s);
+	box-shadow: var(--shadow-s);
+}
+/* Undo button in the notice after a structural edit. */
+.notice button.mp-undo {
+	margin-left: 8px;
+}
+

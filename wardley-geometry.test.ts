@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import {
-	DOUBLE_TAP_MS, LINK_GRAB, TapDetector, evolutionAt, legendSide, linkPart, onTrendShaft, segmentHit,
-	trendTargetX, visibilityAt, xOf, yOf,
-} from './wardley-geometry';
+import { DOUBLE_TAP_MS, TapDetector, legendSide, segmentHit } from './geometry';
+import { LINK_GRAB, evolutionAt, linkPart, onTrendShaft, trendTargetX, visibilityAt, xOf, yOf } from './wardley-geometry';
 
 const BOX = { left: 48, right: 1052, top: 48, bottom: 552 };
 

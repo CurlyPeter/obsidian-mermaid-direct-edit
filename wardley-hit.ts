@@ -1,4 +1,5 @@
-import { DROP_RADIUS, FORCE_NAME_OFFSET, LINK_GRAB, PLUS_RING, Pt, TIP_RADIUS, linkPart, onTrendShaft, segmentHit } from './wardley-geometry';
+import { segmentHit } from './geometry';
+import { DROP_RADIUS, FORCE_NAME_OFFSET, LINK_GRAB, PLUS_RING, Pt, TIP_RADIUS, linkPart, onTrendShaft } from './wardley-geometry';
 import { MapModel, MapNode } from './wardley-map';
 import { ForceKind } from './wardley-text';
 

@@ -1,5 +1,6 @@
 import { Box, END_TOLERANCE, Pt, xOf, yOf } from './wardley-geometry';
-import { KEY_ATTR, SourceRegistry } from './wardley-render';
+import type { Surface } from './gestures';
+import { KEY_ATTR, SourceRegistry } from './render';
 import { getPosition, pipelineOf, pipelineParents } from './wardley-text';
 
 export interface MapNode {
@@ -7,28 +8,6 @@ export interface MapNode {
 	name: string;
 	/** Centre in SVG units (a pipeline parent: its square above the box, not its declaration). */
 	center: Pt;
-}
-
-/**
- * Whether `t` is an element. Not `instanceof Element`: a node in a pop-out window belongs to
- * that window's `Element`, so the check is false there and every map in it looked uneditable.
- */
-export const isElement = (t: EventTarget | null | undefined): t is Element => !!t && (t as Node).nodeType === 1;
-
-/**
- * The editable wardley SVG an event target belongs to, if any. A map embedded from another
- * note is left alone: its edit would be written into the host note (security review F3).
- */
-export function mapOf(target: EventTarget | null): SVGSVGElement | null {
-	if (!isElement(target)) return null;
-	const svg = target.closest<SVGSVGElement>(`svg[${KEY_ATTR}]`);
-	return svg && svg.closest('.mermaid') && !svg.closest('.markdown-embed') ? svg : null;
-}
-
-/** The editable map in the `.mermaid` container around `target` (the legend sits beside the SVG). */
-export function mapIn(target: EventTarget | null): SVGSVGElement | null {
-	if (!isElement(target)) return null;
-	return mapOf(target.closest('.mermaid')?.querySelector(`:scope > svg[${KEY_ATTR}]`) ?? null);
 }
 
 export const nameOf = (node: Element) => node.querySelector('text.wardley-node-label')?.textContent?.trim() || null;
@@ -39,7 +18,7 @@ export const nameOf = (node: Element) => node.querySelector('text.wardley-node-l
  * finding #15); a redraw creates a new SVG and with it a new model. Centres come from the
  * source and from drawn attributes that a drag's `transform` never touches.
  */
-export class MapModel {
+export class MapModel implements Surface {
 	private static cache = new WeakMap<SVGSVGElement, MapModel>();
 
 	readonly nodes: MapNode[] = [];

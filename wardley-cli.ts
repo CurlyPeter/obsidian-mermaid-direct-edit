@@ -7,7 +7,8 @@ import { App, TFile } from 'obsidian';
 import type { Mermaid } from 'mermaid';
 import { CliCommandSpec, CliError } from './cli';
 import { ParseFn, SCHEMA, applyModel, readModel } from './wardley-model';
-import { isWardley, locateBlock, mermaidBlocks } from './wardley-text';
+import { locateBlock, mermaidBlocks } from './blocks';
+import { isWardley } from './wardley-text';
 
 /** Mermaid's own parser, loaded on first use (it is part of the bundled Mermaid). */
 const parser: ParseFn = async (type, text) => (await import('@mermaid-js/parser')).parse(type, text);

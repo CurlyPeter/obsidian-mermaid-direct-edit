@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { EditError, deleteNote, getAnnotation, setAnnotationsBoxPosition, editBlocker, freeSpot, getPosition, inertiaPositions, isWardley, locateBlock, mermaidBlocks, nameSpans, rename, setMethod, setPosition, setTitle } from './wardley-text';
-import { SourceRegistry } from './wardley-render';
+import { EditError, deleteNote, getAnnotation, setAnnotationsBoxPosition, editBlocker, freeSpot, getPosition, inertiaPositions, isWardley, nameSpans, rename, setMethod, setPosition, setTitle } from './wardley-text';
+import { locateBlock, mermaidBlocks } from './blocks';
+import { SourceRegistry } from './render';
 
 /** Findings of the security review on 0.12.0 (DEV.md → 0.13.0). */
 
