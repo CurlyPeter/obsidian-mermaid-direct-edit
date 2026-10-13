@@ -10,8 +10,8 @@ import {
 /** What a Wardley gesture may ask the editor to do, beyond writing an edit. */
 export interface GestureCtx extends EditCtx<MapModel> {
 	openNodeDialog(model: MapModel, node: MapNode): void;
-	/** A click on a group's label (not a drag). */
-	groupLabelTap(model: MapModel, name: string): void;
+	/** A click on a group's label (not a drag) or on its free area. */
+	groupTap(model: MapModel, name: string): void;
 	openForceDialog(model: MapModel, kind: ForceKind, name: string): void;
 	openAnnotationDialog(model: MapModel, number: number): void;
 }
@@ -192,7 +192,7 @@ export class GroupLabelDrag extends MapDrag {
 	}
 
 	protected tap() {
-		this.ctx.groupLabelTap(this.model, this.name);
+		this.ctx.groupTap(this.model, this.name);
 	}
 
 	protected restore() {

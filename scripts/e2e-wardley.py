@@ -107,6 +107,28 @@ for (const [k, spec] of Object.entries(ARG)) {
   else if (what === 'box') { const r = svg.querySelector('rect.wardley-pipeline-box')?.getBoundingClientRect(); out[k] = r && [Math.round(r.left + r.width / 2), Math.round(r.bottom - 4)]; }
   else if (what === 'corner') { const r = svg.closest('.mermaid').getBoundingClientRect(); out[k] = a === 'left' ? [Math.round(r.left + 10), Math.round(r.bottom - 10)] : [Math.round(r.right - 10), Math.round(r.bottom - 10)]; }
   else if (what === 'legend-item') { const i = svg.closest('.mermaid').querySelector(`.mp-legend [data-mp-add="${a}"]`); out[k] = i && mid(i.getBoundingClientRect()); }
+  else if (what === 'group-free') {
+    // A point inside group `a` (its index) where nothing else is: far from every node (the "+" ring),
+    // link and evolve line, not on any drawn element, and in no smaller group.
+    const path = svg.querySelector(`g.mde-group[data-mde-group="${a}"] > path.mde-group-boundary`);
+    if (!path) { out[k] = null; continue; }
+    const area = p => { const b = p.getBBox(); return b.width * b.height; };
+    const smaller = [...svg.querySelectorAll('g.mde-group > path.mde-group-boundary')].filter(o => o !== path && area(o) < area(path));
+    const centres = [...svg.querySelectorAll('g.wardley-node')].map(g => center(g.querySelector('text.wardley-node-label')?.textContent.trim())).filter(Boolean).map(c => scr(...c));
+    const lines = [...svg.querySelectorAll('line.wardley-link, line.wardley-trend')].map(l => [scr(+l.getAttribute('x1'), +l.getAttribute('y1')), scr(+l.getAttribute('x2'), +l.getAttribute('y2'))]);
+    const seg = (p, [u, v]) => { const dx = v[0] - u[0], dy = v[1] - u[1], len = dx * dx + dy * dy || 1;
+      const t = Math.max(0, Math.min(1, ((p[0] - u[0]) * dx + (p[1] - u[1]) * dy) / len)); return Math.hypot(p[0] - u[0] - t * dx, p[1] - u[1] - t * dy); };
+    const b = path.getBBox(); let best = null;
+    for (let i = 1; i < 40; i++) for (let j = 1; j < 40; j++) {
+      const pt = new DOMPoint(b.x + b.width * i / 40, b.y + b.height * j / 40);
+      if (!path.isPointInFill(pt) || smaller.some(o => o.isPointInFill(pt))) continue;
+      const s = scr(pt.x, pt.y), el = document.elementFromPoint(...s);
+      if (!el || !svg.contains(el) || el.closest('g.wardley-node, g.wardley-notes, g.wardley-annotation, g.wardley-annotations-box, g.wardley-accelerators, g.wardley-deaccelerators, rect.wardley-pipeline-box, text')) continue;
+      const score = Math.min(Math.min(...centres.map(c => Math.hypot(c[0] - s[0], c[1] - s[1]))) - 30, Math.min(Infinity, ...lines.map(l => seg(s, l))) - 14);
+      if (score > 0 && (!best || score > best[0])) best = [score, s];
+    }
+    out[k] = best && best[1];
+  }
   else if (what === 'menu-item') { const i = [...document.querySelectorAll('.menu .menu-item')].find(i => i.querySelector('.menu-item-title')?.textContent === a); out[k] = i && mid(i.getBoundingClientRect()); }
   else if (what === 'notice-button') { const b = [...document.querySelectorAll('.notice button')].find(b => b.textContent === a && b.closest('.notice').querySelector('.mp-group-notice')); out[k] = b && mid(b.getBoundingClientRect()); }
   else if (what === 'group-label') { const t = [...svg.querySelectorAll('text.mde-group-label')].find(t => t.textContent === a); out[k] = t && mid(t.getBoundingClientRect()); }
@@ -776,6 +798,34 @@ def case_group_label_dialog():
     return bool(ok), f'mode {s}; {title!r}; {g}; {cls}'
 
 
+def group_index(name):
+    """The index the drawing gives a group: its place among the map's group names."""
+    names = []
+    for l in source().splitlines():
+        m = re.match(r'^%% group (?:"([^"]*)"|\'([^\']*)\'|(\S+))', l)
+        n = m and (m.group(1) or m.group(2) or m.group(3))
+        if n and n not in names:
+            names.append(n)
+    return names.index(name)
+
+
+def case_group_area_click():
+    """A click on free space inside a group (here one without a label) starts its group mode, a double
+    click there opens its dialog; what is drawn inside keeps its own clicks (the other cases)."""
+    idx = group_index('Renamed Group')
+    p = locate(f=['group-free', idx]).get('f')
+    if not p:
+        return False, 'no free point inside the group'
+    click(*p); wait(0.8)
+    s = group_state()
+    dblclick(*p); wait(0.6)
+    title = modal_title()
+    E.close_modals(); wait(1)
+    after = group_state()
+    ok = s['editing'] == [idx] and 'Renamed Group' in (s['notice'] or '') and title == 'Edit group "Renamed Group"' and after['notice'] is None
+    return ok, f'at {p}: {s}; {title!r}; after {after}'
+
+
 def case_unload_cleanup():
     # Review #6: unload leaves no stub, legend, drop highlight or open dialog behind.
     p = locate(s=['plus', 'Gamma'], c=['corner', 'left'])
@@ -803,6 +853,7 @@ CASES = [
     ('group_render', case_group_render), ('group_highlight', case_group_highlight), ('group_label_drag', case_group_label_drag),
     ('group_new_from_legend', case_group_new_from_legend), ('group_members', case_group_members), ('group_touch_tap', case_group_touch_tap),
     ('group_properties_delete', case_group_properties_delete), ('group_label_dialog', case_group_label_dialog),
+    ('group_area_click', case_group_area_click),
     ('component_on_shaft', case_component_on_shaft), ('swallow_scope', case_swallow_scope),
     ('popout_window', case_popout_window),
     ('unload_cleanup', case_unload_cleanup),

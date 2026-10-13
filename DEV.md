@@ -880,7 +880,35 @@ label starting the mode with a double click opening the dialog (rename, another 
 hidden, the class line following). No security review: nothing new is written into the drawing,
 every new write goes through `write`/`writeBlock` (`fenceBreak`), and the names are fuzzed above.
 
+## Group area click (0.23.0, 2026-10-13)
+
+Decision (maintainer, 2026-10-13): a click and a double click on a group itself, besides the
+legend's list; every other element and zone comes first.
+
+- **The last stage of `classify`:** where nothing else is hit, a point inside a group's boundary
+  means the group (`groupHit`: `isPointInFill` on each boundary in the drawing's units, the
+  smallest group by its box wins, the name by the drawing's index). The boundaries still take no
+  pointer events. A click starts the group mode, a double click opens the dialog, as on a label;
+  in the mode a click in its own area keeps it, in another group's switches.
+- **What is left to click:** the "+" ring (9 to 22 screen px) and the link zones come first, and a
+  group reaches only 16 map units past its members (about 13 px on a 900-unit map drawn 700 px
+  wide), so the free area is mostly the connections between members far apart, the space between
+  arms, and the outer band of staggered groups. Small groups keep the legend's list.
+- **Touch:** a finger on a group's area does not claim the press (`claims` with `touch`), so a
+  swipe there scrolls the note; a tap without movement still reaches the group.
+- The cursor is a pointer over a group's free area.
+
+Verification: 369 unit tests; E2E 38/38 with `group_area_click` (a free point inside a group
+without a label, found from the drawing: far from every node, link and evolve line, on no drawn
+element, in no smaller group; a click starts its mode, a double click opens its dialog). A first
+run had three unrelated cases fail under heavy load (relink, two annotation cases); the rerun
+passed all 38 at a load average of 27.
+
 ## Changelog
+
+- **0.23.0 (2026-10-13)** A click on free space inside a group starts its group mode, a double
+  click opens its dialog, as on its label and besides the legend's list; everything drawn inside a
+  group keeps its own clicks. On touch a swipe there still scrolls. See "Group area click (0.23.0)".
 
 - **0.22.0 (2026-10-13)** Groups are edited in the map. The legend's *Group* lists *New group* and
   the map's groups; in the group mode a click on a component puts it in or takes it out (the group

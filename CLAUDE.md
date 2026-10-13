@@ -240,7 +240,9 @@ delete).
   source the one before left (`write(model, edit, src)`), because the map is redrawn after the
   write; a `MutationObserver` puts the glow (`mp-group-editing`) back on the redrawn group. A
   visible label is a shortcut: click starts the mode, double click opens `GroupModal` (name, one
-  class, label hidden/shown/kept, delete). Geometry in
+  class, label hidden/shown/kept, delete); since 0.23.0 so is the group's free area (hit kind
+  `group`, the last in `classify`, found by `isPointInFill` on the boundaries, smallest group
+  wins; on touch it does not claim the press, so a swipe there still scrolls). Geometry in
   `wardley-groups.ts`: the outline is the exact swept area
   united with its closing, so keep that union if you touch it (the closing alone shrinks every
   outline by half a grid step). Bounded: 20 groups, 100 members, `GROUP_BUDGET` evaluations, at
@@ -273,7 +275,7 @@ delete).
   **elements under the pointer win over zones**: annotation circle or box, note, a group's label,
   accelerator/deaccelerator, inertia bar, node or label (a group label lies behind nodes and links,
   so it is hit only where nothing covers it); then evolve tip, evolve shaft, link end, link middle; the "+" ring; a pipeline
-  box last. (Before 0.12.0 zones came first, so a click on a component lying on another's
+  box; a group's free area last. (Before 0.12.0 zones came first, so a click on a component lying on another's
   evolve arrow deleted that arrow.)
 - **One gesture at a time**: a press while one is active (a second finger) is ignored; clicks
   after a gesture are swallowed only inside that map.

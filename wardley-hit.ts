@@ -1,7 +1,7 @@
 import { segmentHit } from './geometry';
 import { DROP_RADIUS, FORCE_NAME_OFFSET, LINK_GRAB, PLUS_RING, Pt, TIP_RADIUS, linkPart, onTrendShaft } from './wardley-geometry';
 import { MapModel, MapNode } from './wardley-map';
-import { ForceKind } from './wardley-text';
+import { ForceKind, groupsOf } from './wardley-text';
 
 /** What a press at a point means. Each kind is one gesture or action in the editor. */
 export type Hit =
@@ -18,7 +18,9 @@ export type Hit =
 	| { kind: 'link-end'; line: SVGLineElement; end: 1 | 2; names: [string, string] }
 	| { kind: 'link-middle'; names: [string, string] }
 	| { kind: 'plus'; node: MapNode }
-	| { kind: 'box'; node: MapNode };
+	| { kind: 'box'; node: MapNode }
+	/** Free space inside a group's boundary (`%% group`): the smallest group there. */
+	| { kind: 'group'; name: string };
 
 /**
  * Classifies a press at (x, y) on `target`. **The one priority order**, shared by press,
@@ -28,7 +30,8 @@ export type Hit =
  * 1. elements under the pointer: annotation (circle or box), note, accelerator/deaccelerator,
  *    inertia bar, node or label, a group's label;
  * 2. zones around thin lines: evolve tip, evolve shaft, link end, link middle;
- * 3. the "+" ring around a node; 4. a pipeline box (stands for its parent).
+ * 3. the "+" ring around a node; 4. a pipeline box (stands for its parent); 5. the area of a
+ *    group, which therefore only counts where nothing else does.
  *
  * Inside a pipeline box the link zones need a precise hit and the ring is off, so the box
  * stays grabbable between the many links to its parent.
@@ -39,7 +42,8 @@ export function classify(model: MapModel, target: Element, x: number, y: number)
 		?? trendHit(model, p)
 		?? linkHit(model, p, target.closest('rect.wardley-pipeline-box') ? LINK_GRAB.precise : LINK_GRAB.width)
 		?? (target.closest('rect.wardley-pipeline-box') ? null : plusHit(model, p))
-		?? boxHit(model, target);
+		?? boxHit(model, target)
+		?? groupHit(model, p);
 }
 
 function elementHit(model: MapModel, target: Element): Hit | null {
@@ -151,6 +155,26 @@ function boxHit(model: MapModel, target: Element): Hit | null {
 	const parent = model.pipelineBoxes().find(b => b.box === box)?.parent;
 	const node = model.nodes.find(n => n.name === parent && n.node.classList.contains('wardley-node--component'));
 	return node ? { kind: 'box', node } : null;
+}
+
+/**
+ * The smallest group whose boundary holds the point. The boundaries take no pointer events (a
+ * press inside goes to what is drawn there), so this is geometry: the point in the drawing's
+ * units against each boundary's fill.
+ */
+function groupHit(model: MapModel, p: Pt): Hit | null {
+	const paths = Array.from(model.svg.querySelectorAll<SVGPathElement>('g.mde-group > path.mde-group-boundary'));
+	if (!paths.length) return null;
+	const at = model.toSvg(p.x, p.y);
+	let best: { index: number; area: number } | null = null;
+	for (const path of paths) {
+		if (!path.isPointInFill(new DOMPoint(at.x, at.y))) continue;
+		const b = path.getBBox(), area = b.width * b.height;
+		const index = Number(path.parentElement?.getAttribute('data-mde-group'));
+		if (Number.isInteger(index) && (!best || area < best.area)) best = { index, area };
+	}
+	const name = best ? groupsOf(model.src)[best.index]?.name : undefined;
+	return name === undefined ? null : { kind: 'group', name };
 }
 
 /** The node whose centre is within DROP_RADIUS screen pixels of the pointer. */

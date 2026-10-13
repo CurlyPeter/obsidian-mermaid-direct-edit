@@ -48,7 +48,7 @@ interface GroupEdit {
 
 /** Inline cursor per hit kind; '' leaves it to styles.css (nodes, labels, notes, bars, boxes). */
 const HOVER_CURSOR: Record<Hit['kind'], string> = {
-	annotation: '', note: '', 'group-label': '', force: '', inertia: '', node: '', box: '',
+	annotation: '', note: '', 'group-label': '', force: '', inertia: '', node: '', box: '', group: 'pointer',
 	'trend-tip': 'ew-resize', 'trend-shaft': CURSOR_DELETE, 'link-end': 'crosshair', 'link-middle': 'pointer', plus: CURSOR_ADD,
 };
 
@@ -86,6 +86,10 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 			case 'annotation': return this.start(e, new AnnotationDrag(model, e, this, hit), svg);
 			case 'note': return this.start(e, new NoteDrag(model, e, this, hit.el, hit.text), svg);
 			case 'group-label': return this.start(e, new GroupLabelDrag(model, e, this, hit.el, hit.name), svg);
+			case 'group': {
+				const name = hit.name;
+				return this.start(e, new TapPress(model, e, () => this.groupTap(model, name)), svg);
+			}
 			case 'force': return this.start(e, new ForceDrag(model, e, this, hit.force, hit.name, hit.parts, hit.origin), svg);
 			case 'inertia': return this.start(e, new InertiaDrag(model, e, this, hit.bar, hit.name), svg);
 			case 'node': return this.start(e, new NodeDrag(model, e, this, hit.node, hit.label), svg);
@@ -108,8 +112,10 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 		}
 	}
 
-	protected claims(model: MapModel, target: Element, x: number, y: number): boolean {
-		return !!classify(model, target, x, y);
+	protected claims(model: MapModel, target: Element, x: number, y: number, touch: boolean): boolean {
+		const hit = classify(model, target, x, y);
+		// A finger on a group's area may be scrolling the note: a tap still reaches the group.
+		return !!hit && !(touch && hit.kind === 'group');
 	}
 
 	protected cursorAt(model: MapModel, target: Element, x: number, y: number): string {
@@ -118,7 +124,7 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 			const hit = classify(model, target, x, y);
 			const node = memberHit(hit);
 			if (node) return this.members().has(node.name) ? CURSOR_REMOVE : CURSOR_ADD;
-			return hit?.kind === 'group-label' ? '' : 'default';
+			return hit?.kind === 'group-label' ? '' : hit?.kind === 'group' ? 'pointer' : 'default';
 		}
 		const hit = classify(model, target, x, y);
 		return hit ? HOVER_CURSOR[hit.kind] : '';
@@ -225,8 +231,8 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 		}));
 	}
 
-	/** A click on a group's label starts its group mode; a second one opens its dialog. */
-	groupLabelTap(model: MapModel, name: string) {
+	/** A click on a group's label or free area starts its group mode; a second one opens its dialog. */
+	groupTap(model: MapModel, name: string) {
 		if (this.group?.name !== name) this.startGroup(model, name);
 		this.tap(`group:${name}`, model, () => {
 			this.endGroup();
@@ -415,8 +421,8 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 
 	/**
 	 * A press in the group mode: on a component (its circle, label, pipeline box or "+" ring) a
-	 * click puts it in or takes it out and a drag still moves it; a group's label still moves or
-	 * switches; anything else ends the mode and does nothing more. False when the press is on
+	 * click puts it in or takes it out and a drag still moves it; a group's label or area keeps or
+	 * switches the mode; anything else ends the mode and does nothing more. False when the press is on
 	 * another map: the mode ends and the press is handled as usual.
 	 */
 	private groupPress(e: PointerEvent, model: MapModel): boolean {
@@ -431,6 +437,12 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 		const hit = classify(model, e.target as Element, e.clientX, e.clientY);
 		if (hit?.kind === 'group-label') {
 			this.start(e, new GroupLabelDrag(model, e, this, hit.el, hit.name), svg);
+			return true;
+		}
+		if (hit?.kind === 'group') {
+			// Its own area keeps the mode (a second click opens the dialog), another group's switches.
+			const name = hit.name;
+			this.start(e, new TapPress(model, e, () => this.groupTap(model, name)), svg);
 			return true;
 		}
 		const node = memberHit(hit);
