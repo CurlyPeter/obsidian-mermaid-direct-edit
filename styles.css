@@ -35,6 +35,31 @@ body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-node--pipeline-componen
 body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-node.mp-drop-target {
 	filter: drop-shadow(0 0 4px var(--interactive-accent));
 }
+/* Classes on Wardley maps (`%% class <target> <name>`, see DEV.md): the plugin adds
+   `mde-class-<name>` to a node's group or a link's line. `highlight` is drawn in the theme's
+   accent colour, a thick outline and a bold label for a node, the colour alone for a link;
+   a `%% classDef` in the map overrides it with inline styles. Independent of editing, so it
+   applies to every rendered map, print included. */
+.mermaid svg g.wardley-node.mde-class-highlight > circle:not([class]),
+.mermaid svg g.wardley-node.mde-class-highlight > circle.wardley-market-overlay,
+.mermaid svg g.wardley-node.mde-class-highlight > rect {
+	stroke: var(--color-accent);
+	stroke-width: 2.5px;
+}
+.mermaid svg g.wardley-node.mde-class-highlight > text.wardley-node-label {
+	fill: var(--color-accent);
+	font-weight: bold;
+}
+.mermaid svg line.wardley-link.mde-class-highlight {
+	stroke: var(--color-accent);
+}
+/* A flow arrow's head takes its line's colour. Mermaid draws heads and lines in the same colour,
+   so only a link with a class looks different; without context-stroke the rule is dropped and
+   the heads keep Mermaid's colour. */
+.mermaid svg[aria-roledescription="wardley"] marker[id^="link-arrow-"] > path {
+	fill: context-stroke;
+}
+
 /* Provisional link from a click beside a node; written only once dropped on another node. Its
    free end carries a round handle, so it reads as something to grab rather than a dashed link. */
 .mermaid svg[data-mp-src] line.mp-new-link {

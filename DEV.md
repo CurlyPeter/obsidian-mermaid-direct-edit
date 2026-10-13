@@ -468,9 +468,10 @@ Decisions made in the implementation (for the maintainer to confirm or turn arou
 - **"Link" in the interface** for what Mermaid's syntax calls edges, as Mermaid's documentation
   and the Wardley editor do; the code keeps "edge".
 
-## Proposal: classes for wardley-beta (planned, 2026-10-13)
+## Proposal: classes for wardley-beta (2026-10-13)
 
-Status: interim comment form decided, plugin support not built yet, upstream not proposed yet.
+Status: interim comment form decided and supported by this plugin since 0.19.0 (next section);
+upstream not proposed yet.
 
 **Need.** A map used in a text has to point at parts of itself: "this component", "this
 dependency". wardley-beta has no way to mark an element or a link. Annotations number a spot
@@ -516,17 +517,102 @@ class Kettle -> Power highlight
 - A downstream renderer (a print pipeline that draws maps in a book's design) already reads this
   form and refuses an unknown class or name.
 
-**Open questions, for the implementation in this plugin:**
+The open questions of the proposal (colour, editing, data commands) were decided for 0.19.0,
+next section.
 
-- **Where the highlight colour comes from.** Options: a `%% classDef highlight …` line in the
-  block (closest to the standard, per diagram), a plugin setting (one colour for the vault),
-  or the Obsidian theme's accent colour (follows light/dark). Probably a default from the theme
-  or setting, overridden by a `classDef` when present.
-- Editing: `rename` and `deleteElement` must keep or drop the `%% class` lines, as they do for
-  `%% mp-inertia`; the dialogs could offer a "Highlight" toggle.
-- The data commands (`wardley-read`) could report classes, so consumers stop reading comments.
+## Classes for wardley-beta (0.19.0, 2026-10-13)
+
+The interim form above, drawn, edited and reported by the plugin.
+
+Decisions (maintainer, 2026-10-13), each against the alternatives named:
+
+- **Colour: the theme's accent colour, a `%% classDef` in the map overrides it.** Against a
+  `classDef` only (every map would need two lines to show anything), a plugin setting (no path to
+  the standard, and per device) and the accent only (no colour per map). The accent follows the
+  theme without a redraw, since it is CSS (`--color-accent`).
+- **A highlighted element: thick outline and bold label in the colour, no fill.** A fill would
+  hide the greys Wardley uses for build, buy and outsource, and the book figures draw the same
+  outline. Anchors (text only) get the label colour; a pipeline parent's square gets the outline.
+- **A highlighted link: the colour only, same width** (chosen over 3x width). A `classDef` can set
+  `stroke-width`. Flow heads take the line's colour through `fill: context-stroke` on Mermaid's
+  shared markers; every other link's head keeps its colour because Mermaid draws heads and lines
+  in the same colour, and a browser without `context-stroke` drops the rule and keeps Mermaid's.
+- **`classDef` is whitelisted:** `stroke`, `stroke-width`, `stroke-dasharray`, `fill`, `color`,
+  `font-weight`, with colours (`#hex`, a colour name) and plain numbers only; everything else is
+  dropped and reported by `wardley-read`. The style is written into the SVG after DOMPurify ran,
+  and Mermaid itself had CSS injection through `classDef`, so nothing with `url()`, functions or
+  quotes can pass. The label uses `color`, else the `stroke` colour, so a classDef that only sets
+  `stroke` still gives outline and label one colour, like the default look.
+- **Target grammar:** element names and links, comma-separated as in flowcharts; a link is
+  `A -> B` with exactly `->`, matched as the unordered pair (wardley links have no ids and a pair
+  is linked at most once). Only `->`, because a lookup for every arrow form would make the line
+  parser super-linear; the book script read it the same way.
+- **Edits keep the lines in step:** rename rewrites names in place (the rest of the line keeps its
+  spelling), delete drops the element's targets and those of its links (a line left empty goes),
+  `unlink` drops the link's, and a re-linked link keeps its class (the target follows the new
+  end). New lines go after the last `%% class` line, else at the end of the block.
+- **A class needs a target that exists:** `setClass` refuses an undeclared element or a missing
+  link, and `wardley-read` reports a line naming nothing as an error, so a misspelt name is
+  visible instead of silently drawing nothing.
+- **Drawing on the SVG string, like `placeInertia`:** the string is parsed only to read labels and
+  line ends; the edit inserts class names and inline styles into existing tags. Nodes by label,
+  links by the nodes their ends touch (`END_TOLERANCE`, as the editor). Lookups by name and pair,
+  since `%%` lines are outside Mermaid's size limit and a crafted note can hold very many.
+- **Data commands:** `classes` on elements and links and `classDefs` in `wardley-read`, `classes`
+  in `wardley-apply` (the full set when present). New optional fields, so `schema` stays 1. The
+  book-figure consumer reads classes from the model now instead of parsing comments.
+
+Verification (macOS desktop, Obsidian 1.14.4, Mermaid 12.1.0): 28 new unit tests, 5 more from the security review below (text edits
+parsed by the real parser and read back through the model, the model and apply, the drawing on
+an SVG captured from a live render, timing). Each consistency edit was shown to matter: with its
+`editClassTargets` call removed, its test fails. The captured SVG caught a bug before release:
+the node pattern also matched the container `<g class="wardley-nodes">`, and the count check
+still agreed. Live render in Obsidian (off-screen container, computed styles): the demo map's
+highlighted pipeline parent and label in the accent (`rgb(204, 92, 245)`, label bold), the
+highlighted link in the accent at 1 px, every other element and link unchanged; with
+`%% classDef highlight stroke:#8000F0,stroke-width:4px` shape, label and link in `#8000F0` at
+4 px. `wardley-read` on the live notes reports the classes with empty `errors`. The book figures
+built from the same maps stayed byte-identical after their script switched to the model. E2E
+29/29 with two new cases: `highlight_dialog` (double-click, Highlight on, Save writes
+`%% class Gamma highlight`, outline and label drawn in the accent, the neighbour unchanged; off
+removes the line) and `highlight_link_dialog` (the link dialog writes `%% class User -> Alpha
+highlight`, the line is drawn in the accent in Live Preview and in reading view). A screenshot
+of the demo map showed the outline, the bold label and the coloured link as intended. The
+flowchart suite was not run: no flowchart or shared editor code changed.
+
+**Security review (0.19.0, same day, before release).** A fresh read-only agent measured exploit
+inputs against the real parser and renders. Clean: no note text reaches the drawing outside the
+whitelist (1392 property and value combinations plus 20,000 random hostile `classDef` lines; the
+insertions removed, the SVG is Mermaid's byte for byte), insertion lands on the right tags even
+with markup-like labels, the line parsers are linear, 810 class edits wrote no fence. Fixed:
+
+- **F-A (moderate): drawing was unbounded.** Class lines are comments, which Mermaid's size limit
+  does not count, and duplicate links are each drawn: 9000 copies of one link with 750 distinct
+  classes took 6.3 s per render and made a 102 MB SVG; one node with 80,000 distinct classes took
+  8.4 s (quadratic `includes`). Now at most `MAX_CLASSES` (8) per element, `CLASS_NAME` at most 40
+  characters, at most 256 KB inserted per drawing (else Mermaid's drawing), sets instead of lists,
+  in `wardley-read` too.
+- **F-B (moderate, since 0.15.0): `wardley-apply` could end its block.** An inline-label flow kind
+  accepted line breaks, Mermaid parsed the result, and the CLI wrote without `fenceBreak`. The kind
+  takes no line break now, and the CLI write goes through `fenceBreak`.
+- **F-C (low):** `wardley-apply` `classes` had no cap; now 8 names of at most 40 characters.
+- **F-D (info):** link ends were matched against every node on every render with a class line;
+  now through a grid of `END_TOLERANCE` cells, and only when a class names a link.
+
+Each regression test fails on the code before the fix (render 2111 ms and 8447 ms before). 320
+unit tests; live render and the CLI's refusal of the reviewer's payload re-measured.
 
 ## Changelog
+
+- **0.19.0 (2026-10-13)** Highlights in Wardley maps: `%% class <target> highlight` (Mermaid's
+  `class` statement, commented out until wardley-beta has it) is drawn in the theme's accent
+  colour, an element with a thick outline and a bold label, a link in colour; `%% classDef`
+  gives a map its own colour (checked properties only). Highlight toggle in the element and link
+  dialogs; rename, delete, unlink, re-link and pipeline removal keep the lines in step.
+  `wardley-read` reports `classes` and `classDefs` (errors for a line naming nothing),
+  `wardley-apply` sets `classes`. See "Classes for wardley-beta (0.19.0)". Security review
+  before release: drawing bounded on crafted class lines, and `wardley-apply` can no longer write
+  a closing fence (a crafted link kind could since 0.15.0).
 
 - **0.18.0 (2026-10-11)** Flowcharts are editable (`flowchart` / `graph`): node dialog (label,
   15 shapes, color, group, delete), link dialog (from/to, label, line, ends, minimum length,

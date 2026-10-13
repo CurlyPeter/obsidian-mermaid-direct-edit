@@ -12,8 +12,8 @@ import { MapModel, MapNode } from './wardley-map';
 import { EditModal, LinkModal } from './wardley-modals';
 import {
 	EditError, ForceKind, addAnnotation, addElement, addEvolve, addForce, addLink, addNote, addToPipeline, defaultEvolveTarget,
-	deleteAnnotation, deleteElement, deleteEvolve, deleteForce, deletePipeline, freeSpot, getAnnotation, getLink, getMethod, hasInertia, type Method,
-	nextPipelineEvolution, pipelineOf, rename, renameForce, setAnnotationText, setInertia, setLink, setMethod, unlink,
+	deleteAnnotation, deleteElement, deleteEvolve, deleteForce, deletePipeline, freeSpot, getAnnotation, getClasses, getLink, getMethod, hasInertia,
+	type Method, nextPipelineEvolution, pipelineOf, rename, renameForce, setAnnotationText, setClass, setInertia, setLink, setMethod, unlink,
 } from './wardley-text';
 
 /** Inline cursor per hit kind; '' leaves it to styles.css (nodes, labels, notes, bars, boxes). */
@@ -148,11 +148,13 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 			name,
 			inertia,
 			method,
+			highlight: getClasses(model.src, name).includes('highlight'),
 			// One edit for everything that changed; the rename last, the other edits use the old name.
 			onSave: c => {
 				void this.apply(model, s => {
 					if (c.inertia !== undefined) s = setInertia(s, name, c.inertia);
 					if (c.method !== undefined) s = setMethod(s, name, c.method);
+					if (c.highlight !== undefined) s = setClass(s, name, 'highlight', c.highlight);
 					if (c.name !== undefined) s = rename(s, name, c.name);
 					return s;
 				});
@@ -196,8 +198,16 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 	private openLinkDialog(model: MapModel, a: string, b: string) {
 		let link: ReturnType<typeof getLink>;
 		try { link = getLink(model.src, a, b); } catch (e) { return void this.fail(e instanceof EditError ? e.message : String(e)); }
-		this.open(new LinkModal(this.app, link,
-			(kind, label) => { void this.apply(model, s => setLink(s, a, b, kind, label)); },
+		const highlight = getClasses(model.src, [a, b]).includes('highlight');
+		this.open(new LinkModal(this.app, { ...link, highlight },
+			// Only what changed: setLink rewrites the line, which would fold an inline flow label.
+			(kind, label, on) => {
+				void this.apply(model, s => {
+					if (kind !== link.kind || label.trim() !== link.label) s = setLink(s, a, b, kind, label);
+					if (on !== highlight) s = setClass(s, [link.from, link.to], 'highlight', on);
+					return s;
+				});
+			},
 			() => this.applyThen(model, s => unlink(s, a, b), `link "${link.from}" – "${link.to}" deleted.`),
 		));
 	}

@@ -3,7 +3,7 @@
 Two Obsidian CLI commands (Obsidian 1.12+, desktop) for scripts and agents that work with
 `wardley-beta` maps in notes: read a map as JSON, and bring a map in line with a JSON model
 by editing the text in place. The JSON shape is a contract, versioned by `schema`
-(currently **1**). Since plugin version 0.15.0; `inertiaAt` on every element with inertia, `inertiaAtDefault`, and link-kind comparison by drawing since 0.16.0.
+(currently **1**). Since plugin version 0.15.0; `inertiaAt` on every element with inertia, `inertiaAtDefault`, and link-kind comparison by drawing since 0.16.0; `classes` and `classDefs` since 0.19.0.
 
 ```bash
 obsidian mermaid-direct-edit:wardley-read  path="Maps/Tea Shop.md"
@@ -46,18 +46,19 @@ usually `wardley-beta`). Optional keys are absent when the map has nothing for t
     { "name": "Campfire Kettle", "kind": "component", "visibility": 0.38, "evolution": 0.37, "line": 11,
       "pipeline": "Kettle", "label": [-40, 22] },
     { "name": "Power", "kind": "component", "visibility": 0.10, "evolution": 0.70, "line": 14,
-      "label": [-38, 4], "inertia": true, "inertiaAt": 0.80, "method": "build" }
+      "label": [-38, 4], "inertia": true, "inertiaAt": 0.80, "method": "build", "classes": ["highlight"] }
   ],
   "pipelines": [ { "parent": "Kettle", "children": ["Campfire Kettle", "Electric Kettle"], "line": 10 } ],
   "links": [
     { "from": "Public", "to": "Cup of Tea", "kind": "+>", "label": "buys", "flow": true, "line": 19 },
-    { "from": "Kettle", "to": "Power", "kind": "-.->", "line": 23 }
+    { "from": "Kettle", "to": "Power", "kind": "-.->", "line": 23, "classes": ["highlight"] }
   ],
   "evolves": [ { "name": "Power", "evolution": 0.92, "line": 26 } ],
   "notes": [ { "text": "Standardising power …", "visibility": 0.15, "evolution": 0.12, "line": 29 } ],
   "forces": [ { "kind": "accelerator", "name": "Open source", "visibility": 0.39, "evolution": 0.91, "line": 30 } ],
   "annotations": [ { "number": 1, "text": "first", "visibility": 0.1, "evolution": 0.2, "line": 32 } ],
   "annotationsBox": { "visibility": 0.05, "evolution": 0.9, "line": 33 },
+  "classDefs": [ { "name": "highlight", "style": { "stroke": "#8000F0", "stroke-width": "3px" }, "line": 34 } ],
   "errors": [],
   "unsupported": []
 }
@@ -73,12 +74,32 @@ usually `wardley-beta`). Optional keys are absent when the map has nothing for t
 | `links[].kind` | The arrow as written: `->`, `-->`, `-.->`, `+>`, `+<`, `+<>`, `+'label'>`, `+'label'<`, `+'label'<>`. `flow` is set for the `+` arrows. |
 | `links[].label` | The `; label` after a link, or the inline label of a flow arrow. |
 | `forces` | Accelerators and deaccelerators. |
+| `classes` | On elements and links: the classes set by `%% class` lines (see below), in source order. |
+| `classDefs` | `%% classDef <class> <styles>` lines with the properties this plugin applies (`stroke`, `stroke-width`, `stroke-dasharray`, `fill`, `color`, `font-weight`; colours and plain numbers only). A later definition of the same class adds to an earlier one. |
 | `errors` | `{line, message}`: the map parses but something in it is wrong (see below). `line` is `null` for the whole map. |
 | `unsupported` | `{line, text}`: a statement Mermaid parses that this model has no field for. Expected empty; it lists what a newer Mermaid added before the model knows it. |
 
 **Positions** are read the way Mermaid reads them: each value on its own, at most 1 is a
 decimal, above 1 a percentage. The model is always 0-1. Note that Mermaid's grammar requires
 a decimal point (`0.5`, `50.0`; `50` does not parse).
+
+**Classes** are Mermaid's `class` statement, which wardley-beta does not have yet, written as a
+comment so Mermaid and other renderers ignore it:
+
+```
+%% class Kettle highlight
+%% class Kettle -> Power highlight
+%% class Staff, "Cup of Tea" muted
+%% classDef highlight stroke:#8000F0,stroke-width:3px
+```
+
+One statement per line, the class name last (nothing may follow it); a class name is letters,
+digits, `_` and `-`, at most 40 characters. Targets are element names
+or links, comma-separated; a link is named by its two ends with `->`, in either order, whatever
+arrow the link has. Names are written as in a declaration (quoted when they need it). This plugin
+draws the class `highlight` in the theme's accent colour and applies a `classDef` to any class;
+other class names are carried in the model for consumers. When Mermaid supports `class` for
+wardley-beta, deleting `%% ` is meant to be the whole migration.
 
 **`errors`** (the command still answers `ok:true`):
 
@@ -90,6 +111,9 @@ a decimal point (`0.5`, `50.0`; `50` does not parse).
   (Mermaid draws nothing for either), a pair of elements linked twice, two `evolve` lines
   for one element;
 - an `mp-inertia` comment for an element without `(inertia)`;
+- a `%% class` line without a target, with an empty name or a class name that is not one
+  (letters, digits, `_`, `-`), or naming an element or link the map does not have; a `classDef`
+  part the plugin does not apply (`fill:url(…)`, an unknown property);
 - `Mermaid: …` when the running Mermaid refuses the map for a reason not listed above.
 
 **A block Mermaid cannot parse at all** answers `ok:false` with code `parse-error` and a
@@ -111,8 +135,8 @@ ask to change stays byte-identical, comments included.
 | Section | Entry fields | Identity |
 |---|---|---|
 | `title` | a string (`""` removes the title) | |
-| `elements` | `name`, `evolution`; `visibility` (needed for a new top-level element, optional otherwise, ignored for a pipeline component); optional `kind`, `pipeline`, `label`, `inertia`, `inertiaAt`, `method` | name |
-| `links` | `from`, `to`; optional `kind`, `label` | the unordered pair of names |
+| `elements` | `name`, `evolution`; `visibility` (needed for a new top-level element, optional otherwise, ignored for a pipeline component); optional `kind`, `pipeline`, `label`, `inertia`, `inertiaAt`, `method`, `classes` | name |
+| `links` | `from`, `to`; optional `kind`, `label`, `classes` | the unordered pair of names |
 | `evolves` | `name`, `evolution` | name |
 | `notes` | `text`, `visibility`, `evolution` | the exact text |
 | `forces` | `kind`, `name`, `visibility`, `evolution` | kind and name |
@@ -122,7 +146,10 @@ ask to change stays byte-identical, comments included.
 - **A field absent from an entry keeps the text's value**: no `kind` keeps the arrow, no
   `label` keeps the link label, no `pipeline` keeps the element in (or out of) its pipeline.
   `label: ""` removes a link label; `method: null` removes the decorator; `pipeline: null`
-  means top level.
+  means top level. `classes` given is the full set of the entry's classes, at most 8 (`[]`
+  removes every class): a class taken away is removed from its `%% class` line (the line goes when it names
+  nothing else), a new one is added as a line of its own after the last `%% class` line.
+  `classDefs` are not applied.
 - A position counts as changed when it differs by more than `tolerance` (default 0.01).
   Positions are written with two decimals.
 - **A pipeline parent's evolution is left as written.** Mermaid draws the parent's square at
@@ -156,7 +183,8 @@ ask to change stays byte-identical, comments included.
   link after the last link, an `evolve` after the last one, a note or force after the last
   of its kind.
 - **Removals** (in the text, not in the model) are only reported, as conflicts, unless
-  `allow-delete` is given. Removing an element also removes its links and `evolve` line. A
+  `allow-delete` is given. Removing an element also removes its links, its `evolve` line and
+  the classes set on it or its links; removing a link removes its classes. A
   rename looks like a removal plus an addition.
 - **Conflicts** are differences that are not applied; the other changes still are:
   - a pipeline component whose visibility differs from its parent's (move the parent);

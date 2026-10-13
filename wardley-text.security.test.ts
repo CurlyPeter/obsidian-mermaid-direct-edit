@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EditError, deleteNote, getAnnotation, setAnnotationsBoxPosition, editBlocker, freeSpot, getPosition, inertiaPositions, isWardley, nameSpans, rename, setMethod, setPosition, setTitle } from './wardley-text';
+import { EditError, classDefs, classMarkers, deleteNote, getAnnotation, getClasses, setAnnotationsBoxPosition, editBlocker, freeSpot, getPosition, inertiaPositions, isWardley, nameSpans, rename, setClass, setMethod, setPosition, setTitle } from './wardley-text';
 import { locateBlock, mermaidBlocks } from './blocks';
 import { SourceRegistry } from './render';
 
@@ -111,5 +111,26 @@ describe('names cannot inject statements', () => {
 		const src = 'wardley-beta\ncomponent A [0.5, 0.5]';
 		expect(() => rename(src, 'A', 'x\ncomponent Y [0.1, 0.1]')).toThrow(EditError);
 		expect(rename(src, 'A', 'x" [0.1, 0.1] -> B')).toBe(`wardley-beta\ncomponent 'x" [0.1, 0.1] -> B' [0.5, 0.5]`);
+	});
+});
+
+describe('classes (0.19.0): linear on crafted class lines', () => {
+	const many = (line: string, n: number) => `wardley-beta\ncomponent A [0.1, 0.1]\n${`${line}\n`.repeat(n)}`;
+	it('reads crafted %% class lines in linear time', () => {
+		fast(() => classMarkers(many(`%% class ${"'".repeat(980)} x`, 2000)));
+		fast(() => classMarkers(many(`%% class ${'"a" '.repeat(245)} x`, 2000)));
+		fast(() => classMarkers(many(`%% class ${','.repeat(980)} x`, 2000)));
+		fast(() => classMarkers(many(`%% class a${'->'.repeat(490)} x`, 2000)));
+		fast(() => classMarkers(many(`%% class a${pad(980)}x`, 2000)));
+	});
+	it('reads crafted %% classDef lines in linear time', () => {
+		fast(() => classDefs(many(`%% classDef x ${':,'.repeat(490)}`, 2000)));
+		fast(() => classDefs(many(`%% classDef x stroke-dasharray:${'1 '.repeat(490)}`, 2000)));
+	});
+	it('edits a map with many class lines in linear time', () => {
+		const src = many('%% class A highlight', 20000);
+		fast(() => rename(src, 'A', 'B'));
+		fast(() => setClass(src, 'A', 'highlight', false));
+		fast(() => getClasses(src, 'A'));
 	});
 });

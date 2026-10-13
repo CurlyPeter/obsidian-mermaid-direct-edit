@@ -1,15 +1,19 @@
 import type { RenderHook } from './render';
-import { editBlocker, inertiaPositions } from './wardley-text';
+import { END_TOLERANCE } from './wardley-geometry';
+import { CLASS_NAME, MAX_CLASSES, classDefs, classMarkers, editBlocker, inertiaPositions } from './wardley-text';
 
 /**
  * Rendering of `wardley-beta` maps: editable unless `editBlocker` refuses (0-100 scale, too
- * large, multi-line accDescr), with the plugin's inertia positions applied.
+ * large, multi-line accDescr), with the plugin's inertia positions and classes applied.
  */
 export const wardleyRender: RenderHook = {
 	kind: 'wardley',
 	roles: ['wardley'],
 	blocker: editBlocker,
-	transform: (svg, text) => placeInertia(svg, inertiaPositions(text)),
+	transform: (svg, text) => {
+		const placed = placeInertia(svg, inertiaPositions(text));
+		return applyClasses(placed ?? svg, text) ?? placed;
+	},
 };
 
 /**
@@ -44,4 +48,146 @@ export function placeInertia(svgText: string, positions: Map<string, number>): s
 		return x === null || x === undefined ? bar : `<line class="wardley-inertia" x1="${x}"${y1} x2="${x}"`;
 	});
 	return i === xs.length ? out : null;
+}
+
+type Style = Record<string, string>;
+/** Characters `applyClasses` may add to a drawing; over it, Mermaid's drawing is kept. */
+const MAX_INSERTED = 256 * 1024;
+/** A link's two names in either order. */
+const pairKey = ([a, b]: [string, string]) => (a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`);
+
+/**
+ * A node's group as Mermaid 12.1 writes it (`<g class="wardley-node …">…</g>`, no nested groups)
+ * and a link's line. The class must be exactly `wardley-node` or followed by a blank: the
+ * container `<g class="wardley-nodes">` would otherwise match too, and its match would swallow
+ * the first node while the count still agreed.
+ */
+const NODE_GROUP = /<g class="wardley-node(?: [^"]*)?">[\s\S]*?<\/g>/g;
+const LINK = /<line class="wardley-link(?: [^"]*)?"[^>]*>/g;
+
+/** Where a drawn node sits: its plain circle, a market node's ring, a pipeline parent's square, an anchor's text. */
+function centreOf(g: Element): [number, number] | null {
+	const n = (el: Element, a: string) => Number(el.getAttribute(a));
+	const kids = Array.from(g.children);
+	const circle = kids.find(c => c.localName === 'circle' && !c.getAttribute('class'))
+		?? kids.find(c => c.localName === 'circle' && c.getAttribute('class') === 'wardley-market-overlay');
+	if (circle) return [n(circle, 'cx'), n(circle, 'cy')];
+	const square = kids.find(c => c.localName === 'rect');
+	if (square) return [n(square, 'x') + n(square, 'width') / 2, n(square, 'y') + n(square, 'height') / 2];
+	// An anchor is drawn as its text alone, 3 px above its position.
+	const text = kids.find(c => c.localName === 'text' && c.getAttribute('class') === 'wardley-node-label');
+	return text ? [n(text, 'x'), n(text, 'y') + 3] : null;
+}
+
+const css = (style: Style, keys: string[]) => keys.filter(k => style[k] !== undefined).map(k => `${k}:${style[k]}`).join(';');
+const withStyle = (tag: string, rule: string) => (rule && !/\sstyle="/.test(tag) ? tag.replace(/^<(\w+)/, `<$1 style="${rule}"`) : tag);
+const withClasses = (tag: string, classes: string[]) =>
+	tag.replace(/class="([^"]*)"/, (_, c: string) => `class="${c} mde-class ${classes.map(k => `mde-class-${k}`).join(' ')}"`);
+
+/** A node's group with its classes, and the `classDef` styles on its shape and its label. */
+function classedNode(group: string, classes: string[], style: Style): string {
+	const shape = css(style, ['stroke', 'stroke-width', 'stroke-dasharray', 'fill']);
+	// The label takes the outline's colour unless the class sets one of its own.
+	const labelStyle: Style = { ...style };
+	delete labelStyle.fill;
+	if (style.color ?? style.stroke) labelStyle.fill = style.color ?? style.stroke;
+	const label = css(labelStyle, ['fill', 'font-weight']);
+	let first = true;
+	return group.replace(/<(g|circle|rect|text)\b[^>]*>/g, (tag, name: string) => {
+		if (name === 'g') {
+			if (!first) return tag;
+			first = false;
+			return withClasses(tag, classes);
+		}
+		const cls = /\sclass="([^"]*)"/.exec(tag)?.[1];
+		if (name === 'text') return cls === 'wardley-node-label' ? withStyle(tag, label) : tag;
+		if (name === 'circle' && cls !== undefined && cls !== 'wardley-market-overlay') return tag;
+		return withStyle(tag, shape);
+	});
+}
+
+/**
+ * Applies the plugin's `%% class` lines (DEV.md → "Classes for wardley-beta") to the SVG string
+ * Mermaid returned: the node's group or the link's line gets `mde-class mde-class-<name>`, which
+ * `styles.css` draws for `highlight`, and a `%% classDef` of that class adds its (checked)
+ * properties as inline style. Elements are named by their label, links by the two nodes their
+ * ends touch, the way the editor finds them. Like `placeInertia`, the string is parsed only to
+ * read; it is changed by inserting attribute text, never re-serialized. Null when nothing applies
+ * or when the string's tags do not match the parsed ones (then Mermaid's drawing is kept).
+ */
+export function applyClasses(svgText: string, source: string): string | null {
+	const marks = classMarkers(source).filter(m => !m.problem);
+	if (marks.length === 0) return null;
+	const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
+	if (doc.querySelector('parsererror')) return null;
+	const nodes = Array.from(doc.querySelectorAll('g.wardley-node'));
+	const names = nodes.map(g => Array.from(g.children).find(c => c.localName === 'text' && c.getAttribute('class') === 'wardley-node-label')?.textContent?.trim() ?? '');
+	const lines = Array.from(doc.querySelectorAll('line.wardley-link'));
+	// Lookups by name and by pair: class lines are comments, which Mermaid's size limit does not
+	// count, so a crafted note can hold many; each target costs one lookup, not a scan.
+	const index = (map: Map<string, number[]>, key: string, i: number) => { const l = map.get(key); if (l) l.push(i); else map.set(key, [i]); };
+	const byName = new Map<string, number[]>();
+	names.forEach((n, i) => index(byName, n, i));
+	const byPair = new Map<string, number[]>();
+	if (marks.some(m => m.targets.some(t => typeof t !== 'string'))) {
+		// Link ends to nodes through a grid of END_TOLERANCE cells: the nearest centre within it.
+		const cell = (x: number, y: number) => `${Math.floor(x / END_TOLERANCE)},${Math.floor(y / END_TOLERANCE)}`;
+		const grid = new Map<string, number[]>();
+		const centres = nodes.map(centreOf);
+		centres.forEach((c, i) => { if (c) index(grid, cell(c[0], c[1]), i); });
+		const owner = (x: number, y: number): number | null => {
+			let best: number | null = null, dist = END_TOLERANCE;
+			const cx = Math.floor(x / END_TOLERANCE), cy = Math.floor(y / END_TOLERANCE);
+			for (let dx = -1; dx <= 1; dx++) {
+				for (let dy = -1; dy <= 1; dy++) {
+					for (const i of grid.get(`${cx + dx},${cy + dy}`) ?? []) {
+						const c = centres[i]!, d = Math.hypot(c[0] - x, c[1] - y);
+						if (d <= dist) { best = i; dist = d; }
+					}
+				}
+			}
+			return best;
+		};
+		lines.forEach((l, i) => {
+			const a = owner(Number(l.getAttribute('x1')), Number(l.getAttribute('y1')));
+			const b = owner(Number(l.getAttribute('x2')), Number(l.getAttribute('y2')));
+			if (a !== null && b !== null) index(byPair, pairKey([names[a], names[b]]), i);
+		});
+	}
+	// At most MAX_CLASSES per element: a link drawn many times (duplicates are each drawn) times
+	// many classes made the drawing hundreds of MB (security review 0.19.0).
+	const nodeClasses = nodes.map(() => new Set<string>());
+	const linkClasses = lines.map(() => new Set<string>());
+	const add = (set: Set<string>, cls: string) => { if (set.size < MAX_CLASSES) set.add(cls); };
+	for (const m of marks) {
+		for (const t of m.targets) {
+			if (typeof t === 'string') for (const i of byName.get(t) ?? []) add(nodeClasses[i], m.cls);
+			else for (const i of byPair.get(pairKey(t)) ?? []) add(linkClasses[i], m.cls);
+		}
+	}
+	if (nodeClasses.every(c => !c.size) && linkClasses.every(c => !c.size)) return null;
+	const defs = new Map<string, Style>();
+	for (const d of classDefs(source)) if (CLASS_NAME.test(d.name)) defs.set(d.name, { ...defs.get(d.name), ...d.style });
+	const styleOf = (classes: string[]): Style => {
+		const style: Style = {};
+		for (const c of classes) Object.assign(style, defs.get(c));
+		return style;
+	};
+	// What the plugin inserts stays small next to Mermaid's drawing; beyond that, Mermaid's own.
+	let budget = MAX_INSERTED;
+	const insert = (before: string, after: string) => { budget -= after.length - before.length; return after; };
+	let n = 0;
+	let out = svgText.replace(NODE_GROUP, group => {
+		const classes = [...(nodeClasses[n++] ?? [])];
+		return classes.length && budget > 0 ? insert(group, classedNode(group, classes, styleOf(classes))) : group;
+	});
+	if (n !== nodes.length) return null;
+	let k = 0;
+	out = out.replace(LINK, tag => {
+		const classes = [...(linkClasses[k++] ?? [])];
+		return classes.length && budget > 0
+			? insert(tag, withStyle(withClasses(tag, classes), css(styleOf(classes), ['stroke', 'stroke-width', 'stroke-dasharray'])))
+			: tag;
+	});
+	return k === lines.length && budget >= 0 ? out : null;
 }

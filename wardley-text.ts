@@ -223,7 +223,8 @@ export function setEvolveTarget(source: string, name: string, evolution: number)
 
 /**
  * Moves one end of the link between `a` and `b` (any arrow, either written order) from
- * `oldEnd` to `newName`. Refuses a self-link and a link that already exists.
+ * `oldEnd` to `newName`; a class set on the link stays with it. Refuses a self-link and a link
+ * that already exists.
  */
 /** The two name spans of a link line, or null for any other line. */
 function linkPair(line: string): NameSpan[] | null {
@@ -255,7 +256,8 @@ export function relink(source: string, a: string, b: string, oldEnd: string, new
 	const span = sp.find(x => x.name === oldEnd);
 	if (!span) throw new EditError(`"${oldEnd}" is not an end of this link.`);
 	lines[i] = lines[i].slice(0, span.start) + formatName(newName) + lines[i].slice(span.end);
-	return lines.join('\n');
+	// A class on the link stays with it.
+	return editClassTargets(lines, t => (typeof t !== 'string' && sameTarget(t, [a, b]) ? t.map(n => (n === oldEnd ? newName : n)) : undefined)).join('\n');
 }
 
 /** Index of the single `evolve <name> …` line, or -1 (throws when there are several). */
@@ -389,6 +391,242 @@ export function setInertia(source: string, name: string, on: boolean): string {
 	if (has === on) throw new EditError(on ? `"${name}" already has inertia.` : `"${name}" has no inertia.`);
 	lines[line] = on ? head + trimTail(rest) + ' (inertia)' : head + rest.replace(INERTIA, '');
 	return (on ? lines : withoutInertiaPosition(lines, name)).join('\n');
+}
+
+// ---- classes: `%% class <targets> <class>` and `%% classDef <class> <styles>` ---------------
+
+/**
+ * Mermaid's own `class` statement, commented out until wardley-beta has it (DEV.md → "Classes
+ * for wardley-beta"): `%% class Kettle highlight`, `%% class Kettle -> Power highlight`, several
+ * targets comma-separated. Deleting `%% ` is meant to be the whole migration, so there is no
+ * `mp-` prefix. A link target names the unordered pair of its ends; its arrow is always `->`,
+ * whatever the link draws.
+ */
+const CLASS_HEAD = /^[ \t]*%%[ \t]*class[ \t]+/;
+const CLASS_DEF_HEAD = /^[ \t]*%%[ \t]*classDef[ \t]+/;
+/**
+ * A class name, as Mermaid's flowcharts accept it, at most 40 characters: names are written into
+ * the drawing, and a long one repeated on many elements blew up its size (security review 0.19.0).
+ */
+export const CLASS_NAME = /^[A-Za-z_][A-Za-z0-9_-]{0,39}$/;
+/** Classes per element or link the drawing applies, and `wardley-apply` sets. */
+export const MAX_CLASSES = 8;
+
+/** What a class is set on: an element's name, or the two names of a link (either order). */
+export type ClassTarget = string | [string, string];
+
+interface NameTok { start: number; end: number; name: string }
+/** One target of a class line, with its offsets in the line; `names` is short when malformed. */
+interface TargetSpan { start: number; end: number; link: boolean; names: NameTok[] }
+
+/** A name between `from` and `to`, blanks trimmed: quoted (quotes dropped) or bare. */
+function nameToken(l: string, from: number, to: number): NameTok | null {
+	while (from < to && isBlank(l[from])) from++;
+	while (to > from && isBlank(l[to - 1])) to--;
+	if (from >= to) return null;
+	const q = l[from];
+	if ((q === '"' || q === "'") && to - from >= 2 && l[to - 1] === q) return { start: from, end: to, name: l.slice(from + 1, to - 1) };
+	return { start: from, end: to, name: l.slice(from, to) };
+}
+
+/**
+ * A `%% class` line: its targets and its class (the last token). Null for any other line.
+ * One pass over the line; a quote is skipped to its closing quote in one step (linear, like
+ * every parser on note text, review F1).
+ */
+function classLine(l: string): { targets: TargetSpan[]; cls: string; head: string } | null {
+	if (l.length > MAX_LINE) return null;
+	const head = CLASS_HEAD.exec(l)?.[0];
+	if (!head) return null;
+	const end = trimTail(l).length;
+	let ws = end - 1;
+	while (ws >= head.length && !isBlank(l[ws])) ws--;
+	const cls = l.slice(ws + 1, end);
+	const targets: TargetSpan[] = [];
+	if (ws < head.length) return { targets, cls, head };
+	let segStart = head.length, arrow = -1;
+	const close = (segEnd: number) => {
+		if (arrow < 0) {
+			const n = nameToken(l, segStart, segEnd);
+			targets.push(n ? { start: n.start, end: n.end, link: false, names: [n] } : { start: segStart, end: segEnd, link: false, names: [] });
+			return;
+		}
+		const a = nameToken(l, segStart, arrow), b = nameToken(l, arrow + 2, segEnd);
+		targets.push({ start: a?.start ?? arrow, end: b?.end ?? arrow + 2, link: true, names: a && b ? [a, b] : [] });
+	};
+	for (let i = head.length; i < ws; i++) {
+		const c = l[i];
+		if ((c === '"' || c === "'") && (i === segStart || isBlank(l[i - 1]) || l[i - 1] === ',' || l[i - 1] === '>')) {
+			const q = l.indexOf(c, i + 1);
+			if (q < 0 || q >= ws) break;
+			i = q;
+		} else if (c === '-' && l[i + 1] === '>' && arrow < 0) {
+			arrow = i++;
+		} else if (c === ',') {
+			close(i);
+			segStart = i + 1;
+			arrow = -1;
+		}
+	}
+	close(ws);
+	return { targets, cls, head };
+}
+
+const targetOf = (t: TargetSpan): ClassTarget | null =>
+	t.link ? (t.names.length === 2 ? [t.names[0].name, t.names[1].name] : null) : (t.names.length === 1 ? t.names[0].name : null);
+
+/** Whether two targets are the same element, or the same link in either order. */
+export function sameTarget(a: ClassTarget, b: ClassTarget): boolean {
+	if (typeof a === 'string' || typeof b === 'string') return a === b;
+	return (a[0] === b[0] && a[1] === b[1]) || (a[0] === b[1] && a[1] === b[0]);
+}
+
+/** Whether a target names `name`: the element itself or a link with that end. */
+const touches = (t: ClassTarget, name: string) => (typeof t === 'string' ? t === name : t.includes(name));
+
+/** Every `%% class` line with its 1-based line; `problem` says why a line sets nothing. */
+export function classMarkers(source: string): { line: number; cls: string; targets: ClassTarget[]; problem?: string }[] {
+	const out: { line: number; cls: string; targets: ClassTarget[]; problem?: string }[] = [];
+	source.split('\n').forEach((l, i) => {
+		const c = classLine(l);
+		if (!c) return;
+		const targets = c.targets.map(targetOf);
+		const problem = !c.targets.length ? 'no target, write %% class <name> <class> or %% class <name> -> <name> <class>.'
+			: !CLASS_NAME.test(c.cls) ? `"${c.cls}" is not a class name (letters, digits, _ and -, at most 40).`
+				: targets.some(t => t === null) ? 'an empty name in its targets.' : undefined;
+		out.push({ line: i + 1, cls: c.cls, targets: targets.filter((t): t is ClassTarget => t !== null), ...(problem ? { problem } : {}) });
+	});
+	return out;
+}
+
+/** The classes set on a target, in source order, each once. */
+export function getClasses(source: string, target: ClassTarget): string[] {
+	const out: string[] = [];
+	for (const m of classMarkers(source)) {
+		if (!m.problem && !out.includes(m.cls) && m.targets.some(t => sameTarget(t, target))) out.push(m.cls);
+	}
+	return out;
+}
+
+/**
+ * Rewrites the targets of every `%% class` line. `f` answers per target: undefined keeps it,
+ * null drops it, an array gives the names to write in place of its names. Names are replaced in
+ * place, so the rest of the line keeps its spelling; a line that lost a target is written anew,
+ * and one left without targets is removed.
+ */
+function editClassTargets(lines: string[], f: (t: ClassTarget, cls: string) => string[] | null | undefined): string[] {
+	const out: string[] = [];
+	for (const l of lines) {
+		const c = classLine(l);
+		if (!c || !c.targets.length) { out.push(l); continue; }
+		const parts = c.targets.map(t => {
+			const target = targetOf(t);
+			return { t, r: target === null ? undefined : f(target, c.cls) };
+		});
+		if (parts.every(p => p.r === undefined)) { out.push(l); continue; }
+		const write = (p: { t: TargetSpan; r: string[] | null | undefined }, text: string, base: number) => {
+			if (!p.r) return text;
+			for (let k = p.t.names.length - 1; k >= 0; k--) {
+				const n = p.t.names[k];
+				if (p.r[k] !== undefined && p.r[k] !== n.name) text = text.slice(0, n.start - base) + formatName(p.r[k]) + text.slice(n.end - base);
+			}
+			return text;
+		};
+		if (parts.some(p => p.r === null)) {
+			const kept = parts.filter(p => p.r !== null).map(p => write(p, l.slice(p.t.start, p.t.end), p.t.start));
+			if (kept.length) out.push(`${c.head}${kept.join(', ')} ${c.cls}`);
+			continue;
+		}
+		let text = l;
+		for (let k = parts.length - 1; k >= 0; k--) {
+			const p = parts[k];
+			text = text.slice(0, p.t.start) + write(p, l.slice(p.t.start, p.t.end), p.t.start) + text.slice(p.t.end);
+		}
+		out.push(text);
+	}
+	return out;
+}
+
+/**
+ * Sets or removes a class on an element or a link. A new `%% class` line goes after the last
+ * one, else at the end of the map; removing takes the target out of every line that names it
+ * with that class. The target must exist (no orphan lines).
+ */
+export function setClass(source: string, target: ClassTarget, cls: string, on: boolean): string {
+	if (!CLASS_NAME.test(cls)) throw new EditError(`"${cls}" is not a class name (letters, digits, _ and -, at most 40).`);
+	const lines = source.split('\n');
+	if (typeof target === 'string') findDeclaration(lines, target);
+	else findLink(lines, target[0], target[1]);
+	if (getClasses(source, target).includes(cls) === on) return source;
+	if (!on) return editClassTargets(lines, (t, c) => (c === cls && sameTarget(t, target) ? null : undefined)).join('\n');
+	const written = typeof target === 'string' ? formatName(target) : `${formatName(target[0])} -> ${formatName(target[1])}`;
+	let at = -1;
+	lines.forEach((l, i) => { if (classLine(l)) at = i; });
+	if (at >= 0) {
+		lines.splice(at + 1, 0, `${/^[ \t]*/.exec(lines[at])?.[0] ?? ''}%% class ${written} ${cls}`);
+	} else {
+		let end = lines.length;
+		while (end > 0 && lines[end - 1].trim() === '') end--;
+		lines.splice(end, 0, `%% class ${written} ${cls}`);
+	}
+	return lines.join('\n');
+}
+
+/** Makes `classes` exactly the classes of a target (`wardley-apply`). */
+export function setClasses(source: string, target: ClassTarget, classes: string[]): string {
+	const cur = getClasses(source, target);
+	let s = source;
+	for (const c of cur) if (!classes.includes(c)) s = setClass(s, target, c, false);
+	for (const c of classes) if (!cur.includes(c)) s = setClass(s, target, c, true);
+	return s;
+}
+
+/**
+ * What a `%% classDef` may set, and the values it accepts: colours and plain numbers only. The
+ * style is written into the drawing, and Mermaid itself had CSS injection through `classDef`,
+ * so nothing else passes (no `url()`, no functions, no other properties).
+ */
+const COLOR = /^(?:#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})|[a-zA-Z]{1,30})$/;
+const STYLE_VALUE = new Map<string, RegExp>([
+	['stroke', COLOR], ['fill', COLOR], ['color', COLOR],
+	['stroke-width', /^\d{1,2}(?:\.\d{1,2})?(?:px)?$/],
+	['stroke-dasharray', /^\d{1,3}(?: {1,3}\d{1,3}){0,7}$/],
+	['font-weight', /^(?:normal|bold|[1-9]00)$/],
+]);
+export const STYLE_PROPERTIES = [...STYLE_VALUE.keys()];
+
+export interface ClassDef {
+	line: number;
+	name: string;
+	/** The accepted properties. */
+	style: Record<string, string>;
+	/** Parts not accepted, as written. */
+	rejected: string[];
+}
+
+/** Every `%% classDef <class> prop:value,prop:value` line (Mermaid's flowchart syntax). */
+export function classDefs(source: string): ClassDef[] {
+	const out: ClassDef[] = [];
+	source.split('\n').forEach((l, i) => {
+		if (l.length > MAX_LINE) return;
+		const head = CLASS_DEF_HEAD.exec(l)?.[0];
+		if (!head) return;
+		const rest = trimTail(l.slice(head.length));
+		let sp = 0;
+		while (sp < rest.length && !isBlank(rest[sp])) sp++;
+		const def: ClassDef = { line: i + 1, name: rest.slice(0, sp), style: {}, rejected: [] };
+		for (const part of rest.slice(sp).split(',')) {
+			const p = part.trim().replace(/;$/, '');
+			if (!p) continue;
+			const colon = p.indexOf(':');
+			const prop = (colon < 0 ? p : p.slice(0, colon)).trim().toLowerCase();
+			const value = colon < 0 ? '' : p.slice(colon + 1).trim();
+			if (STYLE_VALUE.get(prop)?.test(value)) def.style[prop] = value;
+			else def.rejected.push(p);
+		}
+		out.push(def);
+	});
+	return out;
 }
 
 /**
@@ -720,7 +958,7 @@ export function deletePipeline(source: string, parent: string): string {
 	// silently skips them, and a later component of the same name would inherit them.
 	out = out.filter(l => !(linkPair(l)?.some(s => children.includes(s.name)))
 		&& !(/^[ \t]*evolve[ \t]/.test(l) && children.includes(nameSpans(l)[0]?.name ?? '')));
-	return out.join('\n');
+	return editClassTargets(out, t => (children.some(c => touches(t, c)) ? null : undefined)).join('\n');
 }
 
 /** Shifts every component of a parent's pipeline by `delta` evolution (moving the box). */
@@ -747,8 +985,9 @@ export function declaredPositions(source: string): { name: string; kind: 'anchor
 }
 
 /**
- * Deletes an anchor or component with everything that refers to it: its links and its
- * evolve arrow. A pipeline parent is refused (its pipeline block would dangle).
+ * Deletes an anchor or component with everything that refers to it: its links, its evolve
+ * arrow and the classes set on it or its links. A pipeline parent is refused (its pipeline
+ * block would dangle).
  */
 export function deleteElement(source: string, name: string): string {
 	let lines = source.split('\n');
@@ -764,7 +1003,7 @@ export function deleteElement(source: string, name: string): string {
 		if (parent && pipelineOf(lines.join('\n'), parent)?.length === 1) return deletePipeline(source, parent);
 	}
 	lines = lines.filter((l, i) => i !== line && i !== evolve && !(linkPair(l)?.some(s => s.name === name)));
-	return withoutInertiaPosition(lines, name).join('\n');
+	return editClassTargets(withoutInertiaPosition(lines, name), t => (touches(t, name) ? null : undefined)).join('\n');
 }
 
 /** How a link is drawn: a plain or dashed line, or a flow arrow in one or both directions. */
@@ -815,12 +1054,12 @@ export function setLink(source: string, a: string, b: string, kind: LinkKind, la
 	return lines.join('\n');
 }
 
-/** Deletes the link between `a` and `b` (its whole line, label included). */
+/** Deletes the link between `a` and `b` (its whole line, label included) and the classes set on it. */
 export function unlink(source: string, a: string, b: string): string {
 	const lines = source.split('\n');
 	const { i } = findLink(lines, a, b);
 	lines.splice(i, 1);
-	return lines.join('\n');
+	return editClassTargets(lines, t => (sameTarget(t, [a, b]) ? null : undefined)).join('\n');
 }
 
 /**
@@ -841,7 +1080,7 @@ export function addLink(source: string, from: string, to: string): string {
 	return lines.join('\n');
 }
 
-/** Renames an element everywhere in the map: declaration, links, evolve, pipeline. */
+/** Renames an element everywhere in the map: declaration, links, evolve, pipeline, comments it is named in. */
 export function rename(source: string, oldName: string, newName: string): string {
 	const next = newName.trim();
 	if (next === oldName) return source;
@@ -851,13 +1090,16 @@ export function rename(source: string, oldName: string, newName: string): string
 	if (lines.some(l => nameSpans(l).some(s => s.declaration && s.name === next))) {
 		throw new EditError(`"${next}" already exists in this map.`);
 	}
-	return lines.map(l => {
+	const renamed = lines.map(l => {
 		const pos = inertiaComment(l);
 		if (pos) return unquote(pos[2].trim()) === oldName ? `${pos[1]}${written}${pos[3]}${pos[4]}` : l;
 		const spans = nameSpans(l).filter(s => s.name === oldName).sort((a, b) => b.start - a.start);
 		for (const s of spans) l = l.slice(0, s.start) + written + l.slice(s.end);
 		return l;
-	}).join('\n');
+	});
+	return editClassTargets(renamed, t => (touches(t, oldName)
+		? (typeof t === 'string' ? [next] : t.map(n => (n === oldName ? next : n)))
+		: undefined)).join('\n');
 }
 
 // ---- helpers the editor needs, kept here because they are pure ------------------------

@@ -456,6 +456,89 @@ def case_popout_window():
     return ok, json.dumps(r)
 
 
+
+# Drawn styles of nodes and links, with the theme's accent colour resolved to rgb() for comparison.
+STYLES = r"""
+(()=>{
+const root = app.workspace.activeLeaf.view.contentEl.querySelector(__ROOT__);
+const svg = root && root.querySelector('.mermaid svg[aria-roledescription="wardley"]');
+if (!svg) return JSON.stringify({error: 'no map'});
+const probe = document.body.createDiv(); probe.style.color = 'var(--color-accent)'; const accent = getComputedStyle(probe).color; probe.remove();
+const node = n => [...svg.querySelectorAll('g.wardley-node')].find(g => g.querySelector('text.wardley-node-label')?.textContent.trim() === n);
+const shape = g => [...g.querySelectorAll(':scope > circle')].find(c => !c.getAttribute('class')) ?? g.querySelector(':scope > rect');
+const centre = n => { const g = node(n); const c = g && shape(g); if (c) return c.localName === 'rect' ? [+c.getAttribute('x') + +c.getAttribute('width') / 2, +c.getAttribute('y') + +c.getAttribute('height') / 2] : [+c.getAttribute('cx'), +c.getAttribute('cy')];
+  const t = g?.querySelector('text'); return t ? [+t.getAttribute('x'), +t.getAttribute('y') + 3] : null; };
+const near = (x, y, c) => c && Math.hypot(x - c[0], y - c[1]) <= 10;
+const out = {accent};
+for (const [k, [what, a, b]] of Object.entries(__ARG__)) {
+  if (what === 'node') { const g = node(a); out[k] = g && {cls: g.getAttribute('class'), shape: getComputedStyle(shape(g)).stroke, label: getComputedStyle(g.querySelector('text.wardley-node-label')).fill}; }
+  else { const ca = centre(a), cb = centre(b);
+    const l = [...svg.querySelectorAll('line.wardley-link')].find(l => { const x1 = +l.getAttribute('x1'), y1 = +l.getAttribute('y1'), x2 = +l.getAttribute('x2'), y2 = +l.getAttribute('y2'); return (near(x1, y1, ca) && near(x2, y2, cb)) || (near(x1, y1, cb) && near(x2, y2, ca)); });
+    out[k] = l && {cls: l.getAttribute('class'), stroke: getComputedStyle(l).stroke}; }
+}
+return JSON.stringify(out);
+})()
+"""
+
+
+def styles(spec, view='.markdown-source-view'):
+    raw = js(STYLES.replace('__ROOT__', json.dumps(view)).replace('__ARG__', json.dumps(spec)))
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        raise RuntimeError(f'styles failed: {raw[:200]}')
+
+
+def save_with_highlight_toggled(at, double):
+    """Opens a dialog (double click: element, click: link), flips its Highlight toggle, saves."""
+    if double:
+        click(*at, 1); click(*at, 2)
+    else:
+        click(*at)
+    wait(0.6)
+    title = modal_title()
+    js('(()=>{const m=document.querySelector(".modal"); const s=[...m.querySelectorAll(".setting-item")]'
+       '.find(s=>s.querySelector(".setting-item-name")?.textContent==="Highlight");'
+       ' s.querySelector(".checkbox-container").click();'
+       ' [...m.querySelectorAll("button")].find(b=>b.textContent==="Save").click(); return "x"})()')
+    wait(); park()
+    return title
+
+
+def case_highlight_dialog():
+    """The element dialog's Highlight writes `%% class <name> highlight`, the map draws the component
+    in the accent colour (outline and label), its neighbour stays as it was; off removes the line."""
+    t1 = save_with_highlight_toggled(locate(n=['node', 'Gamma'])['n'], True)
+    on = line(r'^%% class .*$')
+    st = styles({'g': ['node', 'Gamma'], 'z': ['node', 'Zeta']})
+    t2 = save_with_highlight_toggled(locate(n=['node', 'Gamma'])['n'], True)
+    off = line(r'^%% class .*$')
+    g, z, accent = st.get('g') or {}, st.get('z') or {}, st.get('accent')
+    ok = (t1 == t2 == 'Edit "Gamma"' and on == '%% class Gamma highlight' and 'mde-class-highlight' in g.get('cls', '')
+          and g.get('shape') == accent and g.get('label') == accent and z.get('shape') != accent and off is None)
+    return ok, f'{on}; Gamma {g}; Zeta {z}; accent {accent}; after off: {off}'
+
+
+def case_highlight_link_dialog():
+    """The link dialog's Highlight writes `%% class <from> -> <to> highlight` and the line takes the
+    accent colour, in Live Preview and in reading view."""
+    title = save_with_highlight_toggled(locate(m=['link-mid', 'User', 'Alpha'])['m'], False)
+    got = line(r'^%% class .*$')
+    live = styles({'l': ['link', 'User', 'Alpha']})
+    leaf = "app.workspace.activeLeaf"
+    js('(async()=>{const l=' + leaf + '; const s=l.getViewState(); s.state.mode="preview"; await l.setViewState(s);'
+       ' await new Promise(r=>setTimeout(r,800)); l.view.currentMode.applyScroll(80); await new Promise(r=>setTimeout(r,1500)); return "ok"})()')
+    try:
+        read = styles({'l': ['link', 'User', 'Alpha']}, '.markdown-preview-view')
+    finally:
+        js('(async()=>{const l=' + leaf + '; const s=l.getViewState(); s.state.mode="source"; await l.setViewState(s);'
+           ' await new Promise(r=>setTimeout(r,1200)); return "ok"})()')
+        park()
+    ok = (title.startswith('Link') and got == '%% class User -> Alpha highlight'
+          and (live.get('l') or {}).get('stroke') == live.get('accent') and (read.get('l') or {}).get('stroke') == read.get('accent'))
+    return ok, f'{got}; live {live}; reading view {read}'
+
+
 def case_unload_cleanup():
     # Review #6: unload leaves no stub, legend, drop highlight or open dialog behind.
     p = locate(s=['plus', 'Gamma'], c=['corner', 'left'])
@@ -479,6 +562,7 @@ CASES = [
     ('annotation_dialog', case_annotation_dialog), ('annotation_delete', case_annotation_delete),
     ('legend_annotation', case_legend_annotation),
     ('rename_dialog', case_rename_dialog), ('type_dialog', case_type_dialog), ('legend_corner', case_legend_corner),
+    ('highlight_dialog', case_highlight_dialog), ('highlight_link_dialog', case_highlight_link_dialog),
     ('component_on_shaft', case_component_on_shaft), ('swallow_scope', case_swallow_scope),
     ('popout_window', case_popout_window),
     ('unload_cleanup', case_unload_cleanup),

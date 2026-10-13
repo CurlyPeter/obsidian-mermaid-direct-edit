@@ -12,10 +12,10 @@
  */
 import { CliError } from './cli';
 import {
-	EditError, Method, addElement, addEvolve, addForce, addLink, addNote, addToPipeline, deleteElement,
-	deleteEvolve, deleteForce, deleteNote, editBlocker, inertiaMarkers, setEvolveTarget, setInertiaPosition,
-	setForcePosition, setInertia, setLabelOffset, setLink, setMethod, setNotePosition, setPosition,
-	setTitle, unlink, LinkKind,
+	CLASS_NAME, EditError, MAX_CLASSES, Method, STYLE_PROPERTIES, addElement, addEvolve, addForce, addLink, addNote, addToPipeline,
+	classDefs, classMarkers, deleteElement, deleteEvolve, deleteForce, deleteNote, editBlocker, inertiaMarkers,
+	setClasses, setEvolveTarget, setInertiaPosition, setForcePosition, setInertia, setLabelOffset, setLink, setMethod,
+	setNotePosition, setPosition, setTitle, unlink, LinkKind,
 } from './wardley-text';
 
 /** Version of the model shape. Bump on any incompatible change. */
@@ -43,6 +43,8 @@ export interface ModelElement {
 	/** `inertiaAt` is Mermaid's default (no `%% mp-inertia` comment). */
 	inertiaAtDefault?: true;
 	method?: Method;
+	/** Classes set by `%% class <name> <class>` lines (the plugin's interim form of Mermaid's `class`). */
+	classes?: string[];
 }
 
 export interface ModelLink {
@@ -55,6 +57,8 @@ export interface ModelLink {
 	/** A flow arrow (`+…`). */
 	flow?: true;
 	line: number;
+	/** Classes set by `%% class <a> -> <b> <class>` lines, either order of the names. */
+	classes?: string[];
 }
 
 export interface WardleyModel {
@@ -74,6 +78,8 @@ export interface WardleyModel {
 	forces: { kind: 'accelerator' | 'deaccelerator'; name: string; visibility: number; evolution: number; line: number }[];
 	annotations: { number: number; text: string; visibility: number; evolution: number; line: number }[];
 	annotationsBox?: { visibility: number; evolution: number; line: number };
+	/** `%% classDef <class> <styles>` lines: the accepted properties of each. */
+	classDefs?: { name: string; style: Record<string, string>; line: number }[];
 	/** The map parses but is wrong somewhere (line null: the whole map). */
 	errors: { line: number | null; message: string }[];
 	/** Parsed statements no field of the model covers (expected empty). */
@@ -232,6 +238,31 @@ export async function readModel(source: string, parse: ParseFn): Promise<Wardley
 		links.push(link);
 	}
 
+	// Classes (`%% class`, a plugin comment until wardley-beta has the statement): on declared
+	// elements and existing links only, so a misspelt name is reported instead of drawing nothing.
+	const seen = new WeakMap<object, Set<string>>();
+	const add = (entry: { classes?: string[] }, cls: string) => {
+		const set = seen.get(entry) ?? new Set<string>();
+		seen.set(entry, set);
+		if (!set.has(cls)) { set.add(cls); (entry.classes ??= []).push(cls); }
+	};
+	const linkByPair = new Map<string, ModelLink>();
+	for (const l of links) if (!linkByPair.has(pairKey(l.from, l.to))) linkByPair.set(pairKey(l.from, l.to), l);
+	for (const m of classMarkers(source)) {
+		if (m.problem) { errors.push({ line: m.line, message: `class: ${m.problem}` }); continue; }
+		for (const t of m.targets) {
+			if (typeof t === 'string') {
+				const el = byName.get(t);
+				if (el) add(el, m.cls);
+				else errors.push({ line: m.line, message: `class ${m.cls}: no element "${t}" in this map.` });
+			} else {
+				const link = linkByPair.get(pairKey(t[0], t[1]));
+				if (link) add(link, m.cls);
+				else errors.push({ line: m.line, message: `class ${m.cls}: no link between "${t[0]}" and "${t[1]}" in this map.` });
+			}
+		}
+	}
+
 	const evolves: WardleyModel['evolves'] = [];
 	for (const ev of ast.evolves) {
 		const line = lineOf(ev);
@@ -280,6 +311,13 @@ export async function readModel(source: string, parse: ParseFn): Promise<Wardley
 		const b = ast.annotations[0];
 		const line = lineOf(b);
 		model.annotationsBox = { visibility: coord(b.x, line, 'annotations box'), evolution: coord(b.y, line, 'annotations box'), line };
+	}
+	for (const d of classDefs(source)) {
+		if (!CLASS_NAME.test(d.name)) errors.push({ line: d.line, message: `classDef: "${d.name}" is not a class name (letters, digits, _ and -, at most 40).` });
+		for (const r of d.rejected) {
+			errors.push({ line: d.line, message: `classDef ${d.name}: "${r}" is not applied (only ${STYLE_PROPERTIES.join(', ')} with colours or plain numbers).` });
+		}
+		(model.classDefs ??= []).push({ name: d.name, style: d.style, line: d.line });
 	}
 
 	// Every top-level statement of the parse tree is either covered above or listed here.
@@ -337,8 +375,8 @@ const FORCE_KINDS = ['accelerator', 'deaccelerator'];
 /** The target model, checked field by field; only what `apply` uses. */
 interface Target {
 	title?: string;
-	elements?: { name: string; kind?: 'anchor' | 'component'; visibility?: number; evolution: number; pipeline?: string | null; label?: Pair | null; inertia?: boolean; inertiaAt?: number | null; method?: Method | null }[];
-	links?: { from: string; to: string; kind?: string; label?: string | null }[];
+	elements?: { name: string; kind?: 'anchor' | 'component'; visibility?: number; evolution: number; pipeline?: string | null; label?: Pair | null; inertia?: boolean; inertiaAt?: number | null; method?: Method | null; classes?: string[] }[];
+	links?: { from: string; to: string; kind?: string; label?: string | null; classes?: string[] }[];
 	evolves?: { name: string; evolution: number }[];
 	notes?: { text: string; visibility: number; evolution: number }[];
 	forces?: { kind: 'accelerator' | 'deaccelerator'; name: string; visibility: number; evolution: number }[];
@@ -350,6 +388,11 @@ function checkTarget(t: any): Target {
 	const str = (v: any, what: string) => { if (typeof v !== 'string' || !v.trim()) bad(`${what} must be a non-empty string.`); };
 	const num = (v: any, what: string) => { if (typeof v !== 'number' || !Number.isFinite(v)) bad(`${what} must be a number.`); };
 	const arr = (k: string) => { if (t[k] !== undefined && !Array.isArray(t[k])) bad(`${k} must be an array.`); return (t[k] ?? []) as any[]; };
+	const classes = (v: any, what: string) => {
+		if (v !== undefined && !(Array.isArray(v) && v.length <= MAX_CLASSES && v.every((c: any) => typeof c === 'string' && CLASS_NAME.test(c)))) {
+			bad(`${what} must be an array of at most ${MAX_CLASSES} class names.`);
+		}
+	};
 	if (t.title !== undefined && typeof t.title !== 'string') bad('title must be a string.');
 	arr('elements').forEach((e, i) => {
 		str(e?.name, `elements[${i}].name`);
@@ -361,11 +404,13 @@ function checkTarget(t: any): Target {
 		if (e.inertia !== undefined && typeof e.inertia !== 'boolean') bad(`elements[${i}].inertia must be a boolean.`);
 		if (e.inertiaAt != null) num(e.inertiaAt, `elements[${i}].inertiaAt`);
 		if (e.method != null && !METHODS.includes(e.method)) bad(`elements[${i}].method must be one of ${METHODS.join('|')}.`);
+		classes(e.classes, `elements[${i}].classes`);
 	});
 	arr('links').forEach((l, i) => {
 		str(l?.from, `links[${i}].from`); str(l.to, `links[${i}].to`);
-		if (l.kind !== undefined && !/^(->|-->|-\.->|\+<>|\+<|\+>|\+'[^']*'(?:<>|<|>))$/.test(l.kind)) bad(`links[${i}].kind "${l.kind}" is not an arrow.`);
+		if (l.kind !== undefined && !/^(->|-->|-\.->|\+<>|\+<|\+>|\+'[^'\r\n]*'(?:<>|<|>))$/.test(l.kind)) bad(`links[${i}].kind "${l.kind}" is not an arrow.`);
 		if (l.label != null && typeof l.label !== 'string') bad(`links[${i}].label must be a string.`);
+		classes(l.classes, `links[${i}].classes`);
 	});
 	arr('evolves').forEach((e, i) => { str(e?.name, `evolves[${i}].name`); num(e.evolution, `evolves[${i}].evolution`); });
 	arr('notes').forEach((n, i) => { str(n?.text, `notes[${i}].text`); num(n.visibility, `notes[${i}].visibility`); num(n.evolution, `notes[${i}].evolution`); });
@@ -377,6 +422,7 @@ function checkTarget(t: any): Target {
 }
 
 const at2 = (v: number) => Math.round(v * 100) / 100;
+const sameSet = (a: string[], b: string[]) => { const x = new Set(a), y = new Set(b); return x.size === y.size && [...x].every(v => y.has(v)); };
 
 /**
  * Brings `source` in line with `target` by in-place edits. Sections absent from the target
@@ -450,6 +496,7 @@ export async function applyModel(source: string, targetIn: unknown, parse: Parse
 			if (t.label && kind === 'component') edit(what, undefined, src => setLabelOffset(src, name, t.label![0], t.label![1]));
 			if (t.inertia && kind === 'component' && !t.pipeline) edit(what, undefined, src => setInertia(src, name, true));
 			if (t.method && kind === 'component') edit(what, undefined, src => setMethod(src, name, t.method!));
+			if (t.classes?.length) edit(what, undefined, src => setClasses(src, name, t.classes!));
 			continue;
 		}
 		if (kind !== c.kind) {
@@ -502,6 +549,11 @@ export async function applyModel(source: string, targetIn: unknown, parse: Parse
 				changes.push({ op: 'update', what: `${what} method`, from: c.method ?? null, to: t.method ?? null, line: c.line });
 			}
 		}
+		if (t.classes !== undefined && !sameSet(t.classes, c.classes ?? [])) {
+			if (edit(what, c.line, src => setClasses(src, name, t.classes!))) {
+				changes.push({ op: 'update', what: `${what} classes`, from: c.classes ?? [], to: t.classes, line: c.line });
+			}
+		}
 	}
 
 	// ---- links, by the unordered pair of names
@@ -525,6 +577,7 @@ export async function applyModel(source: string, targetIn: unknown, parse: Parse
 					const arrow = arrowFor(t.kind ?? '->', label ?? '');
 					edit(what, undefined, src => setLink(src, from, to, linkKindOf(arrow), label ?? '', arrow));
 				}
+				if (t.classes?.length) edit(what, undefined, src => setClasses(src, [from, to], t.classes!));
 				const change: Change = { op: 'add', what: `link ${from} ${t.kind ?? '->'} ${to}${label && !inline ? `; ${label}` : ''}` };
 				changes.push(change);
 				added.push({ change, find: m => m.links.find(l => pairKey(l.from, l.to) === key)?.line });
@@ -532,6 +585,11 @@ export async function applyModel(source: string, targetIn: unknown, parse: Parse
 			}
 			if (c.from !== from) {
 				conflicts.push({ what, message: `Written as ${c.from} ${c.kind} ${c.to}; the direction is not changed.`, line: c.line });
+			}
+			if (t.classes !== undefined && !sameSet(t.classes, c.classes ?? [])) {
+				if (edit(what, c.line, src => setClasses(src, [c.from, c.to], t.classes!))) {
+					changes.push({ op: 'update', what: `link ${c.from} ${c.kind} ${c.to} classes`, from: c.classes ?? [], to: t.classes, line: c.line });
+				}
 			}
 			// A kind counts as changed only when Mermaid draws it differently (`->` and `-->` are the same line).
 			const kindChange = t.kind !== undefined && rendering(t.kind) !== rendering(c.kind);

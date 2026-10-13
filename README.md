@@ -22,9 +22,9 @@ It covers **Wardley maps** (`wardley-beta`) and **flowcharts** (`flowchart` / `g
 | Drag an annotation's numbered circle, or the box listing the annotations | `annotation 1,[v, e] "…"`, or `annotations [v, e]` |
 | Grab a link's end and drop it on another element | `A -> B` becomes `A -> C` |
 | Click next to an element (a "+" appears), drag to another one | a new link `A -> B` |
-| Click the middle of a link | a dialog: label, direction (line, dashed, arrow either way or both), delete |
+| Click the middle of a link | a dialog: label, direction (line, dashed, arrow either way or both), highlight, delete |
 | Click a red evolve arrow's shaft (long press on touch) | the evolve arrow is deleted |
-| Double-click (double-tap) an element | a dialog: rename everywhere, toggle inertia, set the type (`(build)`, `(buy)`, `(outsource)`, `(market)` or none), all written together with Save; delete |
+| Double-click (double-tap) an element | a dialog: rename everywhere, toggle inertia, set the type (`(build)`, `(buy)`, `(outsource)`, `(market)` or none), highlight, all written together with Save; delete |
 | Double-click an annotation's circle or its line in the box | a dialog: edit the text, delete (the box goes with the last one) |
 | Hover a bottom corner of the map | a legend to add a component, anchor, note, annotation, evolve arrow, inertia, accelerator, deaccelerator or pipeline |
 | Drag from beside an element into free space | a new component right there, linked from the first |
@@ -92,6 +92,7 @@ Requires Obsidian with Mermaid enabled for the vault. `main.js` is about 5 MB be
 ## Good to know
 
 - **Inertia position is a plugin extension.** The Wardley grammar knows inertia only as a flag; Mermaid draws the bar at a fixed spot. A dragged bar is stored as a Mermaid comment `%% mp-inertia <name> <evolution>`. Other renderers ignore the comment and show the default position.
+- **Highlights are Mermaid's `class` statement, commented out.** Wardley maps cannot mark an element or a link yet, so the plugin reads `%% class Kettle highlight` and `%% class Kettle -> Power highlight` (a link, either order of the names) and draws them in your theme's accent colour: a thick outline and a bold label, a link in that colour (up to 8 classes per element, class names up to 40 characters). `%% classDef highlight stroke:#8000F0,stroke-width:3px` gives a map its own colour (stroke, stroke-width, stroke-dasharray, fill, color and font-weight, plain values only). The Highlight toggle in the element and link dialogs writes these lines, and renaming, deleting and re-linking keep them in step. Other renderers ignore the comments; once Mermaid supports `class` for Wardley maps, deleting `%% ` is the migration.
 - **Flowcharts that render but are not editable:** very large ones (as below), and the rare ones whose drawing cannot be matched to the code exactly. Edit those in the code.
 - **Maps that render but are not editable:** maps written on the 0-100 scale (the editor writes 0-1), maps inside a callout, list or quote, maps embedded from another note (open that note), maps with a multi-line `accDescr { … }` block, and very large maps (a line over 1000 characters or more than 64 KB). Edit those in the code.
 - **Security:** Mermaid runs with `securityLevel: strict`, as in Obsidian. The plugin makes no network requests. Edits only ever change the one code block they belong to.

@@ -7,7 +7,7 @@ import { App, TFile } from 'obsidian';
 import type { Mermaid } from 'mermaid';
 import { CliCommandSpec, CliError } from './cli';
 import { ParseFn, SCHEMA, applyModel, readModel } from './wardley-model';
-import { locateBlock, mermaidBlocks } from './blocks';
+import { fenceBreak, locateBlock, mermaidBlocks } from './blocks';
 import { isWardley } from './wardley-text';
 
 /** Mermaid's own parser, loaded on first use (it is part of the bundled Mermaid). */
@@ -105,6 +105,9 @@ export function wardleyCliSpecs(app: App, mermaid: () => Mermaid | undefined): C
 				await app.vault.process(b.file, text => {
 					const at = locateBlock(text, b.source);
 					if (typeof at === 'string') { refused = at; return text; }
+					// No write may close its own block (security review 0.19.0: a crafted link kind did).
+					const broken = fenceBreak(text, at, r.source);
+					if (broken) { refused = broken; return text; }
 					return text.slice(0, at) + r.source + text.slice(at + b.source.length);
 				});
 				if (refused) throw new CliError((refused as string).includes('changed in the meantime') ? 'stale' : 'not-editable', refused);

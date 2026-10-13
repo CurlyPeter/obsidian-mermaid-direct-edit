@@ -73,7 +73,7 @@ slow for 400 ms).
 |---|---|---|
 | `wardley-text.ts` | every edit as a pure text function on the block source; `editBlocker` (which maps are editable) | vitest, outputs parsed by the real `@mermaid-js/parser`; `*.security.test.ts` |
 | `wardley-geometry.ts` | zones and tunables (screen px), projection | vitest |
-| `wardley-render.ts` | its `RenderHook`: `editBlocker`, `placeInertia` (applies `%% mp-inertia`) | E2E |
+| `wardley-render.ts` | its `RenderHook`: `editBlocker`, `placeInertia` (applies `%% mp-inertia`), `applyClasses` (applies `%% class` / `%% classDef`) | vitest on a captured Mermaid SVG (`wardley-render.test.ts`), E2E |
 | `wardley-map.ts` | `MapModel`: source, plot box, node centres, cached per SVG | E2E |
 | `wardley-hit.ts` | `classify()`: what a press means, the one priority order | E2E |
 | `wardley-gestures.ts` | one class per gesture (drag, tap, long press), started by the editor | E2E |
@@ -130,7 +130,9 @@ delete).
 - **No write may close its own block (security review 0.18.0):** `writeBlock` refuses text holding
   a line CommonMark reads as the block's closing fence (`fenceBreak` in `blocks.ts`: up to three
   spaces, the same fence character, at least as long), for both editors and for Undo; an
-  Ungroup had moved an indented fence to column 0.
+  Ungroup had moved an indented fence to column 0. The `wardley-apply` write in `wardley-cli.ts`
+  goes through it too (security review 0.19.0: a link kind with line breaks had passed the model
+  check and Mermaid's parse). Any new write path must call it.
 - **Write path differs by mode:** Live Preview/source dispatches to CodeMirror directly
   (undoable with Cmd+Z); reading view writes the file with `vault.process`, because the
   editor buffer is not saved from there. **Never `Editor.replaceRange`:** it scrolls the
@@ -183,10 +185,27 @@ delete).
   by `placeInertia()` on the SVG string inside `wrapRender`. Other renderers (mmdc for the
   print, static sites) ignore the comment and show the default position until the export applies it
   too. `rename`, `setInertia(off)` and `deleteElement` keep the comment consistent.
-- **Classes (planned, not built): `%% class <target> <class>`**, e.g. `%% class Kettle highlight`
-  or `%% class Kettle -> Power highlight`. Mermaid's own `class` statement, commented out until
-  wardley-beta supports it; no `mp-` prefix on purpose. Proposal, reasons and open questions:
-  `DEV.md` → "Proposal: classes for wardley-beta".
+- **Classes (0.19.0): `%% class <targets> <class>`**, e.g. `%% class Kettle highlight` or
+  `%% class Kettle -> Power highlight` (a link: its two ends, either order, always `->`), several
+  targets comma-separated. Mermaid's own `class` statement, commented out until wardley-beta
+  supports it; no `mp-` prefix on purpose, deleting `%% ` is meant to be the migration (upstream
+  proposal: `DEV.md` → "Proposal: classes for wardley-beta"). Text side in `wardley-text.ts`
+  (`classLine`, linear like every parser here; `setClass`, `setClasses`, `getClasses`):
+  `rename`, `deleteElement`, `deletePipeline`, `unlink` and `relink` keep the lines in step
+  through `editClassTargets` (a re-linked link keeps its class). Drawing: `applyClasses` adds
+  `mde-class mde-class-<name>` to the node's `<g class="wardley-node …">` or the link's line,
+  found by label and by the nodes a line's ends touch; `styles.css` draws `highlight` in
+  `--color-accent` (outline 2.5 px and bold label; a link only in colour); a
+  `%% classDef <class> …` adds inline style from a whitelist (`STYLE_VALUE`: colours and plain
+  numbers, never `url()`; Mermaid had CSS injection through `classDef`). The label takes the
+  classDef's `color`, else its `stroke`. A link's flow head follows its line through
+  `fill: context-stroke` on the shared markers. `wardley-read` reports `classes` and
+  `classDefs`, `wardley-apply` takes `classes`; the dialogs have a Highlight toggle.
+  **Bounded (security review 0.19.0):** class lines are comments, outside Mermaid's size limit,
+  and duplicate links are each drawn, so `applyClasses` draws at most `MAX_CLASSES` (8) per
+  element, names are at most 40 characters (`CLASS_NAME`), and it inserts at most 256 KB per
+  drawing (else Mermaid's drawing is kept); link ends go through a grid, only when a class names
+  a link. Keep every new per-target step a lookup, never a scan.
 - **Notes** are plain `text` in `g.wardley-notes`, starting at the declared position; a drag
   rewrites `note "text" [v, e]`, matched by its exact text (must occur once).
 - **Annotations** are matched by their number (must occur once). Mermaid draws them last
@@ -224,6 +243,10 @@ delete).
 - **`placeInertia` never re-serializes the SVG**: it reads with `DOMParser` and only swaps the
   numbers of `<line class="wardley-inertia" x1=… y1=… x2=…>`, so the sanitized output stays as
   DOMPurify left it. A new attribute order after a Mermaid bump makes it keep Mermaid's bar.
+  `applyClasses` follows the same rule: it inserts class names and whitelisted inline styles into
+  existing tags and keeps Mermaid's drawing when the string's node and link tags do not match the
+  parse. Its node pattern must not match the container `<g class="wardley-nodes">` (it did once,
+  and the count check still agreed); `wardley-render.test.ts` runs on a captured real SVG.
 - **The model (`wardley-read`/`wardley-apply`) is a public contract**, `docs/wardley-model.md`,
   versioned by `SCHEMA`. A field changing meaning or disappearing bumps it; new optional fields
   do not. Reading takes the AST of `@mermaid-js/parser` (pinned to the exact version Mermaid
