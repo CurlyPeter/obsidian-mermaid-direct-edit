@@ -13,13 +13,15 @@
 import { CliError } from './cli';
 import {
 	CLASS_NAME, EditError, MAX_CLASSES, Method, STYLE_PROPERTIES, addElement, addEvolve, addForce, addLink, addNote, addToPipeline,
-	classDefs, classMarkers, deleteElement, deleteEvolve, deleteForce, deleteNote, editBlocker, inertiaMarkers,
+	classDefs, classMarkers, deleteElement, groupMarkers, groupsOf, deleteEvolve, deleteForce, deleteNote, editBlocker, inertiaMarkers,
 	setClasses, setEvolveTarget, setInertiaPosition, setForcePosition, setInertia, setLabelOffset, setLink, setMethod,
 	setNotePosition, setPosition, setTitle, unlink, LinkKind,
 } from './wardley-text';
 
 /** Version of the model shape. Bump on any incompatible change. */
 export const SCHEMA = 1;
+/** Errors listed in a model; beyond them, one entry counts the rest. */
+export const MAX_ERRORS = 200;
 
 export type Pair = [number, number];
 
@@ -80,6 +82,11 @@ export interface WardleyModel {
 	annotationsBox?: { visibility: number; evolution: number; line: number };
 	/** `%% classDef <class> <styles>` lines: the accepted properties of each. */
 	classDefs?: { name: string; style: Record<string, string>; line: number }[];
+	/**
+	 * `%% group <name> <members>` lines, those with one name merged: the members that exist, in
+	 * source order, and the line of the group's first statement.
+	 */
+	groups?: { name: string; members: string[]; line: number }[];
 	/** The map parses but is wrong somewhere (line null: the whole map). */
 	errors: { line: number | null; message: string }[];
 	/** Parsed statements no field of the model covers (expected empty). */
@@ -129,11 +136,26 @@ function parseErrorMessage(e: any, source: string): string {
 	return e instanceof Error ? e.message : String(e);
 }
 
+/**
+ * The block with every comment line blanked, line breaks kept, so line numbers stay the same.
+ * Comments mean nothing to the parser, which is super-linear in them: 100,000 `%%` lines took 11 s
+ * (review 0.20.0); the plugin reads its own comments (`mp-inertia`, `class`, `group`) from the
+ * source. Lines inside a multi-line `accDescr { … }` are text and stay.
+ */
+function withoutComments(source: string): string {
+	let inDescr = false;
+	return source.split('\n').map(l => {
+		if (inDescr) { if (l.includes('}')) inDescr = false; return l; }
+		if (/^[ \t]*accDescr[ \t]*\{/.test(l)) { inDescr = !l.slice(l.indexOf('{') + 1).includes('}'); return l; }
+		return /^[ \t]*%%/.test(l) ? '' : l;
+	}).join('\n');
+}
+
 /** Reads a wardley-beta block. Throws `CliError('parse-error')` when Mermaid cannot parse it. */
 export async function readModel(source: string, parse: ParseFn): Promise<WardleyModel> {
 	let ast: any;
 	try {
-		ast = await parse('wardley', source);
+		ast = await parse('wardley', withoutComments(source));
 	} catch (e) {
 		throw new CliError('parse-error', parseErrorMessage(e, source));
 	}
@@ -263,6 +285,16 @@ export async function readModel(source: string, parse: ParseFn): Promise<Wardley
 		}
 	}
 
+	// Groups (`%% group`, a plugin comment until wardley-beta has the statement): members must be
+	// declared elements, so a misspelt name is reported instead of silently drawing a smaller group.
+	for (const m of groupMarkers(source)) {
+		if (m.problem) { errors.push({ line: m.line, message: `group: ${m.problem}` }); continue; }
+		for (const n of m.members) {
+			if (!byName.has(n)) errors.push({ line: m.line, message: `group "${m.name}": no element "${n}" in this map.` });
+		}
+	}
+	const groups = groupsOf(source).map(g => ({ ...g, members: g.members.filter(n => byName.has(n)) })).filter(g => g.members.length);
+
 	const evolves: WardleyModel['evolves'] = [];
 	for (const ev of ast.evolves) {
 		const line = lineOf(ev);
@@ -312,6 +344,7 @@ export async function readModel(source: string, parse: ParseFn): Promise<Wardley
 		const line = lineOf(b);
 		model.annotationsBox = { visibility: coord(b.x, line, 'annotations box'), evolution: coord(b.y, line, 'annotations box'), line };
 	}
+	if (groups.length) model.groups = groups;
 	for (const d of classDefs(source)) {
 		if (!CLASS_NAME.test(d.name)) errors.push({ line: d.line, message: `classDef: "${d.name}" is not a class name (letters, digits, _ and -, at most 40).` });
 		for (const r of d.rejected) {
@@ -330,7 +363,11 @@ export async function readModel(source: string, parse: ParseFn): Promise<Wardley
 	}
 
 	elements.sort((a, b) => a.line - b.line);
-	model.errors = errors.sort((a, b) => (a.line ?? 0) - (b.line ?? 0));
+	errors.sort((a, b) => (a.line ?? 0) - (b.line ?? 0));
+	// A crafted map can name hundreds of thousands of missing members (review 0.20.0, 62 MB of JSON).
+	model.errors = errors.length > MAX_ERRORS
+		? [...errors.slice(0, MAX_ERRORS), { line: null, message: `… and ${errors.length - MAX_ERRORS} more errors.` }]
+		: errors;
 	return model;
 }
 

@@ -1,18 +1,22 @@
 import type { RenderHook } from './render';
-import { END_TOLERANCE } from './wardley-geometry';
-import { CLASS_NAME, MAX_CLASSES, classDefs, classMarkers, editBlocker, inertiaPositions } from './wardley-text';
+import { END_TOLERANCE, type Pt } from './wardley-geometry';
+import { GROUP_BUDGET, GROUP_RADIUS, outline, pathOf, skeleton } from './wardley-groups';
+import { CLASS_NAME, MAX_CLASSES, classDefs, classMarkers, editBlocker, groupsOf, inertiaPositions } from './wardley-text';
 
 /**
  * Rendering of `wardley-beta` maps: editable unless `editBlocker` refuses (0-100 scale, too
- * large, multi-line accDescr), with the plugin's inertia positions and classes applied.
+ * large, multi-line accDescr), with the plugin's inertia positions, classes and groups applied.
  */
 export const wardleyRender: RenderHook = {
 	kind: 'wardley',
 	roles: ['wardley'],
 	blocker: editBlocker,
 	transform: (svg, text) => {
-		const placed = placeInertia(svg, inertiaPositions(text));
-		return applyClasses(placed ?? svg, text) ?? placed;
+		let out: string | null = null;
+		for (const step of [(s: string) => placeInertia(s, inertiaPositions(text)), (s: string) => applyClasses(s, text), (s: string) => applyGroups(s, text)]) {
+			out = step(out ?? svg) ?? out;
+		}
+		return out;
 	},
 };
 
@@ -64,6 +68,42 @@ const pairKey = ([a, b]: [string, string]) => (a < b ? `${a}\u0000${b}` : `${b}\
  */
 const NODE_GROUP = /<g class="wardley-node(?: [^"]*)?">[\s\S]*?<\/g>/g;
 const LINK = /<line class="wardley-link(?: [^"]*)?"[^>]*>/g;
+
+/**
+ * The nodes and links Mermaid drew, as the editor sees them: a node is named by its label, a link
+ * by the nodes its two ends touch (within END_TOLERANCE of their centres, through a grid of
+ * END_TOLERANCE cells, so a crafted map with many nodes and links costs one lookup per end).
+ */
+function readDrawing(doc: Document): { names: string[]; centres: ([number, number] | null)[]; lines: Element[]; ends: () => ([number, number] | null)[] } {
+	const nodes = Array.from(doc.querySelectorAll('g.wardley-node'));
+	const names = nodes.map(g => Array.from(g.children).find(c => c.localName === 'text' && c.getAttribute('class') === 'wardley-node-label')?.textContent?.trim() ?? '');
+	const centres = nodes.map(centreOf);
+	const lines = Array.from(doc.querySelectorAll('line.wardley-link'));
+	const ends = () => {
+		const cell = (x: number, y: number) => `${Math.floor(x / END_TOLERANCE)},${Math.floor(y / END_TOLERANCE)}`;
+		const grid = new Map<string, number[]>();
+		centres.forEach((c, i) => { if (c) { const k = cell(c[0], c[1]); const l = grid.get(k); if (l) l.push(i); else grid.set(k, [i]); } });
+		const owner = (x: number, y: number): number | null => {
+			let best: number | null = null, dist = END_TOLERANCE;
+			const cx = Math.floor(x / END_TOLERANCE), cy = Math.floor(y / END_TOLERANCE);
+			for (let dx = -1; dx <= 1; dx++) {
+				for (let dy = -1; dy <= 1; dy++) {
+					for (const i of grid.get(`${cx + dx},${cy + dy}`) ?? []) {
+						const c = centres[i]!, d = Math.hypot(c[0] - x, c[1] - y);
+						if (d <= dist) { best = i; dist = d; }
+					}
+				}
+			}
+			return best;
+		};
+		return lines.map(l => {
+			const a = owner(Number(l.getAttribute('x1')), Number(l.getAttribute('y1')));
+			const b = owner(Number(l.getAttribute('x2')), Number(l.getAttribute('y2')));
+			return a !== null && b !== null ? [a, b] as [number, number] : null;
+		});
+	};
+	return { names, centres, lines, ends };
+}
 
 /** Where a drawn node sits: its plain circle, a market node's ring, a pipeline parent's square, an anchor's text. */
 function centreOf(g: Element): [number, number] | null {
@@ -120,9 +160,7 @@ export function applyClasses(svgText: string, source: string): string | null {
 	if (marks.length === 0) return null;
 	const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
 	if (doc.querySelector('parsererror')) return null;
-	const nodes = Array.from(doc.querySelectorAll('g.wardley-node'));
-	const names = nodes.map(g => Array.from(g.children).find(c => c.localName === 'text' && c.getAttribute('class') === 'wardley-node-label')?.textContent?.trim() ?? '');
-	const lines = Array.from(doc.querySelectorAll('line.wardley-link'));
+	const { names, centres, lines, ends } = readDrawing(doc);
 	// Lookups by name and by pair: class lines are comments, which Mermaid's size limit does not
 	// count, so a crafted note can hold many; each target costs one lookup, not a scan.
 	const index = (map: Map<string, number[]>, key: string, i: number) => { const l = map.get(key); if (l) l.push(i); else map.set(key, [i]); };
@@ -130,33 +168,11 @@ export function applyClasses(svgText: string, source: string): string | null {
 	names.forEach((n, i) => index(byName, n, i));
 	const byPair = new Map<string, number[]>();
 	if (marks.some(m => m.targets.some(t => typeof t !== 'string'))) {
-		// Link ends to nodes through a grid of END_TOLERANCE cells: the nearest centre within it.
-		const cell = (x: number, y: number) => `${Math.floor(x / END_TOLERANCE)},${Math.floor(y / END_TOLERANCE)}`;
-		const grid = new Map<string, number[]>();
-		const centres = nodes.map(centreOf);
-		centres.forEach((c, i) => { if (c) index(grid, cell(c[0], c[1]), i); });
-		const owner = (x: number, y: number): number | null => {
-			let best: number | null = null, dist = END_TOLERANCE;
-			const cx = Math.floor(x / END_TOLERANCE), cy = Math.floor(y / END_TOLERANCE);
-			for (let dx = -1; dx <= 1; dx++) {
-				for (let dy = -1; dy <= 1; dy++) {
-					for (const i of grid.get(`${cx + dx},${cy + dy}`) ?? []) {
-						const c = centres[i]!, d = Math.hypot(c[0] - x, c[1] - y);
-						if (d <= dist) { best = i; dist = d; }
-					}
-				}
-			}
-			return best;
-		};
-		lines.forEach((l, i) => {
-			const a = owner(Number(l.getAttribute('x1')), Number(l.getAttribute('y1')));
-			const b = owner(Number(l.getAttribute('x2')), Number(l.getAttribute('y2')));
-			if (a !== null && b !== null) index(byPair, pairKey([names[a], names[b]]), i);
-		});
+		ends().forEach((e, i) => { if (e) index(byPair, pairKey([names[e[0]], names[e[1]]]), i); });
 	}
 	// At most MAX_CLASSES per element: a link drawn many times (duplicates are each drawn) times
 	// many classes made the drawing hundreds of MB (security review 0.19.0).
-	const nodeClasses = nodes.map(() => new Set<string>());
+	const nodeClasses = centres.map(() => new Set<string>());
 	const linkClasses = lines.map(() => new Set<string>());
 	const add = (set: Set<string>, cls: string) => { if (set.size < MAX_CLASSES) set.add(cls); };
 	for (const m of marks) {
@@ -181,7 +197,7 @@ export function applyClasses(svgText: string, source: string): string | null {
 		const classes = [...(nodeClasses[n++] ?? [])];
 		return classes.length && budget > 0 ? insert(group, classedNode(group, classes, styleOf(classes))) : group;
 	});
-	if (n !== nodes.length) return null;
+	if (n !== names.length) return null;
 	let k = 0;
 	out = out.replace(LINK, tag => {
 		const classes = [...(linkClasses[k++] ?? [])];
@@ -190,4 +206,53 @@ export function applyClasses(svgText: string, source: string): string | null {
 			: tag;
 	});
 	return k === lines.length && budget >= 0 ? out : null;
+}
+
+/** Groups drawn per map, and members per group (crafted maps). */
+const MAX_GROUPS = 20;
+const MAX_GROUP_MEMBERS = 100;
+/** Where the boundaries go: behind pipelines, links and nodes, above the stages and grid. */
+const GROUPS_BEFORE = ['<g class="wardley-pipelines">', '<g class="wardley-links">', '<g class="wardley-nodes">'];
+
+/**
+ * Draws each `%% group` (DEV.md → "Groups for wardley-beta") as a dotted boundary around its
+ * members and the links between them (`wardley-groups.ts`). The boundaries are inserted as one
+ * new `<g class="mde-groups">` of paths built from numbers only, behind pipelines, links and
+ * nodes; nothing else in the string changes and no note text is written into it. Members are
+ * found by label. A group with no drawn member, or over the limits, is not drawn; null when no
+ * group is.
+ */
+export function applyGroups(svgText: string, source: string): string | null {
+	const groups = groupsOf(source);
+	if (groups.length === 0) return null;
+	const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
+	if (doc.querySelector('parsererror')) return null;
+	const { names, centres, ends } = readDrawing(doc);
+	const byName = new Map<string, number[]>();
+	names.forEach((n, i) => { const l = byName.get(n); if (l) l.push(i); else byName.set(n, [i]); });
+	let linkEnds: ([number, number] | null)[] | null = null;
+	const budget = { left: GROUP_BUDGET };
+	const paths: string[] = [];
+	let size = 0;
+	groups.slice(0, MAX_GROUPS).forEach((g, gi) => {
+		const nodes = [...new Set(g.members.flatMap(m => byName.get(m) ?? []))].filter(i => centres[i]);
+		if (nodes.length === 0 || nodes.length > MAX_GROUP_MEMBERS) return;
+		const at = new Map(nodes.map((n, k) => [n, k]));
+		const points: Pt[] = nodes.map(i => ({ x: centres[i]![0], y: centres[i]![1] }));
+		linkEnds ??= ends();
+		const links: [number, number][] = [];
+		for (const e of linkEnds) if (e && at.has(e[0]) && at.has(e[1])) links.push([at.get(e[0])!, at.get(e[1])!]);
+		const loops = outline(skeleton(points, links), GROUP_RADIUS, budget);
+		if (!loops?.length) return;
+		const path = `<path class="mde-group" data-mde-group="${gi}" d="${pathOf(loops)}" fill="none" stroke="#888888" stroke-width="1.5" stroke-dasharray="3 3" pointer-events="none"></path>`;
+		// What the plugin inserts stays small next to Mermaid's drawing: a group over it is skipped.
+		if (size + path.length > MAX_INSERTED) return;
+		size += path.length;
+		paths.push(path);
+	});
+	if (paths.length === 0) return null;
+	const inserted = `<g class="mde-groups">${paths.join('')}</g>`;
+	const at = GROUPS_BEFORE.map(m => svgText.indexOf(m)).find(i => i >= 0) ?? -1;
+	if (at < 0) return null;
+	return svgText.slice(0, at) + inserted + svgText.slice(at);
 }

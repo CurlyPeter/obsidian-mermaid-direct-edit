@@ -73,7 +73,8 @@ slow for 400 ms).
 |---|---|---|
 | `wardley-text.ts` | every edit as a pure text function on the block source; `editBlocker` (which maps are editable) | vitest, outputs parsed by the real `@mermaid-js/parser`; `*.security.test.ts` |
 | `wardley-geometry.ts` | zones and tunables (screen px), projection | vitest |
-| `wardley-render.ts` | its `RenderHook`: `editBlocker`, `placeInertia` (applies `%% mp-inertia`), `applyClasses` (applies `%% class` / `%% classDef`) | vitest on a captured Mermaid SVG (`wardley-render.test.ts`), E2E |
+| `wardley-render.ts` | its `RenderHook`: `editBlocker`, then `placeInertia` (`%% mp-inertia`), `applyClasses` (`%% class` / `%% classDef`), `applyGroups` (`%% group`) in that order; `readDrawing` (nodes by label, links by the nodes their ends touch) shared | vitest on a captured Mermaid SVG (`wardley.fixtures.ts`), E2E |
+| `wardley-groups.ts` | a group's boundary as pure geometry: skeleton (spanning tree), distance field, closing (distance transform), marching squares, outer loops, smoothed path | vitest by properties (`wardley-groups.test.ts`) |
 | `wardley-map.ts` | `MapModel`: source, plot box, node centres, cached per SVG | E2E |
 | `wardley-hit.ts` | `classify()`: what a press means, the one priority order | E2E |
 | `wardley-gestures.ts` | one class per gesture (drag, tap, long press), started by the editor | E2E |
@@ -206,6 +207,23 @@ delete).
   element, names are at most 40 characters (`CLASS_NAME`), and it inserts at most 256 KB per
   drawing (else Mermaid's drawing is kept); link ends go through a grid, only when a class names
   a link. Keep every new per-target step a lookup, never a scan.
+- **Groups (0.20.0): `%% group <name> <members>`**, e.g. `%% group "Human + AI" Staff, Cup of
+  Tea` (name first, quoted when it holds blanks; several lines with one name make one group; a
+  link belongs to a group when both its ends do). The proposed `group` statement, commented out;
+  proposal and research: `DEV.md` → "Proposal: groups for wardley-beta". Text side in
+  `wardley-text.ts` (`groupLine` on the shared `scanTargets`, `groupMarkers`, `groupsOf`,
+  `editGroupMembers`, kept in step by `rename`, `deleteElement`, `deletePipeline`). Drawing:
+  `applyGroups` inserts one `<g class="mde-groups">` of number-only paths before the pipelines,
+  links and nodes (`pointer-events="none"`, no note text in the drawing), `styles.css` makes them
+  dotted in `--color-accent`. Geometry in `wardley-groups.ts`: the outline is the exact swept area
+  united with its closing, so keep that union if you touch it (the closing alone shrinks every
+  outline by half a grid step). Bounded: 20 groups, 100 members, `GROUP_BUDGET` evaluations, at
+  most `MAX_CELLS` grid cells per group (larger areas get a coarser grid, never no boundary), 256 KB
+  of paths; contour tracing uses integer edge keys and typed arrays (string keys dominated a crafted
+  render, review 0.20.0). `wardley-read` reports `groups`.
+- **`wardley-read` blanks comment lines before Mermaid's parser** (`withoutComments`, line numbers
+  kept, multi-line `accDescr` untouched): the parser is super-linear in them. The plugin's own
+  comments are read from the source. It lists at most `MAX_ERRORS` (200) errors plus a count.
 - **Notes** are plain `text` in `g.wardley-notes`, starting at the declared position; a drag
   rewrites `note "text" [v, e]`, matched by its exact text (must occur once).
 - **Annotations** are matched by their number (must occur once). Mermaid draws them last

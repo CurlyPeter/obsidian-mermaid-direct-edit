@@ -54,6 +54,8 @@ accelerator Push [0.65, 0.04]
 annotations [0.97, 0.03]
 annotation 1,[0.30, 0.70] "First remark"
 annotation 2,[0.68, 0.62] "Second remark"
+
+%% group "E2E Group" Beta, Epsilon
 """
 FILLER = '\n\n'.join(f'Filler line {i} so the map sits below the top.' for i in range(1, 41))
 
@@ -539,6 +541,53 @@ def case_highlight_link_dialog():
     return ok, f'{got}; live {live}; reading view {read}'
 
 
+
+# The group boundary of the map: its stroke, whether it takes pointer events, and which points
+# lie inside it (SVGGeometryElement.isPointInFill, in the map's own units).
+GROUP_PROBE = r"""
+(()=>{
+const root = app.workspace.activeLeaf.view.contentEl.querySelector(__ROOT__);
+const svg = root && root.querySelector('.mermaid svg[aria-roledescription="wardley"]');
+const path = svg && svg.querySelector('path.mde-group');
+if (!path) return JSON.stringify({error: svg ? 'no boundary' : 'no map'});
+const probe = document.body.createDiv(); probe.style.color = 'var(--color-accent)'; const accent = getComputedStyle(probe).color; probe.remove();
+const centre = n => { const g = [...svg.querySelectorAll('g.wardley-node')].find(g => g.querySelector('text.wardley-node-label')?.textContent.trim() === n);
+  const c = g && [...g.querySelectorAll(':scope > circle')].find(c => !c.getAttribute('class')); return c && new DOMPoint(+c.getAttribute('cx'), +c.getAttribute('cy')); };
+const cs = getComputedStyle(path);
+const inside = n => { const p = centre(n); return p ? path.isPointInFill(p) : null; };
+return JSON.stringify({accent, stroke: cs.stroke, dash: cs.strokeDasharray, events: cs.pointerEvents,
+  beta: inside('Beta'), omega: inside('Omega'), alpha: inside('Alpha')});
+})()
+"""
+
+
+def group_probe(view):
+    raw = js(GROUP_PROBE.replace('__ROOT__', json.dumps(view)))
+    return json.loads(raw)
+
+
+def case_group_render():
+    """`%% group "E2E Group" Beta, Epsilon` is drawn as a dotted boundary in the accent colour that
+    holds both members and nothing far away, takes no pointer events, in Live Preview and in reading
+    view; the rename of Epsilon (case rename_dialog) has rewritten the group line."""
+    got = line(r'^%% group .*$')
+    live = group_probe('.markdown-source-view')
+    leaf = "app.workspace.activeLeaf"
+    js('(async()=>{const l=' + leaf + '; const s=l.getViewState(); s.state.mode="preview"; await l.setViewState(s);'
+       ' await new Promise(r=>setTimeout(r,800)); l.view.currentMode.applyScroll(80); await new Promise(r=>setTimeout(r,1500)); return "ok"})()')
+    try:
+        read = group_probe('.markdown-preview-view')
+    finally:
+        js('(async()=>{const l=' + leaf + '; const s=l.getViewState(); s.state.mode="source"; await l.setViewState(s);'
+           ' await new Promise(r=>setTimeout(r,1200)); return "ok"})()')
+        park()
+    def ok_view(v):
+        return (v.get('stroke') == v.get('accent') and v.get('dash') not in (None, '', 'none') and v.get('events') == 'none'
+                and v.get('beta') is True and v.get('omega') is True and v.get('alpha') is False)
+    ok = got == '%% group "E2E Group" Beta, Omega' and ok_view(live) and ok_view(read)
+    return ok, f'{got}; live {live}; reading view {read}'
+
+
 def case_unload_cleanup():
     # Review #6: unload leaves no stub, legend, drop highlight or open dialog behind.
     p = locate(s=['plus', 'Gamma'], c=['corner', 'left'])
@@ -563,6 +612,7 @@ CASES = [
     ('legend_annotation', case_legend_annotation),
     ('rename_dialog', case_rename_dialog), ('type_dialog', case_type_dialog), ('legend_corner', case_legend_corner),
     ('highlight_dialog', case_highlight_dialog), ('highlight_link_dialog', case_highlight_link_dialog),
+    ('group_render', case_group_render),
     ('component_on_shaft', case_component_on_shaft), ('swallow_scope', case_swallow_scope),
     ('popout_window', case_popout_window),
     ('unload_cleanup', case_unload_cleanup),

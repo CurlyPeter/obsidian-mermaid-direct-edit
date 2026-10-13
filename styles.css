@@ -53,6 +53,17 @@ body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-node.mp-drop-target {
 .mermaid svg line.wardley-link.mde-class-highlight {
 	stroke: var(--color-accent);
 }
+/* Groups on Wardley maps (`%% group <name> <members>`, see DEV.md): a dotted boundary around
+   the members and their links, in the theme's accent colour, drawn behind them; never hit by
+   the pointer, so every gesture reaches what lies inside. */
+.mermaid svg path.mde-group {
+	stroke: var(--color-accent);
+	stroke-width: 1.5px;
+	stroke-dasharray: 4 3;
+	stroke-linecap: round;
+	fill: none;
+	pointer-events: none;
+}
 /* A flow arrow's head takes its line's colour. Mermaid draws heads and lines in the same colour,
    so only a link with a class looks different; without context-stroke the rule is dropped and
    the heads keep Mermaid's colour. */

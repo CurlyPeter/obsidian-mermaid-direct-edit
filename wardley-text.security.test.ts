@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EditError, classDefs, classMarkers, deleteNote, getAnnotation, getClasses, setAnnotationsBoxPosition, editBlocker, freeSpot, getPosition, inertiaPositions, isWardley, nameSpans, rename, setClass, setMethod, setPosition, setTitle } from './wardley-text';
+import { EditError, classDefs, classMarkers, deleteNote, getAnnotation, getClasses, groupMarkers, groupsOf, setAnnotationsBoxPosition, editBlocker, freeSpot, getPosition, inertiaPositions, isWardley, nameSpans, rename, setClass, setMethod, setPosition, setTitle } from './wardley-text';
 import { locateBlock, mermaidBlocks } from './blocks';
 import { SourceRegistry } from './render';
 
@@ -132,5 +132,21 @@ describe('classes (0.19.0): linear on crafted class lines', () => {
 		fast(() => rename(src, 'A', 'B'));
 		fast(() => setClass(src, 'A', 'highlight', false));
 		fast(() => getClasses(src, 'A'));
+	});
+});
+
+describe('groups (0.20.0): linear on crafted group lines', () => {
+	const many = (line: string, n: number) => `wardley-beta\ncomponent A [0.1, 0.1]\n${`${line}\n`.repeat(n)}`;
+	it('reads crafted %% group lines in linear time', () => {
+		fast(() => groupMarkers(many(`%% group "${'"'.repeat(980)}`, 2000)));
+		fast(() => groupMarkers(many(`%% group G ${"'".repeat(980)}`, 2000)));
+		fast(() => groupMarkers(many(`%% group G ${','.repeat(980)}`, 2000)));
+		fast(() => groupMarkers(many(`%% group ${'x'.repeat(980)}`, 2000)));
+		fast(() => groupMarkers(many(`%% group G A${pad(980)}x`, 2000)));
+	});
+	it('edits a map with many group lines in linear time', () => {
+		const src = many('%% group G A', 20000);
+		fast(() => rename(src, 'A', 'B'));
+		fast(() => groupsOf(src));
 	});
 });

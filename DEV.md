@@ -602,7 +602,129 @@ with markup-like labels, the line parsers are linear, 810 class edits wrote no f
 Each regression test fails on the code before the fix (render 2111 ms and 8447 ms before). 320
 unit tests; live render and the CLI's refusal of the reviewer's payload re-measured.
 
+## Proposal: groups for wardley-beta (2026-10-13)
+
+Status: interim comment form decided and drawn by this plugin since 0.20.0 (next section);
+upstream not proposed yet.
+
+**Need.** Wardley draws boundaries around several components and their links to say "these
+belong together": teams in a cell based structure ("Think small (as in teams)" and "Aptitude and
+attitude", figures 40 and 41 of *Wardley Maps*, chapter 4), small contracts with their purchasing
+method (figure 249, chapter 19), methods for parts of a system (the doctrine "use appropriate
+methods"). wardley-beta cannot express this.
+
+**Research (2026-10-13).**
+
+- Wardley gives the shape no notation name; he names what it means: cell, team, contract, method.
+- No Wardley tool has it as an element. wardley-beta has `pipeline` (variants of one capability
+  on one row). OnlineWardleyMaps and the open Mermaid PR #7696 add `pioneers`, `settlers`,
+  `townplanners` as rectangles given by coordinates, not as a set of components.
+- Mermaid's words for a set: `group` (architecture-beta), `subgraph` (flowchart), `Boundary`
+  (C4), `box` (sequence), `namespace` (class).
+- In visualization research the shape is a set drawn over fixed positions: Bubble Sets (Collins,
+  Penn, Carpendale 2009, an isocontour), Kelp Diagrams (Dinkla et al. 2012, discs around the
+  members joined along links) and KelpFusion (Meulemans et al., a hybrid of hulls and lines).
+
+**Decision (maintainer, 2026-10-13): `group`, one statement per line, name first.**
+
+```
+group "Human + AI" Staff, Cup of Tea, Cup, Tea
+group Energy Power, Electric Kettle
+```
+
+- `group`, not `cell`, `team` or `contract`: those are meanings of a group. Not `zone` or `area`:
+  those are coordinate rectangles in OnlineWardleyMaps and in PR #7696, which is a different idea
+  (a group follows its components when they move).
+- The name first, like `pipeline <name>` and `subgraph <id>`; quoted when it holds blanks.
+  Members are element names, comma-separated as in `class`. Several lines with one name make one
+  group.
+- Links are not listed: a link belongs to a group when both its ends do.
+- One line, not a block: a commented block needs `%%` on every line and is fragile to edit.
+
+**Interim form, until Mermaid has it: the statement, commented out.** `%% group "Human + AI" Staff,
+Cup of Tea`. Deleting `%% ` is meant to be the migration.
+
+**The drawing.** The area a disc covers when it travels along the group: its members' centres,
+the links between two members, and the shortest connections that join members no such link
+connects (a spanning tree, as in Kelp diagrams). Inner corners rounded by a closing, holes
+filled, the outer edge drawn as a dotted line. A renderer that wants the same look needs nothing
+but the members' positions and the links.
+
+## Groups for wardley-beta (0.20.0, 2026-10-13)
+
+Decisions (maintainer, 2026-10-13):
+
+- **Look: a dotted line in the theme's accent colour, close to the members, no label.** Labels
+  (Wardley's "Team 1" boxes) are a later step: placing them so they collide with nothing is the
+  hard part.
+- **Geometry (`wardley-groups.ts`), pure and tested by its properties.** The disc radius is 16 map
+  units (a component's circle is 6). A distance field on a 4-unit grid, filled per link only
+  within its band (cost follows the band's area, not its bounding box). The closing (grow by 8,
+  shrink by 8, measured with an exact Euclidean distance transform) is united with the exact swept
+  area, so the outline stays exact wherever nothing is filled: measured within 0.2 units of the
+  true radius, while the closing alone shrank it by 0.8 on average. Marching squares with the saddle
+  cases resolved by the cell centre; only outer loops are kept, so a ring of links has no hole.
+  Douglas-Peucker at 0.75 units, then a centripetal Catmull-Rom spline (the uniform one made hooks
+  at sharp corners with unevenly spaced points). A realistic group is about 0.8 KB of path.
+- **Inserted, not changed:** one `<g class="mde-groups">` of paths made of numbers, before the
+  pipelines, links and nodes (so those draw over it), with `pointer-events="none"`, so every gesture
+  reaches what lies inside. No note text is written into the drawing; a group is addressed by its
+  index (`data-mde-group`).
+- **Members by label, links by the nodes their ends touch**, the same reading as the classes
+  (`readDrawing`, shared).
+- **Bounded on crafted notes** (the lesson of the 0.19.0 review): 20 groups, 100 members per
+  group, a shared budget of distance evaluations per render (`GROUP_BUDGET`, 1M), at most 120,000
+  grid cells per group (a group over a larger area gets a coarser grid instead of no boundary),
+  256 KB of inserted paths (a group over it is skipped, the others drawn). Measured: 5000 group
+  lines plus 200 groups 61 ms, 20 groups spanning the map 44 ms (all drawn, 32 KB).
+- **Edits keep the lines in step:** rename rewrites a member in place, deleting an element or a
+  pipeline takes its members out, a line left empty goes. `wardley-read` reports `groups` (members
+  that exist) and an error for each line naming nothing; `wardley-apply` leaves the lines alone.
+
+Verification (macOS desktop, Obsidian 1.14.4, Mermaid 12.1.0): 19 tests in
+`wardley-groups.test.ts` (the line parser, edits read back by the real parser, the model, the
+outline by its properties: a single member gives a circle of radius 16, linked members a swept
+area with every member inside and the space between two arms outside, unlinked members one area, a
+ring no hole, a notch filled while nothing of the swept area is lost; the drawing on the captured
+Mermaid SVG changes nothing but the inserted group), each core step shown to matter (rename,
+delete, pipeline removal, filled holes, spanning tree, closing: removed, its test fails), timing
+cases in `wardley-text.security.test.ts`. The demo map with `%% group "Human + AI" Staff, Cup of
+Tea, Cup, Tea`, rendered by Obsidian and rasterized, matches the maintainer's mock-up. E2E 30/30
+with the new case `group_render`: the test map's group follows the rename of a member, its boundary
+is drawn dotted in the accent colour, takes no pointer events and holds both members but not a
+component far away, in Live Preview and in reading view; every other gesture passes with the
+boundary on the map.
+
+**Security review (0.20.0, same day, before release): accept.** A fresh read-only agent measured
+exploit inputs against real Mermaid renders in a headless Chrome. Clean: no note text reaches the
+inserted markup (5000 hostile group sets with markup, quotes, the marker strings, NUL and RTL in
+names, members and labels: the inserted block always numbers only, at the right place, and the SVG
+otherwise byte-identical); the marker strings occur only as real tags; the transform chain keeps
+inertia and classes byte-identical; NaN, infinite and degenerate coordinates are skipped; 8400 fuzzed
+edits wrote no fence and changed nothing but group members; `scanTargets` unchanged in behaviour
+(20,000 random class lines). Fixed anyway:
+
+- **G-1 (low): a crafted map made the plugin dominate the render** (a snake of 98 members on a
+  2700-unit map: about 0.1 s per render with JIT, 0.9 to 1 s without, as in iOS Lockdown Mode),
+  mostly in string-keyed contour tracing. Edge points now have integer keys and typed neighbour
+  arrays, the budget is 1M and large areas get a coarser grid: 150 to 170 ms became 45 to 80 ms
+  for 20 such groups, and the snake is still drawn. Regression test in `wardley-groups.test.ts`.
+- **G-2 (info): `wardley-read`'s error list was unbounded** (2 MB of group lines naming missing
+  members gave 62 MB of JSON). At most 200 errors, then one entry counting the rest.
+- **G-3 (info, older): Mermaid's parser is super-linear in comment lines** (100,000 `%%` lines
+  took 11 s in `wardley-read`). Comment lines are blanked before parsing, line numbers kept, the
+  text of a multi-line `accDescr` untouched: 50,000 comment lines 1608 ms became 81 ms.
+- Noted for consumers: `groups[].name` is note text; a renderer that draws it must escape it.
+
 ## Changelog
+
+- **0.20.0 (2026-10-13)** Groups in Wardley maps: `%% group "<name>" <member>, <member>` (the
+  proposed `group` statement, commented out until wardley-beta has it) is drawn as a dotted
+  boundary in the theme's accent colour around the members and the links between them (a disc
+  swept along the group, inner corners rounded). Rename, delete and pipeline removal keep the
+  lines in step; `wardley-read` reports `groups`. See "Groups for wardley-beta (0.20.0)". Security
+  review before release: a crafted group costs a fraction of what it did, `wardley-read` lists at
+  most 200 errors and is no longer slowed by comment lines.
 
 - **0.19.0 (2026-10-13)** Highlights in Wardley maps: `%% class <target> highlight` (Mermaid's
   `class` statement, commented out until wardley-beta has it) is drawn in the theme's accent

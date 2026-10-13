@@ -442,9 +442,17 @@ function classLine(l: string): { targets: TargetSpan[]; cls: string; head: strin
 	let ws = end - 1;
 	while (ws >= head.length && !isBlank(l[ws])) ws--;
 	const cls = l.slice(ws + 1, end);
+	return { targets: ws < head.length ? [] : scanTargets(l, head.length, ws), cls, head };
+}
+
+/**
+ * The comma-separated targets of `l` between `from` and `to`: element names (quoted or bare) and
+ * links `A -> B`. One pass; a quote opens only at a token start and is skipped to its closing
+ * quote in one step.
+ */
+function scanTargets(l: string, from: number, to: number): TargetSpan[] {
 	const targets: TargetSpan[] = [];
-	if (ws < head.length) return { targets, cls, head };
-	let segStart = head.length, arrow = -1;
+	let segStart = from, arrow = -1;
 	const close = (segEnd: number) => {
 		if (arrow < 0) {
 			const n = nameToken(l, segStart, segEnd);
@@ -454,11 +462,11 @@ function classLine(l: string): { targets: TargetSpan[]; cls: string; head: strin
 		const a = nameToken(l, segStart, arrow), b = nameToken(l, arrow + 2, segEnd);
 		targets.push({ start: a?.start ?? arrow, end: b?.end ?? arrow + 2, link: true, names: a && b ? [a, b] : [] });
 	};
-	for (let i = head.length; i < ws; i++) {
+	for (let i = from; i < to; i++) {
 		const c = l[i];
 		if ((c === '"' || c === "'") && (i === segStart || isBlank(l[i - 1]) || l[i - 1] === ',' || l[i - 1] === '>')) {
 			const q = l.indexOf(c, i + 1);
-			if (q < 0 || q >= ws) break;
+			if (q < 0 || q >= to) break;
 			i = q;
 		} else if (c === '-' && l[i + 1] === '>' && arrow < 0) {
 			arrow = i++;
@@ -468,8 +476,8 @@ function classLine(l: string): { targets: TargetSpan[]; cls: string; head: strin
 			arrow = -1;
 		}
 	}
-	close(ws);
-	return { targets, cls, head };
+	close(to);
+	return targets;
 }
 
 const targetOf = (t: TargetSpan): ClassTarget | null =>
@@ -626,6 +634,108 @@ export function classDefs(source: string): ClassDef[] {
 		}
 		out.push(def);
 	});
+	return out;
+}
+
+// ---- groups: `%% group <name> <members>` -----------------------------------------------------
+
+/**
+ * A group of components, drawn as one boundary around them and their links (DEV.md → "Groups
+ * for wardley-beta"): `%% group "Human + AI" Staff, Cup of Tea, Cup`. The proposed statement,
+ * commented out until wardley-beta has it; deleting `%% ` is meant to be the migration. The
+ * name comes first, quoted when it holds blanks; several lines with one name make one group.
+ * Members are element names; a link belongs to a group when both its ends do.
+ */
+const GROUP_HEAD = /^[ \t]*%%[ \t]*group[ \t]+/;
+/** Characters of a group name. */
+export const MAX_GROUP_NAME = 60;
+
+/** A `%% group` line: where its name is and its member targets. Null for any other line. */
+function groupLine(l: string): { head: string; name: string | null; nameEnd: number; targets: TargetSpan[] } | null {
+	if (l.length > MAX_LINE) return null;
+	const head = GROUP_HEAD.exec(l)?.[0];
+	if (!head) return null;
+	const end = trimTail(l).length;
+	let i = head.length;
+	const q = l[i];
+	let name: string | null;
+	if (q === '"' || q === "'") {
+		const close = l.indexOf(q, i + 1);
+		if (close < 0 || close >= end) return { head, name: null, nameEnd: end, targets: [] };
+		name = l.slice(i + 1, close);
+		i = close + 1;
+	} else {
+		while (i < end && !isBlank(l[i])) i++;
+		name = l.slice(head.length, i);
+	}
+	const rest = l.slice(i, end);
+	return { head, name, nameEnd: i, targets: rest.trim() ? scanTargets(l, i, end) : [] };
+}
+
+export interface GroupMarker {
+	line: number;
+	name: string;
+	members: string[];
+	/** Why the line adds nothing to its group. */
+	problem?: string;
+}
+
+/** Every `%% group` line with its 1-based line. */
+export function groupMarkers(source: string): GroupMarker[] {
+	const out: GroupMarker[] = [];
+	source.split('\n').forEach((l, i) => {
+		const g = groupLine(l);
+		if (!g) return;
+		const members = g.targets.filter(t => !t.link && t.names.length === 1).map(t => t.names[0].name);
+		const problem = g.name === null ? 'the group name has no closing quote.'
+			: !g.name.trim() ? 'no group name, write %% group "<name>" <member>, <member>.'
+				: g.name.length > MAX_GROUP_NAME ? `the group name is longer than ${MAX_GROUP_NAME} characters.`
+					: !g.targets.length ? `no members, write %% group ${g.name.includes(' ') ? `"${g.name}"` : g.name} <member>, <member>.`
+						: g.targets.some(t => t.link) ? 'a link cannot be a member: a link belongs to the group when both its ends do.'
+							: g.targets.some(t => t.names.length !== 1) ? 'an empty name in its members.' : undefined;
+		out.push({ line: i + 1, name: g.name ?? '', members, ...(problem ? { problem } : {}) });
+	});
+	return out;
+}
+
+/** The groups of a map, lines with one name merged, members once each, in source order. */
+export function groupsOf(source: string): { name: string; members: string[]; line: number }[] {
+	const groups = new Map<string, { name: string; members: string[]; line: number; seen: Set<string> }>();
+	for (const m of groupMarkers(source)) {
+		if (m.problem) continue;
+		const g = groups.get(m.name) ?? { name: m.name, members: [], line: m.line, seen: new Set<string>() };
+		groups.set(m.name, g);
+		for (const n of m.members) if (!g.seen.has(n)) { g.seen.add(n); g.members.push(n); }
+	}
+	return [...groups.values()].map(({ name, members, line }) => ({ name, members, line }));
+}
+
+/**
+ * Rewrites the members of every `%% group` line: `f` answers undefined to keep a member, null
+ * to drop it, a name to write instead. Names are replaced in place; a line that lost a member
+ * is written anew, and one left without members is removed.
+ */
+function editGroupMembers(lines: string[], f: (member: string) => string | null | undefined): string[] {
+	const out: string[] = [];
+	for (const l of lines) {
+		const g = groupLine(l);
+		if (!g || !g.targets.length) { out.push(l); continue; }
+		const parts = g.targets.map(t => ({ t, r: !t.link && t.names.length === 1 ? f(t.names[0].name) : undefined }));
+		if (parts.every(p => p.r === undefined)) { out.push(l); continue; }
+		const write = (p: { t: TargetSpan; r: string | null | undefined }, text: string) =>
+			(typeof p.r === 'string' && p.r !== p.t.names[0].name ? formatName(p.r) : text);
+		if (parts.some(p => p.r === null)) {
+			const kept = parts.filter(p => p.r !== null).map(p => write(p, l.slice(p.t.start, p.t.end)));
+			if (kept.length) out.push(`${l.slice(0, g.nameEnd)} ${kept.join(', ')}`);
+			continue;
+		}
+		let text = l;
+		for (let k = parts.length - 1; k >= 0; k--) {
+			const p = parts[k];
+			text = text.slice(0, p.t.start) + write(p, l.slice(p.t.start, p.t.end)) + text.slice(p.t.end);
+		}
+		out.push(text);
+	}
 	return out;
 }
 
@@ -958,7 +1068,8 @@ export function deletePipeline(source: string, parent: string): string {
 	// silently skips them, and a later component of the same name would inherit them.
 	out = out.filter(l => !(linkPair(l)?.some(s => children.includes(s.name)))
 		&& !(/^[ \t]*evolve[ \t]/.test(l) && children.includes(nameSpans(l)[0]?.name ?? '')));
-	return editClassTargets(out, t => (children.some(c => touches(t, c)) ? null : undefined)).join('\n');
+	out = editClassTargets(out, t => (children.some(c => touches(t, c)) ? null : undefined));
+	return editGroupMembers(out, m => (children.includes(m) ? null : undefined)).join('\n');
 }
 
 /** Shifts every component of a parent's pipeline by `delta` evolution (moving the box). */
@@ -986,8 +1097,8 @@ export function declaredPositions(source: string): { name: string; kind: 'anchor
 
 /**
  * Deletes an anchor or component with everything that refers to it: its links, its evolve
- * arrow and the classes set on it or its links. A pipeline parent is refused (its pipeline
- * block would dangle).
+ * arrow, the classes set on it or its links, and its group memberships. A pipeline parent is
+ * refused (its pipeline block would dangle).
  */
 export function deleteElement(source: string, name: string): string {
 	let lines = source.split('\n');
@@ -1003,7 +1114,8 @@ export function deleteElement(source: string, name: string): string {
 		if (parent && pipelineOf(lines.join('\n'), parent)?.length === 1) return deletePipeline(source, parent);
 	}
 	lines = lines.filter((l, i) => i !== line && i !== evolve && !(linkPair(l)?.some(s => s.name === name)));
-	return editClassTargets(withoutInertiaPosition(lines, name), t => (touches(t, name) ? null : undefined)).join('\n');
+	lines = editClassTargets(withoutInertiaPosition(lines, name), t => (touches(t, name) ? null : undefined));
+	return editGroupMembers(lines, m => (m === name ? null : undefined)).join('\n');
 }
 
 /** How a link is drawn: a plain or dashed line, or a flow arrow in one or both directions. */
@@ -1097,9 +1209,10 @@ export function rename(source: string, oldName: string, newName: string): string
 		for (const s of spans) l = l.slice(0, s.start) + written + l.slice(s.end);
 		return l;
 	});
-	return editClassTargets(renamed, t => (touches(t, oldName)
+	const classed = editClassTargets(renamed, t => (touches(t, oldName)
 		? (typeof t === 'string' ? [next] : t.map(n => (n === oldName ? next : n)))
-		: undefined)).join('\n');
+		: undefined));
+	return editGroupMembers(classed, m => (m === oldName ? next : undefined)).join('\n');
 }
 
 // ---- helpers the editor needs, kept here because they are pure ------------------------
