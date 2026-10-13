@@ -6,6 +6,8 @@ import { ForceKind } from './wardley-text';
 /** What a press at a point means. Each kind is one gesture or action in the editor. */
 export type Hit =
 	| { kind: 'note'; el: SVGTextElement; text: string }
+	/** A group's label, drawn by the plugin behind everything else (`%% group`). */
+	| { kind: 'group-label'; el: SVGTextElement; name: string }
 	| { kind: 'force'; force: ForceKind; name: string; parts: Element[]; origin: Pt }
 	/** A numbered annotation circle, or the box listing the texts (`number`: the line pressed, if any). */
 	| { kind: 'annotation'; part: Element; box: boolean; number: number | null; origin: Pt }
@@ -24,7 +26,7 @@ export type Hit =
  * pointer, so a click on a component could delete another component's evolve arrow):
  *
  * 1. elements under the pointer: annotation (circle or box), note, accelerator/deaccelerator,
- *    inertia bar, node or label;
+ *    inertia bar, node or label, a group's label;
  * 2. zones around thin lines: evolve tip, evolve shaft, link end, link middle;
  * 3. the "+" ring around a node; 4. a pipeline box (stands for its parent).
  *
@@ -61,6 +63,9 @@ function elementHit(model: MapModel, target: Element): Hit | null {
 			};
 		}
 	}
+	// Group labels lie behind nodes and links, so the pointer reaches one only where nothing covers it.
+	const groupLabel = target.closest<SVGTextElement>('text.mde-group-label');
+	if (groupLabel) return { kind: 'group-label', el: groupLabel, name: groupLabel.textContent ?? '' };
 	const g = target.closest<SVGGElement>('g.wardley-node');
 	const node = g ? model.byNode(g) : null;
 	if (!g || !node) return null;

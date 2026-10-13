@@ -5,7 +5,7 @@ import { DeletePress, Gesture, NewLinkDrag, Stub, TapPress } from './gestures';
 import { NameModal } from './modals';
 import { SourceRegistry } from './render';
 import { STUB_LENGTH, evolutionAt, visibilityAt } from './wardley-geometry';
-import { AnnotationDrag, ForceDrag, GestureCtx, InertiaDrag, LinkEndDrag, NodeDrag, NoteDrag, TrendTipDrag } from './wardley-gestures';
+import { AnnotationDrag, ForceDrag, GestureCtx, GroupLabelDrag, InertiaDrag, LinkEndDrag, NodeDrag, NoteDrag, TrendTipDrag } from './wardley-gestures';
 import { Hit, classify, componentAt, dropTargetAt } from './wardley-hit';
 import { LegendKind, WARDLEY_LEGEND } from './wardley-legend';
 import { MapModel, MapNode } from './wardley-map';
@@ -18,7 +18,7 @@ import {
 
 /** Inline cursor per hit kind; '' leaves it to styles.css (nodes, labels, notes, bars, boxes). */
 const HOVER_CURSOR: Record<Hit['kind'], string> = {
-	annotation: '', note: '', force: '', inertia: '', node: '', box: '',
+	annotation: '', note: '', 'group-label': '', force: '', inertia: '', node: '', box: '',
 	'trend-tip': 'ew-resize', 'trend-shaft': CURSOR_DELETE, 'link-end': 'crosshair', 'link-middle': 'pointer', plus: CURSOR_ADD,
 };
 
@@ -49,6 +49,7 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 		switch (hit.kind) {
 			case 'annotation': return this.start(e, new AnnotationDrag(model, e, this, hit), svg);
 			case 'note': return this.start(e, new NoteDrag(model, e, this, hit.el, hit.text), svg);
+			case 'group-label': return this.start(e, new GroupLabelDrag(model, e, this, hit.el, hit.name), svg);
 			case 'force': return this.start(e, new ForceDrag(model, e, this, hit.force, hit.name, hit.parts, hit.origin), svg);
 			case 'inertia': return this.start(e, new InertiaDrag(model, e, this, hit.bar, hit.name), svg);
 			case 'node': return this.start(e, new NodeDrag(model, e, this, hit.node, hit.label), svg);

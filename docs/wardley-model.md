@@ -3,7 +3,7 @@
 Two Obsidian CLI commands (Obsidian 1.12+, desktop) for scripts and agents that work with
 `wardley-beta` maps in notes: read a map as JSON, and bring a map in line with a JSON model
 by editing the text in place. The JSON shape is a contract, versioned by `schema`
-(currently **1**). Since plugin version 0.15.0; `inertiaAt` on every element with inertia, `inertiaAtDefault`, and link-kind comparison by drawing since 0.16.0; `classes` and `classDefs` since 0.19.0; `groups` since 0.20.0.
+(currently **1**). Since plugin version 0.15.0; `inertiaAt` on every element with inertia, `inertiaAtDefault`, and link-kind comparison by drawing since 0.16.0; `classes` and `classDefs` since 0.19.0; `groups` since 0.20.0, with `label` and `classes` since 0.21.0.
 
 ```bash
 obsidian mermaid-direct-edit:wardley-read  path="Maps/Tea Shop.md"
@@ -59,7 +59,7 @@ usually `wardley-beta`). Optional keys are absent when the map has nothing for t
   "annotations": [ { "number": 1, "text": "first", "visibility": 0.1, "evolution": 0.2, "line": 32 } ],
   "annotationsBox": { "visibility": 0.05, "evolution": 0.9, "line": 33 },
   "classDefs": [ { "name": "highlight", "style": { "stroke": "#8000F0", "stroke-width": "3px" }, "line": 34 } ],
-  "groups": [ { "name": "Human + AI", "members": ["Staff", "Cup of Tea"], "line": 35 } ],
+  "groups": [ { "name": "Human + AI", "members": ["Staff", "Cup of Tea"], "line": 35, "label": [0, -12], "classes": ["highlight"] } ],
   "errors": [],
   "unsupported": []
 }
@@ -75,9 +75,9 @@ usually `wardley-beta`). Optional keys are absent when the map has nothing for t
 | `links[].kind` | The arrow as written: `->`, `-->`, `-.->`, `+>`, `+<`, `+<>`, `+'label'>`, `+'label'<`, `+'label'<>`. `flow` is set for the `+` arrows. |
 | `links[].label` | The `; label` after a link, or the inline label of a flow arrow. |
 | `forces` | Accelerators and deaccelerators. |
-| `classes` | On elements and links: the classes set by `%% class` lines (see below), in source order. |
-| `groups` | `%% group <name> <members>` lines (see below), lines with one name merged: the members that exist, in source order, and the line of the first statement. |
-| `classDefs` | `%% classDef <class> <styles>` lines with the properties this plugin applies (`stroke`, `stroke-width`, `stroke-dasharray`, `fill`, `color`, `font-weight`; colours and plain numbers only). A later definition of the same class adds to an earlier one. |
+| `classes` | On elements, links and groups: the classes set by `%% class` lines (see below), in source order. |
+| `groups` | `%% group <name> [label [dx, dy]] <members>` lines (see below), lines with one name merged: the members that exist, in source order, the line of the first statement, `label` when an offset is written (the first among the group's lines), and `classes` when a class line names the group. |
+| `classDefs` | `%% classDef <class> <styles>` lines with the properties this plugin applies (`stroke`, `stroke-width`, `stroke-dasharray`, `fill`, `color`, `font-weight`, and `r` from 8 to 48 for a group's radius; colours and plain numbers only). A later definition of the same class adds to an earlier one. |
 | `errors` | `{line, message}`: the map parses but something in it is wrong (see below). `line` is `null` for the whole map. At most 200, sorted by line; beyond them a last entry with `line: null` counts the rest. |
 | `unsupported` | `{line, text}`: a statement Mermaid parses that this model has no field for. Expected empty; it lists what a newer Mermaid added before the model knows it. |
 
@@ -96,11 +96,13 @@ comment so Mermaid and other renderers ignore it:
 ```
 
 One statement per line, the class name last (nothing may follow it); a class name is letters,
-digits, `_` and `-`, at most 40 characters. Targets are element names
+digits, `_` and `-`, at most 40 characters. Targets are element names, group names
 or links, comma-separated; a link is named by its two ends with `->`, in either order, whatever
 arrow the link has. Names are written as in a declaration (quoted when they need it). This plugin
 draws the class `highlight` in the theme's accent colour and applies a `classDef` to any class;
-other class names are carried in the model for consumers. When Mermaid supports `class` for
+other class names are carried in the model for consumers. In a `classDef`, the colour names
+`red`, `orange`, `yellow`, `green`, `cyan`, `blue`, `purple` and `pink` are drawn in the Obsidian
+theme's colours (light and dark); any other colour as written. When Mermaid supports `class` for
 wardley-beta, deleting `%% ` is meant to be the whole migration.
 
 **Groups** are the proposed `group` statement, written as a comment for now:
@@ -110,11 +112,20 @@ wardley-beta, deleting `%% ` is meant to be the whole migration.
 %% group Energy Power, Electric Kettle
 ```
 
-The name first (quoted when it holds blanks, at most 60 characters), then the members,
-comma-separated element names. Several lines with one name make one group. Links are not listed:
-a link belongs to a group when both its ends do. This plugin draws a dotted boundary around the
-members and their links; `wardley-apply` leaves the lines alone (removing an element takes it out
-of its groups).
+The name first (quoted when it holds blanks, at most 60 characters), optionally `label [dx, dy]`
+(where the name is drawn, in map pixels relative to where this plugin places it: centred above
+the boundary), then the members, comma-separated element names. Several lines with one name make
+one group. Links are not listed: a link belongs to a group when both its ends do. A group's name
+must not be an element's: a class line naming it would set the element's class.
+
+This plugin draws a dashed boundary around the members and their links, in the map's line colour,
+with the name as its label. Classes style it like a node (`%% class "Human + AI" highlight`): the
+boundary and the label take the class's colour, a `classDef` may set `stroke`, `stroke-width`,
+`stroke-dasharray`, a pale `fill`, the label's `color` and `font-weight`, and `r`, the radius of
+the circle swept along the members (8 to 48, default 16). Groups sharing members are drawn with
+radii 6 apart, the smaller group inside, unless a class sets `r`. `wardley-apply` leaves the lines
+alone (removing an element takes it out of its groups, and a group that loses its last member
+takes the class lines naming it along).
 
 **`errors`** (the command still answers `ok:true`):
 
@@ -127,10 +138,13 @@ of its groups).
   for one element;
 - an `mp-inertia` comment for an element without `(inertia)`;
 - a `%% class` line without a target, with an empty name or a class name that is not one
-  (letters, digits, `_`, `-`), or naming an element or link the map does not have; a `classDef`
-  part the plugin does not apply (`fill:url(…)`, an unknown property);
-- a `%% group` line without a name or members, with a link as a member, or naming an element the
-  map does not have;
+  (letters, digits, `_`, `-`), or naming an element, group or link the map does not have; a class
+  whose `classDef` sets `r` on an element or a link (it only sets a group's radius); a `classDef`
+  part the plugin does not apply (`fill:url(…)`, an unknown property, `r` outside 8-48);
+- a `%% group` line without a name or members, with a name that starts or ends with a blank or
+  holds a control character, with a link as a member, a label offset that is not `label [dx, dy]`
+  (each value at most ±9999.99), or naming an element the map does not have; a group named like an
+  element;
 - `Mermaid: …` when the running Mermaid refuses the map for a reason not listed above.
 
 **A block Mermaid cannot parse at all** answers `ok:false` with code `parse-error` and a

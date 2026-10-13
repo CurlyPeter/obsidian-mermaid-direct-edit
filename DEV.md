@@ -604,8 +604,8 @@ unit tests; live render and the CLI's refusal of the reviewer's payload re-measu
 
 ## Proposal: groups for wardley-beta (2026-10-13)
 
-Status: interim comment form decided and drawn by this plugin since 0.20.0 (next section);
-upstream not proposed yet.
+Status: interim comment form decided and drawn by this plugin since 0.20.0, styled and labelled
+since 0.21.0 (next sections); upstream not proposed yet.
 
 **Need.** Wardley draws boundaries around several components and their links to say "these
 belong together": teams in a cell based structure ("Think small (as in teams)" and "Aptitude and
@@ -647,8 +647,29 @@ Cup of Tea`. Deleting `%% ` is meant to be the migration.
 **The drawing.** The area a disc covers when it travels along the group: its members' centres,
 the links between two members, and the shortest connections that join members no such link
 connects (a spanning tree, as in Kelp diagrams). Inner corners rounded by a closing, holes
-filled, the outer edge drawn as a dotted line. A renderer that wants the same look needs nothing
+filled, the outer edge drawn as a dashed line. A renderer that wants the same look needs nothing
 but the members' positions and the links.
+
+**Styling and the label (maintainer, 2026-10-13, drawn since 0.21.0).**
+
+```
+group "Tea Shop" label [0, -12] Staff, Cup of Tea, Cup, Tea
+group Energy Kettle, Power
+classDef team stroke:purple, r:24
+class "Tea Shop" highlight
+class Energy team
+```
+
+- **A group is styled like a node, through Mermaid's own `class`/`classDef`**, as a flowchart's
+  subgraph is (`class <subgraph id> <class>`): no new syntax. A class line names the group by its
+  name, so a group must not be named like an element.
+- **Unstyled, a group has no colour of its own**: a dashed line in the map's line colour.
+  Colour is the class's job (`highlight` in the theme's accent colour, any other through
+  `classDef`), as for nodes.
+- **The radius is a style: CSS's `r`** (the radius of a circle, SVG 2), here the radius of the
+  disc swept along the group. `classDef` stays plain CSS; `r` only applies to groups.
+- **The name is the label**, drawn by the renderer centred above the boundary; `label [dx, dy]`
+  after the name moves it from there, as `label [dx, dy]` moves a component's name.
 
 ## Groups for wardley-beta (0.20.0, 2026-10-13)
 
@@ -716,7 +737,97 @@ edits wrote no fence and changed nothing but group members; `scanTargets` unchan
   text of a multi-line `accDescr` untouched: 50,000 comment lines 1608 ms became 81 ms.
 - Noted for consumers: `groups[].name` is note text; a renderer that draws it must escape it.
 
+## Group classes and labels (0.21.0, 2026-10-13)
+
+Decisions (maintainer, 2026-10-13), the proposal above:
+
+- **Default: dashed in the map's own line colour, no accent.** The colour is read from Mermaid's
+  drawing (its first link's stroke), so a dark Mermaid theme gets a light line; it is checked
+  against `PLAIN_COLOR` before it is copied. The constant look lives in the inserted attributes;
+  `styles.css` only draws `highlight` (boundary and label in `--color-accent`, label bold) and the
+  label's move cursor.
+- **Classes on groups** reuse everything of 0.19.0: `classMarkers`, `CLASS_NAME`, `MAX_CLASSES`,
+  the `classDef` whitelist (`stylesOf` is now shared by `applyClasses` and `applyGroups`). A class
+  line naming both an element and a group belongs to the element; `wardley-read` reports the clash.
+  `rename` and `addElement` refuse a group's name; a group losing its last member takes the class
+  targets naming it along (`withoutVanishedGroups`), so no class line is left naming nothing.
+- **Theme colours.** `red`, `orange`, `yellow`, `green`, `cyan`, `blue`, `purple`, `pink` in a
+  `classDef` colour become `var(--color-<name>)`, the theme's colour in light and dark mode
+  (measured on 1.14.4: all eight defined). They are valid CSS names, so the map stays portable;
+  this applies to nodes and links too.
+- **`r` in `classDef`**, 8 to 48 (`STYLE_VALUE`), read by `applyGroups` only; `wardley-read`
+  says so when a class with `r` is set on an element or a link.
+- **Staggered radii.** Groups sharing members would draw the same arc around them. Greedy levels,
+  smaller groups first (a team inside its department): a group gets the lowest level no
+  already-placed group sharing a member has, radius `16 + 6 * level`, at most 5 levels. A class's
+  `r` wins.
+- **The label is the group's name**, italic 10 px (Mermaid's node labels are 10 px upright), in the
+  boundary's colour (`color` in the `classDef` wins, else its `stroke`). Centred `LABEL_GAP` above
+  the boundary's top point; below its lowest point when that would leave the viewBox; kept inside
+  it horizontally by an estimated width (5.5 px a character). Labels that overlap (groups sharing
+  their top member, as staggered groups do) are moved apart: the inner group keeps its spot, the
+  outer label moves up a line at a time; a label placed by hand stays. The offset `label [dx, dy]` follows
+  the name in the group line; on several lines of one group the first offset counts and is the one
+  a drag rewrites. `label` only counts when `[` follows, so a member named `label maker` stays a
+  member. Labels sit with the boundaries behind links and nodes: the pointer reaches one only where
+  nothing covers it, and no gesture inside a group changes.
+- **The name is the first note text the plugin writes into a drawing.** It goes in as the text of
+  the label, escaped (`&`, `<`, `>`), into a string DOMPurify has already sanitized. Everything else
+  inserted stays numbers, whitelisted values and class names.
+
+Verification (macOS desktop, Obsidian 1.14.4, Mermaid 12.1.0): 359 tests, 35 in
+`wardley-groups.test.ts` (label offsets read and written, a member named `label maker`, the name
+clash refused, vanished groups taking their class targets along, `setClass` on a group, the model's
+`label`/`classes` and its new errors; on the captured Mermaid SVG: the default look in the map's
+line colour, `highlight` and a `classDef` on boundary and label, the theme colour names on nodes,
+`r` as the radius, staggering for shared members only and not over an explicit `r`, the label
+above, offset, below without room and kept inside, overlapping labels moved apart, the name
+escaped) plus timing cases in
+`wardley-text.security.test.ts`. Each new rule shown to matter: 23 mutations of the code (the
+default colour, staggering, theme colours, clash, label placement, escaping, the vanished-group
+cleanup, `label` needing `[`, the offset kept on rebuilt lines, the refused names, the model's
+errors, the writer's clamp, the label separation) each fail a test. E2E 32/32 with three new cases
+(`group_render`: the test map's unstyled group in the map's line colour and a `classDef` group in
+the theme's purple with radius 24, in Live Preview and in reading view; `group_highlight`;
+`group_label_drag`: a drag writes `label [dx, dy]` after the name, a second one adds to it).
+Rendered by the plugin inside Obsidian (offscreen,
+the open note untouched) with the demo map plus probe groups, light and dark Mermaid theme: an
+unstyled group in the map's line colour (#333 light, #d3d3d3 dark), `highlight` in the accent
+colour with a bold label, `stroke:green, r:24` in the theme's green and visibly wider; `wardley-read`
+on the demo note answers no errors and `groups[0].classes: ["highlight"]`.
+
+**Security review (0.21.0, same day, before release): accept.** A fresh read-only agent measured
+5506 hostile renders in real Blink through `innerHTML` (as Obsidian inserts the SVG) under a CSP
+with a violation listener: no element, attribute or handler beyond the expected `1 + 3n` new
+elements, every label decoding back to its name; 20,000 hostile `classDef` and class lines gave only
+`prop:(#hex | letters | var(--color-<one of eight>) | number)` styles, `r` never written into CSS;
+8905 `setGroupLabel` and 27,000 delete calls changed exactly what they should; render cost against
+0.20.0 within a few tens of ms, `GROUP_BUDGET` still the bound. Fixed anyway (all Info):
+
+- **R-1:** `setGroupLabel` could write an offset its own parser refuses (`9999.6` rounds to
+  10000), after which the group stopped drawing. It clamps to ±9999 and refuses NaN and infinity.
+- **R-2:** characters XML forbids (C0 controls, U+FFFE/U+FFFF, lone surrogates) in a group name
+  made the SVG invalid as XML; harmless through `innerHTML`, which is all Obsidian does today. Such
+  names are refused (`groupProblem`), `textOf` drops the C0 ones as well and escapes quotes.
+- **R-3:** a name with leading or trailing blanks was written trimmed by `setClass` (naming
+  something else). Such names are refused.
+- **R-4:** `withStyle` looked for `style="` in the whole label tag, its text included: a name like
+  `a style="b` kept its `classDef` off the label. Only the opening tag is checked now (and the
+  quote is escaped anyway).
+- **R-5 (accepted):** `applyGroups` reads the class and `classDef` lines again after
+  `applyClasses`; linear, about +50 ms with JIT on 1.9 MB of crafted comment lines.
+
 ## Changelog
+
+- **0.21.0 (2026-10-13)** Groups take classes and show their name. Without a class a group is a
+  dashed line in the map's line colour; `%% class "<group>" highlight` draws it in the accent
+  colour, a `%% classDef` gives it any colour, line style, a pale fill and, with `r`, its radius
+  (8 to 48). The eight colour names red to pink in any `classDef` are drawn in the theme's colours.
+  Groups sharing members are drawn one inside the other. Each group's name is drawn above it and can
+  be dragged (`label [dx, dy]` after the name). A group must not be named like an element, nor
+  start or end with a blank. See "Group classes and labels (0.21.0)". Security review before
+  release: accept; four small hardenings (offsets the parser reads back, names without control
+  characters or outer blanks, the label's style check).
 
 - **0.20.0 (2026-10-13)** Groups in Wardley maps: `%% group "<name>" <member>, <member>` (the
   proposed `group` statement, commented out until wardley-beta has it) is drawn as a dotted

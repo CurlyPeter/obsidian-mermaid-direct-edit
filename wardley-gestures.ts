@@ -3,8 +3,8 @@ import { Pt, evolutionAt, trendTargetX, visibilityAt } from './wardley-geometry'
 import { Hit, dropTargetAt } from './wardley-hit';
 import { MapModel, MapNode } from './wardley-map';
 import {
-	ForceKind, getPosition, relink, setAnnotationPosition, setAnnotationsBoxPosition, setEvolveTarget, setForcePosition,
-	setInertiaPosition, setLabelOffset, setNotePosition, setPosition, shiftPipeline,
+	ForceKind, getPosition, groupsOf, relink, setAnnotationPosition, setAnnotationsBoxPosition, setEvolveTarget, setForcePosition,
+	setGroupLabel, setInertiaPosition, setLabelOffset, setNotePosition, setPosition, shiftPipeline,
 } from './wardley-text';
 
 /** What a Wardley gesture may ask the editor to do, beyond writing an edit. */
@@ -161,6 +161,32 @@ export class InertiaDrag extends MapDrag {
 	protected restore() {
 		this.bar.setAttribute('x1', String(this.x));
 		this.bar.setAttribute('x2', String(this.x));
+	}
+}
+
+/**
+ * Moves a group's label. The plugin places it above the boundary; what the drag adds goes after
+ * the group's name as `label [dx, dy]`, so the label keeps its place relative to the group.
+ */
+export class GroupLabelDrag extends MapDrag {
+	constructor(model: MapModel, e: PointerEvent, ctx: GestureCtx, private el: SVGTextElement, private name: string) {
+		super(model, e, ctx);
+	}
+
+	protected drag(d: Pt) {
+		translate(this.el, d);
+	}
+
+	protected drop(d: Pt) {
+		const name = this.name;
+		void this.ctx.apply(this.model, src => {
+			const [dx, dy] = groupsOf(src).find(g => g.name === name)?.label ?? [0, 0];
+			return setGroupLabel(src, name, dx + d.x, dy + d.y);
+		});
+	}
+
+	protected restore() {
+		this.el.removeAttribute('transform');
 	}
 }
 

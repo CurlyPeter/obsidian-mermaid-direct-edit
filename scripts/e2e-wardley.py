@@ -56,6 +56,9 @@ annotation 1,[0.30, 0.70] "First remark"
 annotation 2,[0.68, 0.62] "Second remark"
 
 %% group "E2E Group" Beta, Epsilon
+%% group Team Alpha, Beta
+%% classDef team stroke:purple, r:24
+%% class Team team
 """
 FILLER = '\n\n'.join(f'Filler line {i} so the map sits below the top.' for i in range(1, 41))
 
@@ -103,6 +106,7 @@ for (const [k, spec] of Object.entries(ARG)) {
   else if (what === 'box') { const r = svg.querySelector('rect.wardley-pipeline-box')?.getBoundingClientRect(); out[k] = r && [Math.round(r.left + r.width / 2), Math.round(r.bottom - 4)]; }
   else if (what === 'corner') { const r = svg.closest('.mermaid').getBoundingClientRect(); out[k] = a === 'left' ? [Math.round(r.left + 10), Math.round(r.bottom - 10)] : [Math.round(r.right - 10), Math.round(r.bottom - 10)]; }
   else if (what === 'legend-item') { const i = svg.closest('.mermaid').querySelector(`.mp-legend [data-mp-add="${a}"]`); out[k] = i && mid(i.getBoundingClientRect()); }
+  else if (what === 'group-label') { const t = [...svg.querySelectorAll('text.mde-group-label')].find(t => t.textContent === a); out[k] = t && mid(t.getBoundingClientRect()); }
   else if (what === 'plus') { const c = center(a); const s = scr(...c); out[k] = [s[0], s[1] + 15]; }
   else if (what === 'scroll') { out[k] = Math.round(root.querySelector('.cm-scroller').scrollTop); }
 }
@@ -511,10 +515,10 @@ def case_highlight_dialog():
     """The element dialog's Highlight writes `%% class <name> highlight`, the map draws the component
     in the accent colour (outline and label), its neighbour stays as it was; off removes the line."""
     t1 = save_with_highlight_toggled(locate(n=['node', 'Gamma'])['n'], True)
-    on = line(r'^%% class .*$')
+    on = line(r'^%% class Gamma .*$')
     st = styles({'g': ['node', 'Gamma'], 'z': ['node', 'Zeta']})
     t2 = save_with_highlight_toggled(locate(n=['node', 'Gamma'])['n'], True)
-    off = line(r'^%% class .*$')
+    off = line(r'^%% class Gamma .*$')
     g, z, accent = st.get('g') or {}, st.get('z') or {}, st.get('accent')
     ok = (t1 == t2 == 'Edit "Gamma"' and on == '%% class Gamma highlight' and 'mde-class-highlight' in g.get('cls', '')
           and g.get('shape') == accent and g.get('label') == accent and z.get('shape') != accent and off is None)
@@ -525,7 +529,7 @@ def case_highlight_link_dialog():
     """The link dialog's Highlight writes `%% class <from> -> <to> highlight` and the line takes the
     accent colour, in Live Preview and in reading view."""
     title = save_with_highlight_toggled(locate(m=['link-mid', 'User', 'Alpha'])['m'], False)
-    got = line(r'^%% class .*$')
+    got = line(r'^%% class User .*$')
     live = styles({'l': ['link', 'User', 'Alpha']})
     leaf = "app.workspace.activeLeaf"
     js('(async()=>{const l=' + leaf + '; const s=l.getViewState(); s.state.mode="preview"; await l.setViewState(s);'
@@ -542,21 +546,29 @@ def case_highlight_link_dialog():
 
 
 
-# The group boundary of the map: its stroke, whether it takes pointer events, and which points
-# lie inside it (SVGGeometryElement.isPointInFill, in the map's own units).
+# The groups of the map: per group its boundary's stroke, dashes and pointer events, its label, and
+# which points lie inside it (SVGGeometryElement.isPointInFill, in the map's own units); the map's
+# line colour (a link without a class: an earlier case highlights one), the accent and the theme's
+# purple to compare with.
 GROUP_PROBE = r"""
 (()=>{
 const root = app.workspace.activeLeaf.view.contentEl.querySelector(__ROOT__);
 const svg = root && root.querySelector('.mermaid svg[aria-roledescription="wardley"]');
-const path = svg && svg.querySelector('path.mde-group');
-if (!path) return JSON.stringify({error: svg ? 'no boundary' : 'no map'});
-const probe = document.body.createDiv(); probe.style.color = 'var(--color-accent)'; const accent = getComputedStyle(probe).color; probe.remove();
+const groups = svg ? [...svg.querySelectorAll('g.mde-group')] : [];
+if (!groups.length) return JSON.stringify({error: svg ? 'no boundary' : 'no map'});
+const colour = v => { const d = document.body.createDiv(); d.style.color = v; const c = getComputedStyle(d).color; d.remove(); return c; };
 const centre = n => { const g = [...svg.querySelectorAll('g.wardley-node')].find(g => g.querySelector('text.wardley-node-label')?.textContent.trim() === n);
   const c = g && [...g.querySelectorAll(':scope > circle')].find(c => !c.getAttribute('class')); return c && new DOMPoint(+c.getAttribute('cx'), +c.getAttribute('cy')); };
-const cs = getComputedStyle(path);
-const inside = n => { const p = centre(n); return p ? path.isPointInFill(p) : null; };
-return JSON.stringify({accent, stroke: cs.stroke, dash: cs.strokeDasharray, events: cs.pointerEvents,
-  beta: inside('Beta'), omega: inside('Omega'), alpha: inside('Alpha')});
+const out = {accent: colour('var(--color-accent)'), purple: colour('var(--color-purple)'), ink: getComputedStyle(svg.querySelector('line.wardley-link:not(.mde-class)')).stroke};
+for (const g of groups) {
+  const path = g.querySelector('path.mde-group-boundary'), label = g.querySelector('text.mde-group-label');
+  const cs = getComputedStyle(path), r = label.getBoundingClientRect();
+  const inside = (n, dy = 0) => { const p = centre(n); return p ? path.isPointInFill(new DOMPoint(p.x, p.y + dy)) : null; };
+  out[label.textContent] = {stroke: cs.stroke, dash: cs.strokeDasharray, events: cs.pointerEvents, label: getComputedStyle(label).fill,
+    at: [Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2)],
+    beta: inside('Beta'), omega: inside('Omega'), alpha: inside('Alpha'), above22: inside('Alpha', -22)};
+}
+return JSON.stringify(out);
 })()
 """
 
@@ -566,26 +578,63 @@ def group_probe(view):
     return json.loads(raw)
 
 
-def case_group_render():
-    """`%% group "E2E Group" Beta, Epsilon` is drawn as a dotted boundary in the accent colour that
-    holds both members and nothing far away, takes no pointer events, in Live Preview and in reading
-    view; the rename of Epsilon (case rename_dialog) has rewritten the group line."""
-    got = line(r'^%% group .*$')
-    live = group_probe('.markdown-source-view')
+def in_reading_view(f):
+    """Runs f in reading view, then back to Live Preview with the map in view."""
     leaf = "app.workspace.activeLeaf"
     js('(async()=>{const l=' + leaf + '; const s=l.getViewState(); s.state.mode="preview"; await l.setViewState(s);'
        ' await new Promise(r=>setTimeout(r,800)); l.view.currentMode.applyScroll(80); await new Promise(r=>setTimeout(r,1500)); return "ok"})()')
     try:
-        read = group_probe('.markdown-preview-view')
+        return f()
     finally:
         js('(async()=>{const l=' + leaf + '; const s=l.getViewState(); s.state.mode="source"; await l.setViewState(s);'
            ' await new Promise(r=>setTimeout(r,1200)); return "ok"})()')
         park()
+
+
+def case_group_render():
+    """`%% group "E2E Group" Beta, Epsilon` is drawn as a dashed boundary in the map's own line colour,
+    labelled, holding both members and nothing far away, taking no pointer events; `Team`, styled by
+    `classDef team stroke:purple, r:24`, is drawn in the theme's purple with radius 24. In Live Preview
+    and in reading view; the rename of Epsilon (case rename_dialog) has rewritten the group line."""
+    got = line(r'^%% group "E2E.*$')
+    live = group_probe('.markdown-source-view')
+    read = in_reading_view(lambda: group_probe('.markdown-preview-view'))
     def ok_view(v):
-        return (v.get('stroke') == v.get('accent') and v.get('dash') not in (None, '', 'none') and v.get('events') == 'none'
-                and v.get('beta') is True and v.get('omega') is True and v.get('alpha') is False)
+        g, t = v.get('E2E Group') or {}, v.get('Team') or {}
+        return (g.get('stroke') == v.get('ink') != v.get('accent') and g.get('label') == v.get('ink') and g.get('dash') not in (None, '', 'none')
+                and g.get('events') == 'none' and g.get('beta') is True and g.get('omega') is True and g.get('alpha') is False
+                and t.get('stroke') == v.get('purple') and t.get('label') == v.get('purple') and t.get('above22') is True)
     ok = got == '%% group "E2E Group" Beta, Omega' and ok_view(live) and ok_view(read)
     return ok, f'{got}; live {live}; reading view {read}'
+
+
+def case_group_highlight():
+    """`%% class "E2E Group" highlight` draws that group's boundary and label in the accent colour;
+    `Team` keeps its own colour."""
+    js('(()=>{const e=app.workspace.activeLeaf.view.editor; const n=e.getValue().split("\\n").findIndex(l=>l.startsWith(\'%% group "E2E\'));'
+       ' e.replaceRange(\'%% class "E2E Group" highlight\\n\', {line:n+1, ch:0}); return "x"})()')
+    wait(1.5); park()
+    v = group_probe('.markdown-source-view')
+    g, t = v.get('E2E Group') or {}, v.get('Team') or {}
+    ok = g.get('stroke') == v.get('accent') and g.get('label') == v.get('accent') and t.get('stroke') == v.get('purple')
+    return ok, f'{line(r"^%% class .E2E.*$")}; {v}'
+
+
+def case_group_label_drag():
+    """Dragging a group's label writes `label [dx, dy]` after the group's name, and the label is
+    drawn where it was dropped."""
+    p = locate(l=['group-label', 'E2E Group'])
+    drag(*p['l'], 40, -20); wait(); park()
+    got = line(r'^%% group "E2E.*$')
+    m = re.search(r'label \[(-?\d+), (-?\d+)\]', got or '')
+    before = group_probe('.markdown-source-view')
+    # A second drag adds to the offset rather than replacing it.
+    p2 = locate(l=['group-label', 'E2E Group'])
+    drag(*p2['l'], -20, 0); wait(); park()
+    again = re.search(r'label \[(-?\d+), (-?\d+)\]', line(r'^%% group "E2E.*$') or '')
+    ok = bool(m and int(m.group(1)) > 0 and int(m.group(2)) < 0 and got.endswith('Beta, Omega')
+              and again and int(again.group(1)) < int(m.group(1)) and again.group(2) == m.group(2))
+    return ok, f'{got}; then {again and again.group(0)}; label at {(before.get("E2E Group") or {}).get("at")}'
 
 
 def case_unload_cleanup():
@@ -612,7 +661,7 @@ CASES = [
     ('legend_annotation', case_legend_annotation),
     ('rename_dialog', case_rename_dialog), ('type_dialog', case_type_dialog), ('legend_corner', case_legend_corner),
     ('highlight_dialog', case_highlight_dialog), ('highlight_link_dialog', case_highlight_link_dialog),
-    ('group_render', case_group_render),
+    ('group_render', case_group_render), ('group_highlight', case_group_highlight), ('group_label_drag', case_group_label_drag),
     ('component_on_shaft', case_component_on_shaft), ('swallow_scope', case_swallow_scope),
     ('popout_window', case_popout_window),
     ('unload_cleanup', case_unload_cleanup),

@@ -1,17 +1,17 @@
 // @vitest-environment happy-dom
 /**
- * Groups on Wardley maps (`%% group <name> <members>`, DEV.md → "Groups for wardley-beta"): the
- * line parser, the edits that keep the lines in step (checked by the real Mermaid parser and read
- * back through the model), the boundary geometry by its properties, and the drawing on an SVG
- * Mermaid produced.
+ * Groups on Wardley maps (`%% group <name> [label [dx, dy]] <members>`, DEV.md → "Groups for
+ * wardley-beta"): the line parser, the edits that keep the lines in step (checked by the real
+ * Mermaid parser and read back through the model), classes on groups, the boundary geometry by
+ * its properties, and the drawing on an SVG Mermaid produced.
  */
 import { describe, expect, it } from 'vitest';
 import { parse } from '@mermaid-js/parser';
 import type { Pt } from './wardley-geometry';
 import { GROUP_BUDGET, GROUP_RADIUS, inside, outline, pathOf, skeleton, type Segment } from './wardley-groups';
 import { readModel } from './wardley-model';
-import { applyGroups, wardleyRender } from './wardley-render';
-import { deleteElement, deletePipeline, groupMarkers, groupsOf, rename } from './wardley-text';
+import { applyClasses, applyGroups, wardleyRender } from './wardley-render';
+import { addElement, deleteElement, deletePipeline, groupMarkers, groupsOf, rename, setClass, setGroupLabel } from './wardley-text';
 import { SOURCE, SVG } from './wardley.fixtures';
 
 const MAP = [
@@ -54,6 +54,16 @@ describe('reading group lines', () => {
 		expect(groupMarkers("wardley-beta\n  %%group 'say \"hi\"' \"Käse\", A.B")[0]).toEqual({ line: 2, name: 'say "hi"', members: ['Käse', 'A.B'] });
 	});
 
+	it('reads a label offset after the name; "label" without a bracket is a member', () => {
+		expect(groupMarkers('wardley-beta\n%% group "Tea Shop" label [0, -12.5] Staff, Cup\n%% group G label maker, Kettle\n%% group label A')).toEqual([
+			{ line: 2, name: 'Tea Shop', members: ['Staff', 'Cup'], label: [0, -12.5] },
+			{ line: 3, name: 'G', members: ['label maker', 'Kettle'] },
+			{ line: 4, name: 'label', members: ['A'] },
+		]);
+		// The first offset among a group's lines counts.
+		expect(groupsOf('wardley-beta\n%% group G A\n%% group G label [3, 4] B\n%% group G label [9, 9] C')[0].label).toEqual([3, 4]);
+	});
+
 	it('merges lines with one name, each member once, in source order', () => {
 		expect(groupsOf('wardley-beta\n%% group G A, B\n%% group H C\n%% group G B, D')).toEqual([
 			{ name: 'G', members: ['A', 'B', 'D'], line: 2 },
@@ -64,11 +74,16 @@ describe('reading group lines', () => {
 	it('names what is wrong with a line instead of guessing', () => {
 		const problems = groupMarkers([
 			'wardley-beta', '%% group "Open name A, B', '%% group "" A', '%% group G', `%% group "${'x'.repeat(61)}" A`,
-			'%% group G A -> B', '%% group G A, , B',
+			'%% group G A -> B', '%% group G A, , B', '%% group G label [a, 1] A', '%% group G label [1, 2 A',
+			// Review 0.21.0: a name is drawn as text and found again by it.
+			'%% group " sp " A', '%% group "a\u0001b" A', '%% group "x\uD800" A', '%% group "\uDC00y" A', '%% group "Tea \uD83D\uDE00" A',
 		].join('\n')).map(m => m.problem);
 		expect(problems).toEqual([
 			expect.stringMatching(/closing quote/), expect.stringMatching(/no group name/), expect.stringMatching(/no members/),
 			expect.stringMatching(/longer than 60/), expect.stringMatching(/a link cannot be a member/), expect.stringMatching(/empty name/),
+			expect.stringMatching(/label offset/), expect.stringMatching(/label offset/),
+			expect.stringMatching(/starts or ends with a blank/), expect.stringMatching(/control character/),
+			expect.stringMatching(/control character/), expect.stringMatching(/control character/), undefined,
 		]);
 	});
 
@@ -95,6 +110,41 @@ describe('edits keep the group lines in step', () => {
 		expect((await read(t)).errors).toEqual([]);
 	});
 
+	it('a label offset survives member edits; setGroupLabel writes it after the name', async () => {
+		const src = MAP.replace('%% group Energy Power', '%% group Energy label [3, 4] Power');
+		expect(groupLines(deleteElement(src, 'Electric Kettle'))[1]).toBe('%% group Energy label [3, 4] Power');
+		expect(groupLines(rename(src, 'Power', 'Strom'))[1]).toBe('%% group Energy label [3, 4] Strom, Electric Kettle');
+		expect(groupLines(setGroupLabel(MAP, 'Human + AI', 5.4, -12.6))[0]).toBe('%% group "Human + AI" label [5, -13] Staff, Cup of Tea, Cup, Tea');
+		expect(groupLines(setGroupLabel(src, 'Energy', -1, 0))[1]).toBe('%% group Energy label [-1, 0] Power, Electric Kettle');
+		// Several lines: the one carrying the offset is rewritten, the others stay.
+		const two = `${MAP}\n%% group Energy label [1, 1] Kettle`;
+		expect(groupLines(setGroupLabel(two, 'Energy', 7, 8)).slice(1)).toEqual(['%% group Energy Power, Electric Kettle', '%% group Energy label [7, 8] Kettle']);
+		expect(() => setGroupLabel(MAP, 'Ghost', 1, 1)).toThrow(/no group "Ghost"/);
+		// Review 0.21.0 (R-1): never an offset the parser would refuse.
+		expect(groupLines(setGroupLabel(MAP, 'Energy', 10000, -1e21))[1]).toBe('%% group Energy label [9999, -9999] Power, Electric Kettle');
+		expect(() => setGroupLabel(MAP, 'Energy', NaN, 0)).toThrow(/number/);
+		expect(() => setGroupLabel(MAP, 'Energy', 0, Infinity)).toThrow(/number/);
+		expect((await read(setGroupLabel(MAP, 'Energy', 2, -9))).groups[1]).toEqual({ name: 'Energy', members: ['Power', 'Electric Kettle'], line: 22, label: [2, -9] });
+	});
+
+	it('a group that loses its last member takes the class lines naming it along', async () => {
+		const src = `${MAP}\n%% class Energy highlight\n%% class Energy, Staff highlight`;
+		const s = deleteElement(deleteElement(src, 'Power'), 'Electric Kettle');
+		expect(s.split('\n').filter(l => l.startsWith('%% class'))).toEqual(['%% class Staff highlight']);
+		expect((await read(s)).errors).toEqual([]);
+		const p = deletePipeline(`${MAP.replace('%% group Energy Power, Electric Kettle', '%% group Energy Electric Kettle')}\n%% class Energy highlight`, 'Kettle');
+		expect(p).not.toMatch(/%% class/);
+	});
+
+	it('a group name cannot be taken by an element; a class is set on a group by its name', async () => {
+		expect(() => rename(MAP, 'Staff', 'Energy')).toThrow(/name of a group/);
+		expect(() => addElement(MAP, 'component', 'Energy', 0.5, 0.5)).toThrow(/name of a group/);
+		const s = setClass(MAP, 'Energy', 'highlight', true);
+		expect(s.split('\n').slice(-1)[0]).toBe('%% class Energy highlight');
+		expect((await read(s)).groups[1].classes).toEqual(['highlight']);
+		expect(setClass(s, 'Energy', 'highlight', false)).toBe(MAP);
+	});
+
 	it('removing a pipeline takes its components out of their groups', async () => {
 		const s = deletePipeline(MAP, 'Kettle');
 		expect(groupLines(s)).toEqual(['%% group "Human + AI" Staff, Cup of Tea, Cup, Tea', '%% group Energy Power']);
@@ -118,6 +168,23 @@ describe('the model', () => {
 		const m = await readModel(`${MAP}\n${lines.join('\n')}`, parse);
 		expect(m.errors.length).toBe(201);
 		expect(m.errors[200]).toEqual({ line: null, message: '… and 100 more errors.' });
+	});
+
+	it('wardley-read reports a group\'s label and classes, a name shared with an element, and r on an element', async () => {
+		const m = await read([
+			MAP, '%% group Energy label [4, -6] Power', '%% class Energy highlight', '%% classDef wide r:24, stroke:purple',
+			'%% class "Human + AI" wide', '%% class Staff wide', '%% group Kettle Cup', '%% class Nobody highlight',
+		].join('\n'));
+		expect(m.groups).toEqual([
+			{ name: 'Human + AI', members: ['Staff', 'Cup of Tea', 'Cup', 'Tea'], line: 21, classes: ['wide'] },
+			{ name: 'Energy', members: ['Power', 'Electric Kettle'], line: 22, label: [4, -6], classes: ['highlight'] },
+			{ name: 'Kettle', members: ['Cup'], line: 28 },
+		]);
+		expect(m.errors).toEqual([
+			'27: class wide: r sets a group\'s radius, it does nothing on "Staff".',
+			expect.stringMatching(/^28: group "Kettle": an element has the same name/),
+			'29: class highlight: no element or group "Nobody" in this map.',
+		]);
 	});
 
 	it('wardley-read reports groups with the members that exist, and every line that adds nothing', async () => {
@@ -218,15 +285,32 @@ describe('the boundary', () => {
 });
 
 describe('drawing groups on the SVG Mermaid returned', () => {
-	it('inserts one group of boundaries behind pipelines, links and nodes; nothing else changes', () => {
+	/** The part applyGroups inserted: the output is the input plus exactly that. */
+	const insertedOf = (out: string) => {
+		const at = out.indexOf('<g class="mde-groups">');
+		return out.slice(at, at + out.length - SVG.length);
+	};
+	const parsed = (out: string) => new DOMParser().parseFromString(out, 'image/svg+xml');
+	/** The extent of group i's boundary, from the numbers of its path. */
+	const extent = (out: string, i = 0) => {
+		const d = parsed(out).querySelector(`g.mde-group[data-mde-group="${i}"] > path`)!.getAttribute('d')!;
+		const n = d.match(/-?\d+(?:\.\d+)?/g)!.map(Number);
+		const xs = n.filter((_, k) => k % 2 === 0), ys = n.filter((_, k) => k % 2 === 1);
+		return { left: Math.min(...xs), right: Math.max(...xs), top: Math.min(...ys), bottom: Math.max(...ys), width: Math.max(...xs) - Math.min(...xs) };
+	};
+	const labelOf = (out: string, i = 0) => {
+		const t = parsed(out).querySelector(`g.mde-group[data-mde-group="${i}"] > text`)!;
+		return { x: Number(t.getAttribute('x')), y: Number(t.getAttribute('y')), text: t.textContent, style: t.getAttribute('style') };
+	};
+
+	it('inserts one group of boundaries and labels behind pipelines, links and nodes; nothing else changes', () => {
 		const out = applyGroups(SVG, `${SOURCE}\n%% group G Kettle, Power, Grid\n%% group Solo Market`)!;
-		const inserted = /<g class="mde-groups">.*?<\/g>/.exec(out)![0];
+		const inserted = insertedOf(out);
 		expect(out.replace(inserted, '')).toBe(SVG);
 		expect(out.indexOf(inserted)).toBe(SVG.indexOf('<g class="wardley-pipelines">'));
-		expect(inserted.match(/<path class="mde-group" data-mde-group="(\d)"/g)).toEqual([
-			'<path class="mde-group" data-mde-group="0"', '<path class="mde-group" data-mde-group="1"',
-		]);
-		expect(inserted).toMatch(/^<g class="mde-groups">(<path class="mde-group" data-mde-group="\d" d="[MCZ\d., -]+" fill="none" stroke="#888888" stroke-width="1.5" stroke-dasharray="3 3" pointer-events="none"><\/path>)+<\/g>$/);
+		// Without a class a group is drawn in the map's own line colour (#333333 in this drawing), dashed.
+		const group = (i: number, name: string) => `<g class="mde-group" data-mde-group="${i}"><path class="mde-group-boundary" d="[MCZ\\d., -]+" fill="none" fill-opacity="0.12" stroke="#333333" stroke-width="1.5" stroke-dasharray="4 3" stroke-linecap="round" pointer-events="none"></path><text class="mde-group-label" data-mde-group="${i}" x="[-\\d.]+" y="[-\\d.]+" fill="#333333" font-size="10" font-style="italic" text-anchor="middle">${name}</text></g>`;
+		expect(inserted).toMatch(new RegExp(`^<g class="mde-groups">${group(0, 'G')}${group(1, 'Solo')}</g>$`));
 	});
 
 	it('draws nothing for a group without a drawn member', () => {
@@ -241,11 +325,99 @@ describe('drawing groups on the SVG Mermaid returned', () => {
 		expect(out).toContain('<g class="mde-groups">');
 	});
 
+	it('classes style a group like a node: highlight by class name, a classDef inline on boundary and label', () => {
+		const lit = applyGroups(SVG, `${SOURCE}\n%% group "Big G" Kettle, Power\n%% class "Big G" highlight`)!;
+		expect(lit).toContain('<g class="mde-group mde-class mde-class-highlight" data-mde-group="0"><path class="mde-group-boundary" d="');
+		expect(insertedOf(lit)).not.toContain(' style="');
+		const styled = applyGroups(SVG, `${SOURCE}\n%% group G Kettle\n%% classDef team stroke:purple, stroke-dasharray:2 2, fill:#00ff00, color:#123456, font-weight:bold\n%% class G team`)!;
+		expect(styled).toMatch(/<path style="stroke:var\(--color-purple\);stroke-dasharray:2 2;fill:#00ff00" class="mde-group-boundary" d="/);
+		expect(labelOf(styled).style).toBe('fill:#123456;font-weight:bold');
+		// Without color the label takes the boundary's stroke.
+		expect(labelOf(applyGroups(SVG, `${SOURCE}\n%% group G Kettle\n%% classDef team stroke:green\n%% class G team`)!).style).toBe('fill:var(--color-green)');
+	});
+
+	it('the eight theme colour names become the theme\'s colours, on nodes too; other names stay', () => {
+		const out = applyClasses(SVG, `${SOURCE}\n%% classDef hot stroke:Red, fill:salmon\n%% class Kettle hot`)!;
+		expect(out).toContain('style="stroke:var(--color-red);fill:salmon"');
+	});
+
+	it('a class and a group of one name: the class goes to the element', () => {
+		const out = applyGroups(SVG, `${SOURCE}\n%% group Kettle Power, Grid\n%% class Kettle highlight`)!;
+		expect(out).toContain('<g class="mde-group" data-mde-group="0">');
+	});
+
+	it('a classDef r sets the radius; groups sharing members run outside the smaller one, unless r is set', () => {
+		const alone = extent(applyGroups(SVG, `${SOURCE}\n%% group B Kettle, Power`)!);
+		const one = extent(applyGroups(SVG, `${SOURCE}\n%% group A Kettle`)!);
+		expect(one.width).toBeCloseTo(2 * GROUP_RADIUS, 0);
+		const wide = extent(applyGroups(SVG, `${SOURCE}\n%% group A Kettle\n%% classDef wide r:24\n%% class A wide`)!);
+		expect(wide.width).toBeCloseTo(48, 0);
+		// B shares Kettle with the smaller A: one step (6) further out, whichever comes first.
+		for (const src of [`%% group A Kettle\n%% group B Kettle, Power`, `%% group B Kettle, Power\n%% group A Kettle`]) {
+			const out = applyGroups(SVG, `${SOURCE}\n${src}`)!;
+			const b = extent(out, src.startsWith('%% group A') ? 1 : 0), a = extent(out, src.startsWith('%% group A') ? 0 : 1);
+			expect(b.width - alone.width).toBeCloseTo(12, 0);
+			expect(a.width).toBeCloseTo(one.width, 0);
+		}
+		// Disjoint groups are not staggered; an explicit r is kept.
+		expect(extent(applyGroups(SVG, `${SOURCE}\n%% group A Market\n%% group B Kettle, Power`)!, 1).width).toBeCloseTo(alone.width, 0);
+		const fixed = applyGroups(SVG, `${SOURCE}\n%% group A Kettle\n%% group B Kettle, Power\n%% classDef std r:16\n%% class B std`)!;
+		expect(extent(fixed, 1).width).toBeCloseTo(alone.width, 0);
+	});
+
+	it('the label sits centred above the boundary, moves by its offset, goes below without room, stays inside', () => {
+		const src = `${SOURCE}\n%% group A Kettle`;
+		const out = applyGroups(SVG, src)!;
+		const box = extent(out), at = labelOf(out);
+		expect(at.y).toBeCloseTo(box.top - 4, 0);
+		expect(at.x).toBeCloseTo(369.6, 0);
+		const moved = labelOf(applyGroups(SVG, src.replace('group A Kettle', 'group A label [10, -5] Kettle'))!);
+		expect([moved.x - at.x, moved.y - at.y]).toEqual([10, -5]);
+		// The map's top at 300: no room above Kettle's group, so the label goes below it.
+		const low = applyGroups(SVG.replace('viewBox="0 0 900 600"', 'viewBox="0 380 900 220"'), src)!;
+		expect(labelOf(low).y).toBeCloseTo(extent(low).bottom + 14, 0);
+		// A map 360 wide: the label of a group at x 369.6 is pulled inside.
+		expect(labelOf(applyGroups(SVG.replace('viewBox="0 0 900 600"', 'viewBox="0 0 360 600"'), src)!).x).toBeCloseTo(360 - 4.75, 0);
+	});
+
+	it('labels of groups sharing their top member do not overlap: the outer one moves up, a placed one stays', () => {
+		const out = applyGroups(SVG, `${SOURCE}\n%% group Inner Kettle\n%% group Outer Kettle, Power`)!;
+		const inner = labelOf(out, 0), outer = labelOf(out, 1);
+		expect(inner.y).toBeCloseTo(extent(out, 0).top - 4, 0);
+		expect(inner.y - outer.y).toBeGreaterThanOrEqual(12);
+		// Outer's label placed by hand (offset 0, 0) stays at its spot; Inner's gives way.
+		const fixed = applyGroups(SVG, `${SOURCE}\n%% group Inner Kettle\n%% group Outer label [0, 0] Kettle, Power`)!;
+		expect(labelOf(fixed, 1).y).toBeCloseTo(extent(fixed, 1).top - 4, 0);
+		expect(labelOf(fixed, 1).y - labelOf(fixed, 0).y).toBeGreaterThanOrEqual(12);
+		// Groups far apart keep their own spots.
+		const apart = applyGroups(SVG, `${SOURCE}\n%% group A Kettle\n%% group B Market`)!;
+		expect(labelOf(apart, 1).y).toBeCloseTo(extent(apart, 1).top - 4, 0);
+	});
+
+	it('the name is written as text: markup in a name stays text', () => {
+		const out = applyGroups(SVG, `${SOURCE}\n%% group "<b>x</b> & <script>y" Kettle`)!;
+		expect(insertedOf(out)).toContain('>&lt;b&gt;x&lt;/b&gt; &amp; &lt;script&gt;y</text>');
+		const doc = parsed(out);
+		expect(doc.querySelector('parsererror')).toBeNull();
+		expect(doc.querySelectorAll('g.mde-groups *').length).toBe(3);
+		expect(labelOf(out).text).toBe('<b>x</b> & <script>y');
+		// Quotes too, so the name could go into an attribute later (review 0.21.0, R-2).
+		const quoted = applyGroups(SVG, `${SOURCE}\n%% group 'say "hi"' Kettle\n%% group "it's" Power`)!;
+		expect(insertedOf(quoted)).toContain('>say &quot;hi&quot;</text>');
+		expect(insertedOf(quoted)).toContain('>it&#39;s</text>');
+		expect([labelOf(quoted, 0).text, labelOf(quoted, 1).text]).toEqual(['say "hi"', "it's"]);
+	});
+
+	it('a name looking like an attribute does not stop the label from taking its style (review 0.21.0, R-4)', () => {
+		const out = applyGroups(SVG, `${SOURCE}\n%% group 'a style="b' Kettle\n%% classDef c color:red\n%% class 'a style="b' c`)!;
+		expect(labelOf(out).style).toBe('fill:var(--color-red)');
+	});
+
 	it('stays bounded on crafted group lines', () => {
 		const many = `${SOURCE}\n${'%% group G Kettle, Power, Grid, Market, Public\n'.repeat(5000)}${Array.from({ length: 200 }, (_, i) => `%% group g${i} Kettle, Market, Grid`).join('\n')}`;
 		const t = performance.now();
 		const out = applyGroups(SVG, many);
 		expect(performance.now() - t).toBeLessThan(1500);
-		expect((out!.match(/<path class="mde-group"/g) ?? []).length).toBe(20);
+		expect((out!.match(/<path class="mde-group-boundary"/g) ?? []).length).toBe(20);
 	});
 });

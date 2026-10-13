@@ -119,10 +119,29 @@ function centreOf(g: Element): [number, number] | null {
 	return text ? [n(text, 'x'), n(text, 'y') + 3] : null;
 }
 
-const css = (style: Style, keys: string[]) => keys.filter(k => style[k] !== undefined).map(k => `${k}:${style[k]}`).join(';');
-const withStyle = (tag: string, rule: string) => (rule && !/\sstyle="/.test(tag) ? tag.replace(/^<(\w+)/, `<$1 style="${rule}"`) : tag);
+/**
+ * Colour names a `classDef` may use that Obsidian's themes define in light and dark: drawn as the
+ * theme's colour, so `stroke:purple` is the theme's purple. Plain CSS, so the map stays portable.
+ */
+const THEME_COLORS = new Set(['red', 'orange', 'yellow', 'green', 'cyan', 'blue', 'purple', 'pink']);
+const COLOR_KEYS = new Set(['stroke', 'fill', 'color']);
+const valueOf = (k: string, v: string) => (COLOR_KEYS.has(k) && THEME_COLORS.has(v.toLowerCase()) ? `var(--color-${v.toLowerCase()})` : v);
+const css = (style: Style, keys: string[]) => keys.filter(k => style[k] !== undefined).map(k => `${k}:${valueOf(k, style[k])}`).join(';');
+// Only the opening tag is looked at: a group label's text follows it (review 0.21.0).
+const withStyle = (tag: string, rule: string) => (rule && !/^<[^>]*\sstyle="/.test(tag) ? tag.replace(/^<(\w+)/, `<$1 style="${rule}"`) : tag);
 const withClasses = (tag: string, classes: string[]) =>
 	tag.replace(/class="([^"]*)"/, (_, c: string) => `class="${c} mde-class ${classes.map(k => `mde-class-${k}`).join(' ')}"`);
+
+/** The style a list of classes gives, from the map's `classDef` lines (a later class wins). */
+function stylesOf(source: string): (classes: string[]) => Style {
+	const defs = new Map<string, Style>();
+	for (const d of classDefs(source)) if (CLASS_NAME.test(d.name)) defs.set(d.name, { ...defs.get(d.name), ...d.style });
+	return classes => {
+		const style: Style = {};
+		for (const c of classes) Object.assign(style, defs.get(c));
+		return style;
+	};
+}
 
 /** A node's group with its classes, and the `classDef` styles on its shape and its label. */
 function classedNode(group: string, classes: string[], style: Style): string {
@@ -182,13 +201,7 @@ export function applyClasses(svgText: string, source: string): string | null {
 		}
 	}
 	if (nodeClasses.every(c => !c.size) && linkClasses.every(c => !c.size)) return null;
-	const defs = new Map<string, Style>();
-	for (const d of classDefs(source)) if (CLASS_NAME.test(d.name)) defs.set(d.name, { ...defs.get(d.name), ...d.style });
-	const styleOf = (classes: string[]): Style => {
-		const style: Style = {};
-		for (const c of classes) Object.assign(style, defs.get(c));
-		return style;
-	};
+	const styleOf = stylesOf(source);
 	// What the plugin inserts stays small next to Mermaid's drawing; beyond that, Mermaid's own.
 	let budget = MAX_INSERTED;
 	const insert = (before: string, after: string) => { budget -= after.length - before.length; return after; };
@@ -211,47 +224,143 @@ export function applyClasses(svgText: string, source: string): string | null {
 /** Groups drawn per map, and members per group (crafted maps). */
 const MAX_GROUPS = 20;
 const MAX_GROUP_MEMBERS = 100;
+/**
+ * Groups sharing members would draw the same arc around them: each one that shares with a smaller
+ * group runs GROUP_STAGGER further out, at most MAX_STAGGER steps (a radius of 46).
+ */
+const GROUP_STAGGER = 6;
+const MAX_STAGGER = 5;
 /** Where the boundaries go: behind pipelines, links and nodes, above the stages and grid. */
 const GROUPS_BEFORE = ['<g class="wardley-pipelines">', '<g class="wardley-links">', '<g class="wardley-nodes">'];
+/** A colour as Mermaid writes it, safe to copy into an attribute. */
+const PLAIN_COLOR = /^(?:#[0-9a-fA-F]{3,8}|[a-zA-Z]{1,30})$/;
+/** A group label: the size of Mermaid's node labels, LABEL_GAP off the boundary. */
+const LABEL_SIZE = 10;
+const LABEL_GAP = 4;
+/** An italic 10 px character is about this wide: enough to keep a label inside the map. */
+const CHAR_WIDTH = 5.5;
+
+const num = (v: number) => String(Number.isFinite(v) ? Math.round(v * 10) / 10 : 0);
+/**
+ * A group's name as SVG text: the only note text the plugin writes into a drawing. Markup and
+ * quotes escaped; `groupMarkers` already refuses names with characters XML forbids, and the C0
+ * ones are dropped here as well.
+ */
+const textOf = (s: string) => s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '')
+	.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
 /**
- * Draws each `%% group` (DEV.md → "Groups for wardley-beta") as a dotted boundary around its
- * members and the links between them (`wardley-groups.ts`). The boundaries are inserted as one
- * new `<g class="mde-groups">` of paths built from numbers only, behind pipelines, links and
- * nodes; nothing else in the string changes and no note text is written into it. Members are
- * found by label. A group with no drawn member, or over the limits, is not drawn; null when no
- * group is.
+ * Where a group's label sits: centred above the boundary's top point, or below its lowest point
+ * when there is no room above, kept inside the drawing; then the group's `label [dx, dy]`.
+ */
+function labelAt(loops: Pt[][], name: string, view: number[] | null, offset: [number, number] | undefined): Pt {
+	let top = loops[0][0], bottom = loops[0][0];
+	for (const loop of loops) for (const p of loop) { if (p.y < top.y) top = p; if (p.y > bottom.y) bottom = p; }
+	let at = { x: top.x, y: top.y - LABEL_GAP };
+	if (view) {
+		const [vx, vy, vw] = view;
+		if (at.y - LABEL_SIZE < vy) at = { x: bottom.x, y: bottom.y + LABEL_GAP + LABEL_SIZE };
+		const half = (name.length * CHAR_WIDTH) / 2 + 2;
+		if (vw > 2 * half) at.x = Math.min(vx + vw - half, Math.max(vx + half, at.x));
+	}
+	return { x: at.x + (offset?.[0] ?? 0), y: at.y + (offset?.[1] ?? 0) };
+}
+
+/**
+ * Moves placed labels apart where they overlap: groups sharing their top member put their labels
+ * on one spot. A label the user placed (`label [dx, dy]`) stays; the others are taken inner group
+ * first and each moved up by a line until it is clear (at most MAX_GROUPS steps).
+ */
+function separateLabels(labels: { at: Pt; width: number; fixed: boolean; order: number }[]) {
+	const clash = (a: { at: Pt; width: number }, b: { at: Pt; width: number }) =>
+		Math.abs(a.at.x - b.at.x) < (a.width + b.width) / 2 && Math.abs(a.at.y - b.at.y) < LABEL_SIZE + 2;
+	const placed = labels.filter(l => l.fixed);
+	for (const l of labels.filter(l => !l.fixed).sort((a, b) => a.order - b.order)) {
+		for (let k = 0; k < MAX_GROUPS && placed.some(p => clash(p, l)); k++) l.at.y -= LABEL_SIZE + 2;
+		placed.push(l);
+	}
+}
+
+/**
+ * Draws each `%% group` (DEV.md → "Groups for wardley-beta") as a dashed boundary around its
+ * members and the links between them (`wardley-groups.ts`), with its name as a label. Without a
+ * class a group takes the map's own line colour; `%% class "<group>" <class>` sets classes on it
+ * (`highlight` in the accent colour, by `styles.css`) and a `classDef` styles boundary and label
+ * and may set its radius (`r`). Groups sharing members get staggered radii unless a class sets
+ * one. Inserted as one new `<g class="mde-groups">` behind pipelines, links and nodes: paths of
+ * numbers, attributes from whitelists, and the group's name as escaped text; nothing else in the
+ * string changes. Members are found by label. A group with no drawn member, or over the limits,
+ * is not drawn; null when no group is.
  */
 export function applyGroups(svgText: string, source: string): string | null {
-	const groups = groupsOf(source);
+	const groups = groupsOf(source).slice(0, MAX_GROUPS);
 	if (groups.length === 0) return null;
 	const doc = new DOMParser().parseFromString(svgText, 'image/svg+xml');
 	if (doc.querySelector('parsererror')) return null;
 	const { names, centres, ends } = readDrawing(doc);
 	const byName = new Map<string, number[]>();
 	names.forEach((n, i) => { const l = byName.get(n); if (l) l.push(i); else byName.set(n, [i]); });
+	// A group without a class looks like the map's own lines.
+	const ink = [doc.querySelector('line.wardley-link'), doc.querySelector('g.wardley-node > circle')]
+		.map(e => e?.getAttribute('stroke') ?? '').find(c => PLAIN_COLOR.test(c)) ?? '#888888';
+	const view = (doc.documentElement.getAttribute('viewBox') ?? '').trim().split(/[\s,]+/).map(Number);
+	// Classes by group name, one lookup per target; a name that is also an element's is the element's.
+	const named = new Set(groups.map(g => g.name));
+	const classes = new Map<string, string[]>();
+	for (const m of classMarkers(source)) {
+		if (m.problem) continue;
+		for (const t of m.targets) {
+			if (typeof t !== 'string' || !named.has(t) || byName.has(t)) continue;
+			const l = classes.get(t) ?? [];
+			if (l.length < MAX_CLASSES && !l.includes(m.cls)) l.push(m.cls);
+			classes.set(t, l);
+		}
+	}
+	const styleOf = classes.size ? stylesOf(source) : (): Style => ({});
+	const drawn = groups.map((g, gi) => {
+		const nodes = [...new Set(g.members.flatMap(m => byName.get(m) ?? []))].filter(i => centres[i]);
+		const cls = classes.get(g.name) ?? [];
+		const style = styleOf(cls);
+		return { g, gi, nodes, cls, style, r: style.r ? parseFloat(style.r) : null, level: 0 };
+	}).filter(d => d.nodes.length > 0 && d.nodes.length <= MAX_GROUP_MEMBERS);
+	// Smaller groups first, so a group around another one runs outside it.
+	const placed: { nodes: Set<number>; level: number }[] = [];
+	for (const d of [...drawn].sort((a, b) => a.nodes.length - b.nodes.length || a.gi - b.gi)) {
+		const taken = new Set(placed.filter(p => d.nodes.some(n => p.nodes.has(n))).map(p => p.level));
+		while (taken.has(d.level)) d.level++;
+		placed.push({ nodes: new Set(d.nodes), level: d.level });
+	}
 	let linkEnds: ([number, number] | null)[] | null = null;
 	const budget = { left: GROUP_BUDGET };
-	const paths: string[] = [];
+	const parts: string[] = [];
 	let size = 0;
-	groups.slice(0, MAX_GROUPS).forEach((g, gi) => {
-		const nodes = [...new Set(g.members.flatMap(m => byName.get(m) ?? []))].filter(i => centres[i]);
-		if (nodes.length === 0 || nodes.length > MAX_GROUP_MEMBERS) return;
-		const at = new Map(nodes.map((n, k) => [n, k]));
-		const points: Pt[] = nodes.map(i => ({ x: centres[i]![0], y: centres[i]![1] }));
+	const outlined: { d: (typeof drawn)[number]; loops: Pt[][]; label: Pt }[] = [];
+	for (const d of drawn) {
+		const at = new Map(d.nodes.map((n, k) => [n, k]));
+		const points: Pt[] = d.nodes.map(i => ({ x: centres[i]![0], y: centres[i]![1] }));
 		linkEnds ??= ends();
 		const links: [number, number][] = [];
 		for (const e of linkEnds) if (e && at.has(e[0]) && at.has(e[1])) links.push([at.get(e[0])!, at.get(e[1])!]);
-		const loops = outline(skeleton(points, links), GROUP_RADIUS, budget);
-		if (!loops?.length) return;
-		const path = `<path class="mde-group" data-mde-group="${gi}" d="${pathOf(loops)}" fill="none" stroke="#888888" stroke-width="1.5" stroke-dasharray="3 3" pointer-events="none"></path>`;
+		const radius = d.r ?? GROUP_RADIUS + GROUP_STAGGER * Math.min(d.level, MAX_STAGGER);
+		const loops = outline(skeleton(points, links), radius, budget);
+		if (loops?.length) outlined.push({ d, loops, label: labelAt(loops, d.g.name, view.length === 4 && view.every(Number.isFinite) ? view : null, d.g.label) });
+	}
+	separateLabels(outlined.map(o => ({ at: o.label, width: o.d.g.name.length * CHAR_WIDTH, fixed: !!o.d.g.label, order: o.d.level })));
+	for (const { d, loops, label } of outlined) {
+		const labelStyle: Style = { ...(d.style.color ?? d.style.stroke ? { fill: d.style.color ?? d.style.stroke } : {}), ...(d.style['font-weight'] ? { 'font-weight': d.style['font-weight'] } : {}) };
+		const part = `<g class="mde-group${d.cls.length ? ` mde-class ${d.cls.map(c => `mde-class-${c}`).join(' ')}` : ''}" data-mde-group="${d.gi}">`
+			+ withStyle(`<path class="mde-group-boundary" d="${pathOf(loops)}" fill="none" fill-opacity="0.12" stroke="${ink}" stroke-width="1.5" stroke-dasharray="4 3" stroke-linecap="round" pointer-events="none"></path>`,
+				css(d.style, ['stroke', 'stroke-width', 'stroke-dasharray', 'fill']))
+			+ withStyle(`<text class="mde-group-label" data-mde-group="${d.gi}" x="${num(label.x)}" y="${num(label.y)}" fill="${ink}" font-size="${LABEL_SIZE}" font-style="italic" text-anchor="middle">${textOf(d.g.name)}</text>`,
+				css(labelStyle, ['fill', 'font-weight']))
+			+ '</g>';
 		// What the plugin inserts stays small next to Mermaid's drawing: a group over it is skipped.
-		if (size + path.length > MAX_INSERTED) return;
-		size += path.length;
-		paths.push(path);
-	});
-	if (paths.length === 0) return null;
-	const inserted = `<g class="mde-groups">${paths.join('')}</g>`;
+		if (size + part.length > MAX_INSERTED) continue;
+		size += part.length;
+		parts.push(part);
+	}
+	if (parts.length === 0) return null;
+	const inserted = `<g class="mde-groups">${parts.join('')}</g>`;
 	const at = GROUPS_BEFORE.map(m => svgText.indexOf(m)).find(i => i >= 0) ?? -1;
 	if (at < 0) return null;
 	return svgText.slice(0, at) + inserted + svgText.slice(at);

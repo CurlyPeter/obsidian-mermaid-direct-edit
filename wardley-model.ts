@@ -83,10 +83,11 @@ export interface WardleyModel {
 	/** `%% classDef <class> <styles>` lines: the accepted properties of each. */
 	classDefs?: { name: string; style: Record<string, string>; line: number }[];
 	/**
-	 * `%% group <name> <members>` lines, those with one name merged: the members that exist, in
-	 * source order, and the line of the group's first statement.
+	 * `%% group <name> [label [dx, dy]] <members>` lines, those with one name merged: the members
+	 * that exist, in source order, the line of the group's first statement, the label offset when
+	 * one is written, and the classes set on the group by its name.
 	 */
-	groups?: { name: string; members: string[]; line: number }[];
+	groups?: { name: string; members: string[]; line: number; label?: [number, number]; classes?: string[] }[];
 	/** The map parses but is wrong somewhere (line null: the whole map). */
 	errors: { line: number | null; message: string }[];
 	/** Parsed statements no field of the model covers (expected empty). */
@@ -270,16 +271,24 @@ export async function readModel(source: string, parse: ParseFn): Promise<Wardley
 	};
 	const linkByPair = new Map<string, ModelLink>();
 	for (const l of links) if (!linkByPair.has(pairKey(l.from, l.to))) linkByPair.set(pairKey(l.from, l.to), l);
+	// A group is a class target by its name, like an element; an element of the same name wins
+	// (and the name clash is reported with the groups below).
+	const groupByName = new Map(groupsOf(source).map(g => [g.name, { ...g } as NonNullable<WardleyModel['groups']>[number]]));
+	// `r` is a group's radius; on an element or a link it does nothing, so say so.
+	const radiusClasses = new Set(classDefs(source).filter(d => d.style.r !== undefined).map(d => d.name));
+	const noRadius = (line: number, cls: string, what: string) => {
+		if (radiusClasses.has(cls)) errors.push({ line, message: `class ${cls}: r sets a group's radius, it does nothing on ${what}.` });
+	};
 	for (const m of classMarkers(source)) {
 		if (m.problem) { errors.push({ line: m.line, message: `class: ${m.problem}` }); continue; }
 		for (const t of m.targets) {
 			if (typeof t === 'string') {
-				const el = byName.get(t);
-				if (el) add(el, m.cls);
-				else errors.push({ line: m.line, message: `class ${m.cls}: no element "${t}" in this map.` });
+				const el = byName.get(t), group = groupByName.get(t);
+				if (el) { add(el, m.cls); noRadius(m.line, m.cls, `"${t}"`); } else if (group) add(group, m.cls);
+				else errors.push({ line: m.line, message: `class ${m.cls}: no element or group "${t}" in this map.` });
 			} else {
 				const link = linkByPair.get(pairKey(t[0], t[1]));
-				if (link) add(link, m.cls);
+				if (link) { add(link, m.cls); noRadius(m.line, m.cls, `the link "${t[0]}" -> "${t[1]}"`); }
 				else errors.push({ line: m.line, message: `class ${m.cls}: no link between "${t[0]}" and "${t[1]}" in this map.` });
 			}
 		}
@@ -293,7 +302,10 @@ export async function readModel(source: string, parse: ParseFn): Promise<Wardley
 			if (!byName.has(n)) errors.push({ line: m.line, message: `group "${m.name}": no element "${n}" in this map.` });
 		}
 	}
-	const groups = groupsOf(source).map(g => ({ ...g, members: g.members.filter(n => byName.has(n)) })).filter(g => g.members.length);
+	for (const g of groupByName.values()) {
+		if (byName.has(g.name)) errors.push({ line: g.line, message: `group "${g.name}": an element has the same name, so a class line naming it sets the element's class. Rename the group.` });
+	}
+	const groups = [...groupByName.values()].map(g => ({ ...g, members: g.members.filter(n => byName.has(n)) })).filter(g => g.members.length);
 
 	const evolves: WardleyModel['evolves'] = [];
 	for (const ev of ast.evolves) {
@@ -348,7 +360,7 @@ export async function readModel(source: string, parse: ParseFn): Promise<Wardley
 	for (const d of classDefs(source)) {
 		if (!CLASS_NAME.test(d.name)) errors.push({ line: d.line, message: `classDef: "${d.name}" is not a class name (letters, digits, _ and -, at most 40).` });
 		for (const r of d.rejected) {
-			errors.push({ line: d.line, message: `classDef ${d.name}: "${r}" is not applied (only ${STYLE_PROPERTIES.join(', ')} with colours or plain numbers).` });
+			errors.push({ line: d.line, message: `classDef ${d.name}: "${r}" is not applied (only ${STYLE_PROPERTIES.join(', ')} with colours or plain numbers; r from 8 to 48).` });
 		}
 		(model.classDefs ??= []).push({ name: d.name, style: d.style, line: d.line });
 	}
