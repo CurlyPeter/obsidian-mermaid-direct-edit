@@ -183,6 +183,10 @@ delete).
   by `placeInertia()` on the SVG string inside `wrapRender`. Other renderers (mmdc for the
   print, static sites) ignore the comment and show the default position until the export applies it
   too. `rename`, `setInertia(off)` and `deleteElement` keep the comment consistent.
+- **Classes (planned, not built): `%% class <target> <class>`**, e.g. `%% class Kettle highlight`
+  or `%% class Kettle -> Power highlight`. Mermaid's own `class` statement, commented out until
+  wardley-beta supports it; no `mp-` prefix on purpose. Proposal, reasons and open questions:
+  `DEV.md` → "Proposal: classes for wardley-beta".
 - **Notes** are plain `text` in `g.wardley-notes`, starting at the declared position; a drag
   rewrites `note "text" [v, e]`, matched by its exact text (must occur once).
 - **Annotations** are matched by their number (must occur once). Mermaid draws them last

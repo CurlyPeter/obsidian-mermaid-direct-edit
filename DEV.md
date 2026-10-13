@@ -468,6 +468,64 @@ Decisions made in the implementation (for the maintainer to confirm or turn arou
 - **"Link" in the interface** for what Mermaid's syntax calls edges, as Mermaid's documentation
   and the Wardley editor do; the code keeps "edge".
 
+## Proposal: classes for wardley-beta (planned, 2026-10-13)
+
+Status: interim comment form decided, plugin support not built yet, upstream not proposed yet.
+
+**Need.** A map used in a text has to point at parts of itself: "this component", "this
+dependency". wardley-beta has no way to mark an element or a link. Annotations number a spot
+but do not change how the element looks.
+
+**Decision (maintainer, 2026-10-13): use the statement the standard already has elsewhere,
+not a new keyword.** Mermaid styles flowcharts, state and class diagrams with classes:
+`classDef <name> <css>` defines a look, `class <ids> <name>` or the shorthand `id:::name`
+applies it. Links are styled by `linkStyle <index>` or, since Mermaid 11, by an edge id
+(`A e1@--> B`, then `class e1 <name>`). A highlight is then just a class named `highlight`.
+The same mechanism carries any later look (muted, new, at risk) without new grammar.
+
+**Proposed extension of the grammar** (for an issue, then a PR to mermaid-js: the wardley
+grammar in `@mermaid-js/parser` plus the wardley renderer):
+
+```
+classDef highlight stroke:#8000F0,stroke-width:5px
+class Kettle highlight
+component Kettle [0.30, 0.40] (inertia):::highlight
+class Kettle -> Power highlight
+```
+
+- `class` takes element names, comma-separated, like flowcharts.
+- A link target `A -> B` is our assumption: wardley links have no ids, and their names are
+  unique per pair. An alternative closer to flowcharts would be edge ids on wardley links.
+- The `:::` shorthand on a declaration follows flowcharts; it is optional in the proposal.
+
+**Interim form, until Mermaid has it: the future statement, commented out.**
+
+```
+%% class Kettle highlight
+%% class Kettle -> Power highlight
+```
+
+- One statement per line, on its own line. Flowcharts reject trailing `%%` comments; wardley
+  12.1 accepts one after a declaration, but whether every edit keeps it there is untested.
+- Not prefixed `mp-` (unlike `%% mp-inertia`), on purpose: once the grammar supports it,
+  deleting `%% ` is the whole migration, in this plugin and in every other renderer that reads
+  the form.
+- Separate lines, not attached to the declaration: Mermaid keeps structure and look apart
+  (`class`, `style`, `linkStyle` are statements of their own), and one map drawn twice can
+  carry different highlights.
+- A downstream renderer (a print pipeline that draws maps in a book's design) already reads this
+  form and refuses an unknown class or name.
+
+**Open questions, for the implementation in this plugin:**
+
+- **Where the highlight colour comes from.** Options: a `%% classDef highlight …` line in the
+  block (closest to the standard, per diagram), a plugin setting (one colour for the vault),
+  or the Obsidian theme's accent colour (follows light/dark). Probably a default from the theme
+  or setting, overridden by a `classDef` when present.
+- Editing: `rename` and `deleteElement` must keep or drop the `%% class` lines, as they do for
+  `%% mp-inertia`; the dialogs could offer a "Highlight" toggle.
+- The data commands (`wardley-read`) could report classes, so consumers stop reading comments.
+
 ## Changelog
 
 - **0.18.0 (2026-10-11)** Flowcharts are editable (`flowchart` / `graph`): node dialog (label,
