@@ -10,6 +10,8 @@ import {
 /** What a Wardley gesture may ask the editor to do, beyond writing an edit. */
 export interface GestureCtx extends EditCtx<MapModel> {
 	openNodeDialog(model: MapModel, node: MapNode): void;
+	/** A click on a group's label (not a drag). */
+	groupLabelTap(model: MapModel, name: string): void;
 	openForceDialog(model: MapModel, kind: ForceKind, name: string): void;
 	openAnnotationDialog(model: MapModel, number: number): void;
 }
@@ -21,13 +23,16 @@ abstract class MapDrag extends DragGesture<MapModel, GestureCtx> {
 	}
 }
 
-/** Moves an anchor or component (with its links, or a whole pipeline), or only its label. */
+/**
+ * Moves an anchor or component (with its links, or a whole pipeline), or only its label. A tap
+ * opens its dialog on the second one, or does `onTap` (the group mode: in or out of the group).
+ */
 export class NodeDrag extends MapDrag {
 	private readonly links: ReturnType<MapModel['linksAt']>;
 	private readonly extra: Element[];
 	private readonly pipeline: boolean;
 
-	constructor(model: MapModel, e: PointerEvent, ctx: GestureCtx, private node: MapNode, private label: SVGTextElement | null) {
+	constructor(model: MapModel, e: PointerEvent, ctx: GestureCtx, private node: MapNode, private label: SVGTextElement | null, private onTap?: () => void) {
 		super(model, e, ctx);
 		this.links = label ? [] : model.linksAt(node.center);
 		const parts = label ? null : model.pipelineParts(node.name);
@@ -67,6 +72,7 @@ export class NodeDrag extends MapDrag {
 	}
 
 	protected tap() {
+		if (this.onTap) return this.onTap();
 		this.ctx.tap(this.node.node, this.model, () => this.ctx.openNodeDialog(this.model, this.node));
 	}
 
@@ -181,8 +187,12 @@ export class GroupLabelDrag extends MapDrag {
 		const name = this.name;
 		void this.ctx.apply(this.model, src => {
 			const [dx, dy] = groupsOf(src).find(g => g.name === name)?.label ?? [0, 0];
-			return setGroupLabel(src, name, dx + d.x, dy + d.y);
+			return setGroupLabel(src, name, [dx + d.x, dy + d.y]);
 		});
+	}
+
+	protected tap() {
+		this.ctx.groupLabelTap(this.model, this.name);
 	}
 
 	protected restore() {

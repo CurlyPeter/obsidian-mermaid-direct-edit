@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { EditError, classDefs, classMarkers, deleteElement, deleteNote, getAnnotation, getClasses, groupMarkers, groupsOf, setAnnotationsBoxPosition, setGroupLabel, editBlocker, freeSpot, getPosition, inertiaPositions, isWardley, nameSpans, rename, setClass, setMethod, setPosition, setTitle } from './wardley-text';
+import { EditError, addGroupMember, classDefs, classMarkers, deleteElement, deleteGroup, deleteNote, nextGroupName, removeGroupMember, renameGroup, getAnnotation, getClasses, groupMarkers, groupsOf, setAnnotationsBoxPosition, setGroupLabel, editBlocker, freeSpot, getPosition, inertiaPositions, isWardley, nameSpans, rename, setClass, setMethod, setPosition, setTitle } from './wardley-text';
 import { locateBlock, mermaidBlocks } from './blocks';
 import { SourceRegistry } from './render';
 
@@ -161,6 +161,17 @@ describe('groups (0.20.0): linear on crafted group lines', () => {
 		let out = '';
 		fast(() => { out = deleteElement(src, 'A'); }, 1000);
 		expect(out).toBe('wardley-beta');
-		fast(() => setGroupLabel(many('%% group G A', 20000), 'G', 3, 4));
+		fast(() => setGroupLabel(many('%% group G A', 20000), 'G', [3, 4]));
+	});
+	it('graphical group edits stay linear on many group and class lines (0.22.0)', () => {
+		const src = `${many('%% group G A', 10000)}${'%% class G highlight\n'.repeat(10000)}`;
+		fast(() => addGroupMember(src, 'G', 'A'), 1000);
+		fast(() => addGroupMember(src, 'New', 'A'), 1000);
+		fast(() => removeGroupMember(src, 'G', 'A'), 1000);
+		fast(() => renameGroup(src, 'G', 'H'), 1000);
+		fast(() => deleteGroup(src, 'G'), 1000);
+		fast(() => setGroupLabel(src, 'G', null), 1000);
+		fast(() => nextGroupName(`wardley-beta\n${Array.from({ length: 2000 }, (_, i) => `component Group ${i + 1} [0.1, 0.1]`).join('\n')}`), 1000);
+		fast(() => groupMarkers(many(`%% group G label${pad(980)}A`, 2000)));
 	});
 });

@@ -174,7 +174,7 @@ export class FlowchartEditor extends DiagramEditor<FlowModel> implements FlowCtx
 		return true;
 	}
 
-	protected pressOutside() {
+	protected pressOutside(_e: PointerEvent) {
 		this.disarm();
 	}
 

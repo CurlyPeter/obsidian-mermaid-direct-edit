@@ -668,8 +668,10 @@ class Energy team
   `classDef`), as for nodes.
 - **The radius is a style: CSS's `r`** (the radius of a circle, SVG 2), here the radius of the
   disc swept along the group. `classDef` stays plain CSS; `r` only applies to groups.
-- **The name is the label**, drawn by the renderer centred above the boundary; `label [dx, dy]`
-  after the name moves it from there, as `label [dx, dy]` moves a component's name.
+- **The label is an option** (since 0.22.0; 0.21.0 drew every name): `label` after the name draws
+  the name centred above the boundary, `label [dx, dy]` moves it from there, as `label [dx, dy]`
+  moves a component's name. Many of Wardley's own groups have no label. `label` right after the
+  name is always the keyword; a member named `label maker` is quoted there.
 
 ## Groups for wardley-beta (0.20.0, 2026-10-13)
 
@@ -817,7 +819,76 @@ elements, every label decoding back to its name; 20,000 hostile `classDef` and c
 - **R-5 (accepted):** `applyGroups` reads the class and `classDef` lines again after
   `applyClasses`; linear, about +50 ms with JIT on 1.9 MB of crafted comment lines.
 
+## Editing groups (0.22.0, 2026-10-13)
+
+Decisions (maintainer, 2026-10-13), after discussing a first proposal that had more states:
+
+- **Three states: normal, the group mode, the group dialog.** The mode changes members only,
+  the dialog properties only; neither opens the other's work.
+- **One way into the mode for every group:** the legend's "Group" opens a menu with "New group"
+  and the map's groups. A label is optional, so it cannot be the only handle; a shown label is a
+  shortcut (click: the mode; double click: the dialog; drag: move it). The group's area and
+  boundary take no clicks: around its members the area is the "+" ring (9 to 22 px, the boundary
+  sits at 16) and the links' zones, and nested groups would be ambiguous.
+- **In the mode a click on a component puts it in or takes it out**; the cursor shows "+" or
+  "−" (not the red ✕, which means delete). The component's circle, label, pipeline box and "+"
+  ring all count, which matters for fingers. Drags keep moving things. Anything else (another
+  element, empty space, the legend, another map, Escape, "Done" or a click on the mode's notice)
+  ends the mode, and that press does nothing more. A second click on the same component within the
+  double-click time is ignored, so a double click does not undo itself. On touch a short notice
+  says what a tap did (no cursor).
+- **A group exists only with members.** "New group" writes nothing until the first component is
+  clicked, which creates "Group N" (the first free name); taking the last member out deletes the
+  group and its class lines, with Undo, and ends the mode.
+- **The dialog offers one class** (none, `highlight`, or a class the map defines with
+  `classDef`): two classes cover each other, the `classDef` colour always winning over highlight.
+  Several classes written by hand are shown and kept unless another one is chosen. No colour
+  picker and no new syntax: looks stay in `classDef`, written in the text.
+- **The mode is marked by a glow** behind the boundary and label, as a node gets while a link is
+  dragged onto it, so it shows whatever the group's own colour (highlight included).
+
+How it works:
+
+- **Every click is written at once, and the map is redrawn after each write** (Obsidian
+  re-renders the block). The mode keeps the source as the note holds it (`GroupEdit.src`, updated
+  by `write` for every edit written from it, drags included) and queues the clicks, each written
+  from what the one before left (`write(model, edit, src)`); a drawing older than the last write
+  still counts as the map being edited (`replaced`). A `MutationObserver` on the note's view puts
+  the glow back once per frame after a redraw, found by the map's source.
+- **Obsidian closes a menu on a mousedown outside it**, and the legend press's own mousedown comes
+  after the pointerdown that opens it, so the menu opens on that press's pointerup. With "native
+  menus" on (macOS) it is a system menu, outside the page: the E2E suite turns the setting off for
+  its run and restores it.
+- **Text:** `addGroupMember` appends to the group's first line, or writes a new group after the
+  last group line (else the last class line, else at the end); `removeGroupMember` edits that group
+  only; `renameGroup` rewrites every line of the group and the class lines naming it (unless an
+  element has that name); `deleteGroup` removes the lines and those class targets;
+  `setGroupLabel(…, 'auto' | [dx, dy] | null)` shows, moves or hides the label. New names are
+  checked (`checkGroupName`: not empty, no outer blanks, at most 60, no line breaks or control
+  characters, not taken by a group or an element) and written by `formatGroupName` (bare for one
+  plain word, else quoted).
+
+Verification (macOS desktop, Obsidian 1.14.4, Mermaid 12.1.0): 369 tests, 44 in
+`wardley-groups.test.ts` (each new text function, the label option, a fuzz of 300 random names
+through rename, add and the class line, read back exactly, parsed by Mermaid, no fence written),
+timing cases for every new edit on 20,000 crafted lines; 12 mutations of the new text code each
+fail a test. E2E 37/37 with five new cases: New group from the legend (first click makes "Group 1"
+without a label, the second joins, the group glows, Escape ends), members out and back in and the
+last out deleting the group, a finger tap putting a component in and "Done" ending the mode,
+"Properties…" opening the dialog and Delete removing the group and its class line, and a click on a
+label starting the mode with a double click opening the dialog (rename, another class, label
+hidden, the class line following). No security review: nothing new is written into the drawing,
+every new write goes through `write`/`writeBlock` (`fenceBreak`), and the names are fuzzed above.
+
 ## Changelog
+
+- **0.22.0 (2026-10-13)** Groups are edited in the map. The legend's *Group* lists *New group* and
+  the map's groups; in the group mode a click on a component puts it in or takes it out (the group
+  glows, the cursor shows + or −), Escape, a click elsewhere or *Done* ends it; the first component
+  makes the group, taking the last one out deletes it. Double-click a shown label for the group's
+  dialog: name, look (plain, highlight or a class of the map), label, delete. **A group's name is
+  now drawn only with `label`** (`%% group "Tea Shop" label Staff, Cup`); `label` right after the
+  name is always that option. See "Editing groups (0.22.0)".
 
 - **0.21.0 (2026-10-13)** Groups take classes and show their name. Without a class a group is a
   dashed line in the map's line colour; `%% class "<group>" highlight` draws it in the accent

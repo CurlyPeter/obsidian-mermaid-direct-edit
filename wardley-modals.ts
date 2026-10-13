@@ -152,3 +152,80 @@ export class LinkModal extends Modal {
 		this.contentEl.empty();
 	}
 }
+
+/** How a group's label is shown: not at all, at the plugin's spot, or where it was dragged to. */
+export type LabelChoice = 'off' | 'auto' | 'keep';
+
+/** What changed in the group dialog; absent fields stay as they are. */
+export interface GroupChanges {
+	name?: string;
+	/** The one class the group gets ('' for none). */
+	cls?: string;
+	label?: LabelChoice;
+}
+
+export interface GroupOptions {
+	name: string;
+	/** The group's classes as written. */
+	classes: string[];
+	/** The classes the map defines (`%% classDef`), besides `highlight`. */
+	defined: string[];
+	/** Shown or not, and whether it was dragged away from the plugin's spot. */
+	label: LabelChoice;
+	onSave: (changes: GroupChanges) => void;
+	onDelete: () => void;
+}
+
+/**
+ * The group dialog (DEV.md → "Editing groups (0.22.0)"): name, one class (none, highlight or a
+ * class the map defines; several classes written by hand are kept unless another is chosen), the
+ * label, delete. Members are changed in the group mode, never here.
+ */
+export class GroupModal extends Modal {
+	constructor(app: App, private o: GroupOptions) {
+		super(app);
+	}
+
+	onOpen() {
+		const o = this.o;
+		this.setTitle(`Edit group "${o.name}"`);
+		const KEEP = '\u0000keep';
+		const current = o.classes.length > 1 ? KEEP : o.classes[0] ?? '';
+		let name = o.name, cls = current, label = o.label;
+		const save = () => {
+			this.close();
+			const c: GroupChanges = {};
+			if (name.trim() && name.trim() !== o.name) c.name = name.trim();
+			if (cls !== current) c.cls = cls;
+			if (label !== o.label) c.label = label;
+			if (Object.keys(c).length) o.onSave(c);
+		};
+		new Setting(this.contentEl).setName('Name').addText(t => {
+			t.setValue(o.name).onChange(v => { name = v; });
+			t.inputEl.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); save(); } });
+			window.setTimeout(() => { t.inputEl.focus(); t.inputEl.select(); }, 0);
+		});
+		const looks: Record<string, string> = { '': 'Plain', highlight: 'Highlight' };
+		for (const c of [...o.defined, ...o.classes]) if (!(c in looks)) looks[c] = c;
+		if (current === KEEP) looks[KEEP] = `${o.classes.join(', ')} (as written)`;
+		new Setting(this.contentEl)
+			.setName('Look')
+			.setDesc('Plain is a dashed line in the map\'s colour. Highlight uses the accent colour; the other choices are the classes this map defines with "%% classDef".')
+			.addDropdown(d => d.addOptions(looks).setValue(current).onChange(v => { cls = v; }));
+		const labels: Record<string, string> = { off: 'Hidden', auto: 'Shown above the group' };
+		if (o.label === 'keep') labels.keep = 'Shown where it was moved';
+		new Setting(this.contentEl)
+			.setName('Label')
+			.setDesc('The group\'s name, drawn on the map.')
+			.addDropdown(d => d.addOptions(labels).setValue(o.label).onChange(v => { label = v as LabelChoice; }));
+		const buttons = new Setting(this.contentEl);
+		addDeleteButton(buttons, this, 'Really delete? Its components stay.', o.onDelete);
+		buttons
+			.addButton(b => b.setButtonText('Save').setCta().onClick(save))
+			.addButton(b => b.setButtonText('Cancel').onClick(() => this.close()));
+	}
+
+	onClose() {
+		this.contentEl.empty();
+	}
+}

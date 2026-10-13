@@ -3,7 +3,7 @@
 Two Obsidian CLI commands (Obsidian 1.12+, desktop) for scripts and agents that work with
 `wardley-beta` maps in notes: read a map as JSON, and bring a map in line with a JSON model
 by editing the text in place. The JSON shape is a contract, versioned by `schema`
-(currently **1**). Since plugin version 0.15.0; `inertiaAt` on every element with inertia, `inertiaAtDefault`, and link-kind comparison by drawing since 0.16.0; `classes` and `classDefs` since 0.19.0; `groups` since 0.20.0, with `label` and `classes` since 0.21.0.
+(currently **1**). Since plugin version 0.15.0; `inertiaAt` on every element with inertia, `inertiaAtDefault`, and link-kind comparison by drawing since 0.16.0; `classes` and `classDefs` since 0.19.0; `groups` since 0.20.0, with `label` and `classes` since 0.21.0 (`label` means "shown" since 0.22.0).
 
 ```bash
 obsidian mermaid-direct-edit:wardley-read  path="Maps/Tea Shop.md"
@@ -76,7 +76,7 @@ usually `wardley-beta`). Optional keys are absent when the map has nothing for t
 | `links[].label` | The `; label` after a link, or the inline label of a flow arrow. |
 | `forces` | Accelerators and deaccelerators. |
 | `classes` | On elements, links and groups: the classes set by `%% class` lines (see below), in source order. |
-| `groups` | `%% group <name> [label [dx, dy]] <members>` lines (see below), lines with one name merged: the members that exist, in source order, the line of the first statement, `label` when an offset is written (the first among the group's lines), and `classes` when a class line names the group. |
+| `groups` | `%% group <name> [label [dx, dy]] <members>` lines (see below), lines with one name merged: the members that exist, in source order, the line of the first statement, `label` when the name is drawn (its offset, the first among the group's lines; `[0, 0]` for `label` alone), and `classes` when a class line names the group. |
 | `classDefs` | `%% classDef <class> <styles>` lines with the properties this plugin applies (`stroke`, `stroke-width`, `stroke-dasharray`, `fill`, `color`, `font-weight`, and `r` from 8 to 48 for a group's radius; colours and plain numbers only). A later definition of the same class adds to an earlier one. |
 | `errors` | `{line, message}`: the map parses but something in it is wrong (see below). `line` is `null` for the whole map. At most 200, sorted by line; beyond them a last entry with `line: null` counts the rest. |
 | `unsupported` | `{line, text}`: a statement Mermaid parses that this model has no field for. Expected empty; it lists what a newer Mermaid added before the model knows it. |
@@ -112,14 +112,15 @@ wardley-beta, deleting `%% ` is meant to be the whole migration.
 %% group Energy Power, Electric Kettle
 ```
 
-The name first (quoted when it holds blanks, at most 60 characters), optionally `label [dx, dy]`
-(where the name is drawn, in map pixels relative to where this plugin places it: centred above
-the boundary), then the members, comma-separated element names. Several lines with one name make
+The name first (quoted when it holds blanks, at most 60 characters), optionally `label` (the
+name is drawn, centred above the boundary) or `label [dx, dy]` (moved from there, in map pixels),
+then the members, comma-separated element names. `label` right after the name is always this
+option: a member whose name starts with `label ` is quoted there. Several lines with one name make
 one group. Links are not listed: a link belongs to a group when both its ends do. A group's name
 must not be an element's: a class line naming it would set the element's class.
 
 This plugin draws a dashed boundary around the members and their links, in the map's line colour,
-with the name as its label. Classes style it like a node (`%% class "Human + AI" highlight`): the
+with the name as its label when the line asks for it. Classes style it like a node (`%% class "Human + AI" highlight`): the
 boundary and the label take the class's colour, a `classDef` may set `stroke`, `stroke-width`,
 `stroke-dasharray`, a pale `fill`, the label's `color` and `font-weight`, and `r`, the radius of
 the circle swept along the members (8 to 48, default 16). Groups sharing members are drawn with

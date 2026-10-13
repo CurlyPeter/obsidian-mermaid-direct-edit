@@ -207,12 +207,15 @@ delete).
   element, names are at most 40 characters (`CLASS_NAME`), and it inserts at most 256 KB per
   drawing (else Mermaid's drawing is kept); link ends go through a grid, only when a class names
   a link. Keep every new per-target step a lookup, never a scan.
-- **Groups (0.20.0, classes and labels 0.21.0): `%% group <name> [label [dx, dy]] <members>`**,
+- **Groups (0.20.0, classes and labels 0.21.0, graphical editing 0.22.0): `%% group <name> [label [dx, dy]] <members>`**,
   e.g. `%% group "Human + AI" Staff, Cup of Tea` (name first, quoted when it holds blanks; several
-  lines with one name make one group; a link belongs to a group when both its ends do). The
+  lines with one name make one group; a link belongs to a group when both its ends do; the name is
+  drawn only with `label`, which right after the name is always the keyword). The
   proposed `group` statement, commented out; proposal and research: `DEV.md` → "Proposal: groups
   for wardley-beta". Text side in `wardley-text.ts` (`groupLine` on the shared `scanTargets`,
-  `groupMarkers`, `groupsOf`, `editGroupMembers`, `setGroupLabel`), kept in step by `rename`,
+  `groupMarkers`, `groupsOf`, `editGroupMembers`, `setGroupLabel`, and for the editor
+  `addGroupMember`, `removeGroupMember`, `renameGroup`, `deleteGroup`, `nextGroupName`,
+  `formatGroupName`), kept in step by `rename`,
   `deleteElement`, `deletePipeline` (a group losing its last member takes its class targets along:
   `withoutVanishedGroups`); `rename`/`addElement` refuse a group's name, `setClass` takes one.
   Drawing: `applyGroups` inserts one `<g class="mde-groups">` before the pipelines, links and
@@ -227,7 +230,17 @@ delete).
   boundary (below it without room, kept inside the viewBox), plus the line's offset; overlapping
   automatic labels are moved apart (`separateLabels`, outer group up); dragging it
   (`GroupLabelDrag`, hit kind `group-label`) writes the offset. Colour names `red` … `pink` in any
-  `classDef` become `var(--color-<name>)` (`THEME_COLORS`, nodes and links too). Geometry in
+  `classDef` become `var(--color-<name>)` (`THEME_COLORS`, nodes and links too). **Editing
+  (0.22.0, `wardley-editor.ts`):** the legend's "Group" opens a menu (New group and the map's
+  groups; a native macOS menu when that setting is on, so the E2E suite turns it off) and starts
+  the **group mode** (`GroupEdit`): a tap on a component (circle, label, pipeline box or "+" ring)
+  puts it in or takes it out (`NodeDrag` with `onTap`, drags still move), anything else, Escape,
+  the legend or "Done" in the mode's notice ends it; the first component makes the new group
+  ("Group N"), the last one out deletes it (Undo). Clicks are queued and each is written from the
+  source the one before left (`write(model, edit, src)`), because the map is redrawn after the
+  write; a `MutationObserver` puts the glow (`mp-group-editing`) back on the redrawn group. A
+  visible label is a shortcut: click starts the mode, double click opens `GroupModal` (name, one
+  class, label hidden/shown/kept, delete). Geometry in
   `wardley-groups.ts`: the outline is the exact swept area
   united with its closing, so keep that union if you touch it (the closing alone shrinks every
   outline by half a grid step). Bounded: 20 groups, 100 members, `GROUP_BUDGET` evaluations, at
@@ -255,7 +268,8 @@ delete).
   declared position. Inside the box the box wins over loose link zones and the "+" ring; a
   link end there needs a hit within 3 px.
 - **Gesture priority** (`classify()` in `wardley-hit.ts`, shared by press, touch start and
-  hover): before it, the waiting stub's free end, the legend and an armed legend action. Then
+  hover): before it, the waiting stub's free end, the legend, an armed legend action and the
+  group mode (`groupPress`). Then
   **elements under the pointer win over zones**: annotation circle or box, note, a group's label,
   accelerator/deaccelerator, inertia bar, node or label (a group label lies behind nodes and links,
   so it is hit only where nothing covers it); then evolve tip, evolve shaft, link end, link middle; the "+" ring; a pipeline

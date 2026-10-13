@@ -23,6 +23,7 @@ _spec = importlib.util.spec_from_file_location('e2e_obsidian', os.path.join(os.p
 E = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(E)
 obs, js, cdp, mouse, click, drag, key, modal_title, wait = E.obs, E.js, E.cdp, E.mouse, E.click, E.drag, E.key, E.modal_title, E.wait
+dblclick, tap, modal = E.dblclick, E.tap, E.modal
 PLUGIN_ID = E.PLUGIN_ID
 
 MAP = """wardley-beta
@@ -55,8 +56,8 @@ annotations [0.97, 0.03]
 annotation 1,[0.30, 0.70] "First remark"
 annotation 2,[0.68, 0.62] "Second remark"
 
-%% group "E2E Group" Beta, Epsilon
-%% group Team Alpha, Beta
+%% group "E2E Group" label Beta, Epsilon
+%% group Team label Alpha, Beta
 %% classDef team stroke:purple, r:24
 %% class Team team
 """
@@ -106,6 +107,8 @@ for (const [k, spec] of Object.entries(ARG)) {
   else if (what === 'box') { const r = svg.querySelector('rect.wardley-pipeline-box')?.getBoundingClientRect(); out[k] = r && [Math.round(r.left + r.width / 2), Math.round(r.bottom - 4)]; }
   else if (what === 'corner') { const r = svg.closest('.mermaid').getBoundingClientRect(); out[k] = a === 'left' ? [Math.round(r.left + 10), Math.round(r.bottom - 10)] : [Math.round(r.right - 10), Math.round(r.bottom - 10)]; }
   else if (what === 'legend-item') { const i = svg.closest('.mermaid').querySelector(`.mp-legend [data-mp-add="${a}"]`); out[k] = i && mid(i.getBoundingClientRect()); }
+  else if (what === 'menu-item') { const i = [...document.querySelectorAll('.menu .menu-item')].find(i => i.querySelector('.menu-item-title')?.textContent === a); out[k] = i && mid(i.getBoundingClientRect()); }
+  else if (what === 'notice-button') { const b = [...document.querySelectorAll('.notice button')].find(b => b.textContent === a && b.closest('.notice').querySelector('.mp-group-notice')); out[k] = b && mid(b.getBoundingClientRect()); }
   else if (what === 'group-label') { const t = [...svg.querySelectorAll('text.mde-group-label')].find(t => t.textContent === a); out[k] = t && mid(t.getBoundingClientRect()); }
   else if (what === 'plus') { const c = center(a); const s = scr(...c); out[k] = [s[0], s[1] + 15]; }
   else if (what === 'scroll') { out[k] = Math.round(root.querySelector('.cm-scroller').scrollTop); }
@@ -562,10 +565,10 @@ const centre = n => { const g = [...svg.querySelectorAll('g.wardley-node')].find
 const out = {accent: colour('var(--color-accent)'), purple: colour('var(--color-purple)'), ink: getComputedStyle(svg.querySelector('line.wardley-link:not(.mde-class)')).stroke};
 for (const g of groups) {
   const path = g.querySelector('path.mde-group-boundary'), label = g.querySelector('text.mde-group-label');
-  const cs = getComputedStyle(path), r = label.getBoundingClientRect();
+  const cs = getComputedStyle(path), r = label && label.getBoundingClientRect();
   const inside = (n, dy = 0) => { const p = centre(n); return p ? path.isPointInFill(new DOMPoint(p.x, p.y + dy)) : null; };
-  out[label.textContent] = {stroke: cs.stroke, dash: cs.strokeDasharray, events: cs.pointerEvents, label: getComputedStyle(label).fill,
-    at: [Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2)],
+  out[label ? label.textContent : '#' + g.getAttribute('data-mde-group')] = {stroke: cs.stroke, dash: cs.strokeDasharray, events: cs.pointerEvents, label: label && getComputedStyle(label).fill,
+    at: r && [Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2)],
     beta: inside('Beta'), omega: inside('Omega'), alpha: inside('Alpha'), above22: inside('Alpha', -22)};
 }
 return JSON.stringify(out);
@@ -604,7 +607,7 @@ def case_group_render():
         return (g.get('stroke') == v.get('ink') != v.get('accent') and g.get('label') == v.get('ink') and g.get('dash') not in (None, '', 'none')
                 and g.get('events') == 'none' and g.get('beta') is True and g.get('omega') is True and g.get('alpha') is False
                 and t.get('stroke') == v.get('purple') and t.get('label') == v.get('purple') and t.get('above22') is True)
-    ok = got == '%% group "E2E Group" Beta, Omega' and ok_view(live) and ok_view(read)
+    ok = got == '%% group "E2E Group" label Beta, Omega' and ok_view(live) and ok_view(read)
     return ok, f'{got}; live {live}; reading view {read}'
 
 
@@ -637,6 +640,142 @@ def case_group_label_drag():
     return ok, f'{got}; then {again and again.group(0)}; label at {(before.get("E2E Group") or {}).get("at")}'
 
 
+# The group mode as the page shows it: which groups are marked, the mode's notice, the labels drawn.
+GROUP_STATE = r"""
+(()=>{
+const root = app.workspace.activeLeaf.view.contentEl.querySelector('.markdown-source-view');
+const svg = root && root.querySelector('.mermaid svg[aria-roledescription="wardley"]');
+const editing = svg ? [...svg.querySelectorAll('g.mde-group.mp-group-editing')].map(g => +g.getAttribute('data-mde-group')) : [];
+const notice = document.querySelector('.notice .mp-group-notice')?.textContent ?? null;
+const labels = svg ? [...svg.querySelectorAll('text.mde-group-label')].map(t => t.textContent) : [];
+return JSON.stringify({editing, notice, labels});
+})()
+"""
+
+
+def group_state():
+    return json.loads(js(GROUP_STATE))
+
+
+def group_line(name):
+    return line(r'^%% group "?' + re.escape(name) + r'"? .*$')
+
+
+def open_group_menu(title):
+    """The legend's "Group", then `title` in its menu; an error text, or None."""
+    p = locate(c=['corner', 'right'])
+    mouse('mouseMoved', *p['c']); wait(0.3)
+    item = locate(i=['legend-item', 'group'])['i']
+    if not item:
+        return 'legend not shown'
+    click(*item); wait(0.6)
+    m = locate(m=['menu-item', title]).get('m')
+    if not m:
+        return f'no menu item {title!r} (native menus on?)'
+    click(*m); wait(0.6)
+    return None
+
+
+def escape():
+    key('Escape', 'Escape', 27); wait(1)
+
+
+def case_group_new_from_legend():
+    """The legend's Group, then New group: the first component clicked makes "Group 1" (no label), a
+    second joins it; the group is marked while it is edited, and Escape ends the mode."""
+    err = open_group_menu('New group')
+    if err:
+        return False, err
+    s0 = group_state()
+    click(*locate(n=['node', 'Gamma'])['n']); wait()
+    first = group_line('Group 1')
+    click(*locate(n=['node', 'Zeta'])['n']); wait()
+    second = group_line('Group 1')
+    s1 = group_state()
+    escape()
+    s2 = group_state()
+    ok = ('New group' in (s0['notice'] or '') and first == '%% group "Group 1" Gamma' and second == '%% group "Group 1" Gamma, Zeta'
+          and len(s1['editing']) == 1 and 'Group 1' in (s1['notice'] or '') and 'Group 1' not in s1['labels']
+          and s2['editing'] == [] and s2['notice'] is None)
+    return ok, f'{first}; {second}; while editing {s1}; after Escape {s2}'
+
+
+def case_group_members():
+    """A group chosen in the legend's menu: a click takes a member out, the next puts it back; taking
+    the last member out deletes the group and ends the mode."""
+    err = open_group_menu('Group 1')
+    if err:
+        return False, err
+    zeta = lambda: locate(n=['node', 'Zeta'])['n']
+    click(*zeta()); wait()
+    out = group_line('Group 1')
+    click(*zeta()); wait()
+    back = group_line('Group 1')
+    click(*zeta()); wait()
+    click(*locate(n=['node', 'Gamma'])['n']); wait()
+    gone = group_line('Group 1')
+    s = group_state()
+    if s['notice'] is not None:
+        escape()
+    ok = out == '%% group "Group 1" Gamma' and back == '%% group "Group 1" Gamma, Zeta' and gone is None and s['editing'] == [] and s['notice'] is None
+    return ok, f'out: {out}; back: {back}; last out: {gone}; {s}'
+
+
+def case_group_touch_tap():
+    """In the group mode a finger's tap puts a component in, as a click does; Done in the mode's
+    notice ends it."""
+    err = open_group_menu('Team')
+    if err:
+        return False, err
+    tap(*locate(n=['node', 'Gamma'])['n']); wait()
+    got = group_line('Team')
+    done = locate(b=['notice-button', 'Done'])['b']
+    if done:
+        click(*done); wait(1)
+    s = group_state()
+    if s['notice'] is not None:
+        escape()
+    return got == '%% group Team label Alpha, Beta, Gamma' and bool(done) and s['notice'] is None and s['editing'] == [], f'{got}; Done {done}; {s}'
+
+
+def case_group_properties_delete():
+    """"Properties…" in the mode's notice opens the group's dialog; Delete (two clicks) removes the
+    group and the class lines naming it; its components and the classDef stay."""
+    err = open_group_menu('Team')
+    if err:
+        return False, err
+    b = locate(b=['notice-button', 'Properties…'])['b']
+    if not b:
+        escape()
+        return False, 'no Properties button'
+    click(*b); wait(0.6)
+    title = modal_title()
+    modal('btn("Delete").click()')
+    modal('btn("Really delete? Its components stay.").click()')
+    wait()
+    src = source()
+    ok = (title == 'Edit group "Team"' and group_line('Team') is None and '%% class Team team' not in src
+          and 'component Gamma' in src and '%% classDef team' in src and group_state()['notice'] is None)
+    return ok, f'{title!r}; Team line: {group_line("Team")}; class lines: {[l for l in src.splitlines() if l.startswith("%% class")]}'
+
+
+def case_group_label_dialog():
+    """A click on a group's label starts its group mode, a double click opens its dialog: a new name,
+    another class and the label hidden are written as one edit, and the class line follows."""
+    click(*locate(l=['group-label', 'E2E Group'])['l']); wait(0.8)
+    s = group_state()
+    dblclick(*locate(l=['group-label', 'E2E Group'])['l']); wait(0.6)
+    title = modal_title()
+    modal('const t=m.querySelector("input[type=text]"); set(t,"Renamed Group"); set(sels[0],"team"); set(sels[1],"off"); btn("Save").click()')
+    wait()
+    src = source()
+    g = group_line('Renamed Group')
+    cls = [l for l in src.splitlines() if l.startswith('%% class ') and ('Renamed' in l or 'E2E' in l)]
+    ok = (len(s['editing']) == 1 and title == 'Edit group "E2E Group"' and g == '%% group "Renamed Group" Beta, Omega'
+          and len(cls) == 1 and re.match(r'^%% class "?Renamed Group"? team$', cls[0]) and group_state()['notice'] is None)
+    return bool(ok), f'mode {s}; {title!r}; {g}; {cls}'
+
+
 def case_unload_cleanup():
     # Review #6: unload leaves no stub, legend, drop highlight or open dialog behind.
     p = locate(s=['plus', 'Gamma'], c=['corner', 'left'])
@@ -662,6 +801,8 @@ CASES = [
     ('rename_dialog', case_rename_dialog), ('type_dialog', case_type_dialog), ('legend_corner', case_legend_corner),
     ('highlight_dialog', case_highlight_dialog), ('highlight_link_dialog', case_highlight_link_dialog),
     ('group_render', case_group_render), ('group_highlight', case_group_highlight), ('group_label_drag', case_group_label_drag),
+    ('group_new_from_legend', case_group_new_from_legend), ('group_members', case_group_members), ('group_touch_tap', case_group_touch_tap),
+    ('group_properties_delete', case_group_properties_delete), ('group_label_dialog', case_group_label_dialog),
     ('component_on_shaft', case_component_on_shaft), ('swallow_scope', case_swallow_scope),
     ('popout_window', case_popout_window),
     ('unload_cleanup', case_unload_cleanup),
@@ -669,4 +810,5 @@ CASES = [
 
 
 if __name__ == '__main__':
-    E.run(CASES, SCRATCH, park)
+    # The legend's Group menu is a native macOS menu when that setting is on, and not in the page.
+    E.run(CASES, SCRATCH, park, config={'nativeMenus': False})

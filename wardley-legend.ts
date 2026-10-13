@@ -1,6 +1,6 @@
 import type { LegendItem } from './legend';
 
-export type LegendKind = 'component' | 'anchor' | 'evolve' | 'inertia' | 'note' | 'annotation' | 'accelerator' | 'deaccelerator' | 'pipeline';
+export type LegendKind = 'component' | 'anchor' | 'evolve' | 'inertia' | 'note' | 'annotation' | 'accelerator' | 'deaccelerator' | 'pipeline' | 'group';
 
 /** What the legend of a Wardley map adds. Icons are fixed markup written here, never built from map text. */
 export const WARDLEY_LEGEND: readonly LegendItem[] = [
@@ -13,4 +13,5 @@ export const WARDLEY_LEGEND: readonly LegendItem[] = [
 	['accelerator', 'Accelerator', "<path d='M3 5h11V2l7 6-7 6v-3H3z' fill='white' stroke='currentColor'/>"],
 	['deaccelerator', 'Deaccelerator', "<path d='M21 5H10V2L3 8l7 6v-3h11z' fill='white' stroke='currentColor'/>"],
 	['pipeline', 'Pipeline', "<rect x='2' y='4' width='20' height='8' rx='2' fill='none' stroke='currentColor'/><circle cx='7' cy='8' r='2' fill='white' stroke='currentColor'/><circle cx='17' cy='8' r='2' fill='white' stroke='currentColor'/>"],
+	['group', 'Group', "<rect x='1.5' y='1.5' width='21' height='13' rx='6.5' fill='none' stroke='currentColor' stroke-dasharray='3 2'/><circle cx='8' cy='8' r='2.5' fill='white' stroke='currentColor'/><circle cx='16' cy='8' r='2.5' fill='white' stroke='currentColor'/>"],
 ];

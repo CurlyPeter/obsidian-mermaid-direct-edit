@@ -11,6 +11,8 @@ const svgCursor = (body: string, fallback: string) =>
 	`url("data:image/svg+xml,${encodeURIComponent(`<svg xmlns='http://www.w3.org/2000/svg' width='20' height='20'>${body}</svg>`)}") 10 10, ${fallback}`;
 /** Red ✕: a click deletes. */
 export const CURSOR_DELETE = svgCursor("<circle cx='10' cy='10' r='8' fill='#d33' stroke='white' stroke-width='1.5'/><path d='M6.6 6.6l6.8 6.8M13.4 6.6l-6.8 6.8' stroke='white' stroke-width='2'/>", 'pointer');
+/** "−": a click takes a component out of the group being edited (not a delete: no red). */
+export const CURSOR_REMOVE = svgCursor("<circle cx='10' cy='10' r='8' fill='white' stroke='#333' stroke-width='1.5'/><path d='M5.5 10h9' stroke='#333' stroke-width='2'/>", 'pointer');
 /** "+": a press starts a new link. */
 export const CURSOR_ADD = svgCursor("<circle cx='10' cy='10' r='8' fill='white' stroke='#333' stroke-width='1.5'/><path d='M10 5.5v9M5.5 10h9' stroke='#333' stroke-width='2'/>", 'copy');
 
@@ -96,7 +98,7 @@ export abstract class DiagramEditor<M extends Surface> implements EditCtx<M> {
 	/** A stub started waiting for its handle to be dragged (or a node to be pressed). */
 	protected stubWaits(): void {}
 	/** A press outside every diagram of this kind. */
-	protected pressOutside(): void {}
+	protected pressOutside(_e: PointerEvent): void {}
 	/** Escape, unload: drop whatever the subclass keeps armed. */
 	protected disarm(): void {}
 
@@ -128,7 +130,7 @@ export abstract class DiagramEditor<M extends Surface> implements EditCtx<M> {
 			return;
 		}
 		const svg = diagramOf(e.target, this.kind);
-		if (!svg) return void this.pressOutside();
+		if (!svg) return void this.pressOutside(e);
 		const model = this.modelOf(svg);
 		if (!model) {
 			// Drawn by an earlier plugin load, or a tag forged in the note's HTML: one notice and
@@ -253,7 +255,7 @@ export abstract class DiagramEditor<M extends Surface> implements EditCtx<M> {
 		for (const m of Array.from(this.modals)) m.close();
 		for (const doc of docs) {
 			doc.querySelectorAll<SVGSVGElement>(`svg[${KEY_ATTR}][${KIND_ATTR}="${this.kind}"]`).forEach(svg => { svg.style.cursor = ''; });
-			doc.querySelectorAll('.mp-drop-target, .mp-dragging, .mp-leaving, .mp-flash').forEach(el => el.classList.remove('mp-drop-target', 'mp-dragging', 'mp-leaving', 'mp-flash'));
+			doc.querySelectorAll('.mp-drop-target, .mp-dragging, .mp-leaving, .mp-flash, .mp-group-editing').forEach(el => el.classList.remove('mp-drop-target', 'mp-dragging', 'mp-leaving', 'mp-flash', 'mp-group-editing'));
 			doc.querySelectorAll('.mp-drag-hint, .mp-plus-handle').forEach(el => el.remove());
 		}
 	}
@@ -267,13 +269,13 @@ export abstract class DiagramEditor<M extends Surface> implements EditCtx<M> {
 
 	/**
 	 * `apply`, answering what was written: the view, the source before and after (for undo, and
-	 * for finding the redrawn diagram), or null when nothing was.
+	 * for finding the redrawn diagram), or null when nothing was. `src` is the block as the note
+	 * holds it now: the drawing's source unless an edit was written before the redraw.
 	 */
-	protected async write(model: M, edit: (src: string) => string): Promise<{ view: MarkdownView; src: string; next: string } | null> {
+	protected async write(model: M, edit: (src: string) => string, src = model.src): Promise<{ view: MarkdownView; src: string; next: string } | null> {
 		try {
 			const view = viewOf(this.app, model.svg);
 			if (!view?.file) return this.fail(`Open the note itself to edit this ${this.names.noun}.`), null;
-			const src = model.src;
 			let next: string;
 			try {
 				next = edit(src);
@@ -338,8 +340,8 @@ export abstract class DiagramEditor<M extends Surface> implements EditCtx<M> {
 	 * and phones have no Cmd+Z, and a structural edit (delete, re-link, a new group) is the kind
 	 * worth taking back. Undo writes the old source back if the block is still the new one.
 	 */
-	protected applyThen(model: M, edit: (src: string) => string, message: string): Promise<{ view: MarkdownView; next: string } | null> {
-		return this.write(model, edit).then(done => {
+	protected applyThen(model: M, edit: (src: string) => string, message: string, src = model.src): Promise<{ view: MarkdownView; next: string } | null> {
+		return this.write(model, edit, src).then(done => {
 			if (done) this.undoable(message, done.view, done.src, done.next);
 			return done;
 		});

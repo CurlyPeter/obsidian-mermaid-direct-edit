@@ -640,15 +640,15 @@ export function classDefs(source: string): ClassDef[] {
 	return out;
 }
 
-// ---- groups: `%% group <name> [label [dx, dy]] <members>` --------------------------------------
+// ---- groups: `%% group <name> [label [dx, dy]] <members>` ------------------------------------
 
 /**
  * A group of components, drawn as one boundary around them and their links (DEV.md → "Groups
  * for wardley-beta"): `%% group "Human + AI" Staff, Cup of Tea, Cup`. The proposed statement,
  * commented out until wardley-beta has it; deleting `%% ` is meant to be the migration. The
- * name comes first, quoted when it holds blanks, then optionally where its label sits
- * (`label [dx, dy]`, relative to where the plugin places it); several lines with one name make
- * one group. Members are element names; a link belongs to a group when both its ends do.
+ * name comes first, quoted when it holds blanks, then optionally `label` (the name is drawn as a
+ * label; `label [dx, dy]` moves it from where the plugin places it); several lines with one name
+ * make one group. Members are element names; a link belongs to a group when both its ends do.
  * Classes are set on a group by its name (`%% class "Human + AI" highlight`), as Mermaid sets
  * them on a flowchart's subgraph.
  */
@@ -672,14 +672,14 @@ interface GroupLine {
 	/** Null when a quoted name has no closing quote. */
 	name: string | null;
 	nameEnd: number;
-	/** Where the members start: after the name and its label offset. */
+	/** Where the members start: after the name and its label. */
 	membersFrom: number;
-	/** `bad` when `label [` follows the name but is not `label [dx, dy]`. */
+	/** Null: no label; `label` alone is [0, 0]; `bad` when `label [` is not `label [dx, dy]`. */
 	label: LabelOffset | 'bad' | null;
 	targets: TargetSpan[];
 }
 
-/** A `%% group` line: its name, its label offset and its member targets. Null for any other line. */
+/** A `%% group` line: its name, its label and its member targets. Null for any other line. */
 function groupLine(l: string): GroupLine | null {
 	if (l.length > MAX_LINE) return null;
 	const head = GROUP_HEAD.exec(l)?.[0];
@@ -698,17 +698,21 @@ function groupLine(l: string): GroupLine | null {
 		name = l.slice(head.length, i);
 	}
 	const nameEnd = i;
-	// `label` followed by `[` is the offset; `label maker, Kettle` stays a member's name.
+	// `label` right after the name is always the keyword (a member named "label maker" is quoted
+	// there), alone or with its offset; `labels` is a member.
 	let label: GroupLine['label'] = null;
 	let j = i;
 	while (j < end && isBlank(l[j])) j++;
-	if (l.startsWith('label', j)) {
+	if (l.startsWith('label', j) && (j + 5 >= end || isBlank(l[j + 5]) || l[j + 5] === '[')) {
 		let k = j + 5;
 		while (k < end && isBlank(l[k])) k++;
 		if (l[k] === '[') {
 			const close = l.indexOf(']', k);
 			const m = close > 0 && close < end ? LABEL_OFFSET.exec(l.slice(k, close + 1)) : null;
 			if (m) { label = [Number(m[1]), Number(m[2])]; i = close + 1; } else label = 'bad';
+		} else {
+			label = [0, 0];
+			i = j + 5;
 		}
 	}
 	const rest = l.slice(i, end);
@@ -755,7 +759,7 @@ export interface Group {
 	members: string[];
 	/** The line of the group's first statement. */
 	line: number;
-	/** The first label offset among its lines. */
+	/** Present when the name is drawn as a label: the first offset among its lines ([0, 0] for `label` alone). */
 	label?: LabelOffset;
 }
 
@@ -774,14 +778,15 @@ export function groupsOf(source: string): Group[] {
 
 /**
  * Rewrites the members of every `%% group` line: `f` answers undefined to keep a member, null
- * to drop it, a name to write instead. Names are replaced in place; a line that lost a member
- * is written anew (name and label offset kept), and one left without members is removed.
+ * to drop it, a name to write instead; `only` limits it to one group. Names are replaced in place;
+ * a line that lost a member is written anew (name and label kept), and one left without members
+ * is removed.
  */
-function editGroupMembers(lines: string[], f: (member: string) => string | null | undefined): string[] {
+function editGroupMembers(lines: string[], f: (member: string) => string | null | undefined, only?: string): string[] {
 	const out: string[] = [];
 	for (const l of lines) {
 		const g = groupLine(l);
-		if (!g || !g.targets.length) { out.push(l); continue; }
+		if (!g || !g.targets.length || (only !== undefined && g.name !== only)) { out.push(l); continue; }
 		const parts = g.targets.map(t => ({ t, r: !t.link && t.names.length === 1 ? f(t.names[0].name) : undefined }));
 		if (parts.every(p => p.r === undefined)) { out.push(l); continue; }
 		const write = (p: { t: TargetSpan; r: string | null | undefined }, text: string) =>
@@ -819,26 +824,131 @@ export function isGroup(source: string, name: string): boolean {
 	return groupsOf(source).some(g => g.name === name);
 }
 
+/** The indexes of a group's lines that add to it (a line with a problem adds nothing). */
+function groupLinesOf(lines: string[], name: string): number[] {
+	const out: number[] = [];
+	lines.forEach((l, i) => { const g = groupLine(l); if (g && g.name === name && !groupProblem(g)) out.push(i); });
+	return out;
+}
+
+function requireGroup(lines: string[], name: string): number[] {
+	const at = groupLinesOf(lines, name);
+	if (!at.length) throw new EditError(`There is no group "${name}" in this map.`);
+	return at;
+}
+
+const isDeclared = (lines: string[], name: string) => lines.some(l => nameSpans(l).some(s => s.declaration && s.name === name));
+
+/** A group name as a group line writes it: bare when it is one plain word, else quoted. */
+export function formatGroupName(name: string): string {
+	if (/^[A-Za-z0-9_.+-]+$/.test(name)) return name;
+	if (!name.includes('"')) return `"${name}"`;
+	if (!name.includes("'")) return `'${name}'`;
+	throw new EditError('A group name cannot contain both kinds of quotes.');
+}
+
+/** Refuses a name a new or renamed group cannot have. */
+function checkGroupName(lines: string[], name: string) {
+	if (!name.trim()) throw new EditError('The group needs a name.');
+	if (name !== name.trim()) throw new EditError('A group name cannot start or end with a blank.');
+	if (name.length > MAX_GROUP_NAME) throw new EditError(`A group name has at most ${MAX_GROUP_NAME} characters.`);
+	if (/[\r\n]/.test(name) || XML_FORBIDDEN.test(name)) throw new EditError('A group name cannot hold line breaks or control characters.');
+	if (groupLinesOf(lines, name).length) throw new EditError(`There is already a group "${name}" in this map.`);
+	if (isDeclared(lines, name)) throw new EditError(`"${name}" is the name of an element in this map.`);
+}
+
+/** The first free name "Group 1", "Group 2", … (no group or element has it). */
+export function nextGroupName(source: string): string {
+	const taken = new Set(groupsOf(source).map(g => g.name));
+	for (const l of source.split('\n')) for (const s of nameSpans(l)) if (s.declaration) taken.add(s.name);
+	for (let n = 1; ; n++) if (!taken.has(`Group ${n}`)) return `Group ${n}`;
+}
+
 /**
- * Moves a group's label: writes `label [dx, dy]` (rounded) after the group's name, on the first
- * line that has an offset, else on the group's first line.
+ * Adds an element to a group: at the end of the group's first line, or, for a new group, as a
+ * line of its own (after the last group line, else after the last class line, else at the end of
+ * the map). A member already in the group leaves the source as it is.
  */
-export function setGroupLabel(source: string, name: string, dx: number, dy: number): string {
+export function addGroupMember(source: string, group: string, member: string): string {
 	const lines = source.split('\n');
-	let first = -1, labelled = -1;
-	lines.forEach((l, i) => {
+	findDeclaration(lines, member);
+	const at = groupLinesOf(lines, group);
+	if (at.length) {
+		if (groupsOf(source).find(g => g.name === group)!.members.includes(member)) return source;
+		lines[at[0]] = `${trimTail(lines[at[0]])}, ${formatName(member)}`;
+		return lines.join('\n');
+	}
+	checkGroupName(lines, group);
+	const line = `%% group ${formatGroupName(group)} ${formatName(member)}`;
+	let after = -1;
+	lines.forEach((l, i) => { if (groupLine(l)) after = i; });
+	if (after < 0) lines.forEach((l, i) => { if (classLine(l)) after = i; });
+	if (after >= 0) {
+		lines.splice(after + 1, 0, `${/^[ \t]*/.exec(lines[after])?.[0] ?? ''}${line}`);
+	} else {
+		let end = lines.length;
+		while (end > 0 && lines[end - 1].trim() === '') end--;
+		lines.splice(end, 0, line);
+	}
+	return lines.join('\n');
+}
+
+/** Takes an element out of a group; a group left without members goes, with its class targets. */
+export function removeGroupMember(source: string, group: string, member: string): string {
+	const lines = source.split('\n');
+	requireGroup(lines, group);
+	return withoutVanishedGroups(lines, editGroupMembers(lines, m => (m === member ? null : undefined), group)).join('\n');
+}
+
+/** Renames a group in each of its lines and in the class lines naming it. */
+export function renameGroup(source: string, from: string, to: string): string {
+	if (to === from) return source;
+	const lines = source.split('\n');
+	requireGroup(lines, from);
+	checkGroupName(lines, to);
+	const written = formatGroupName(to);
+	const renamed = lines.map(l => {
 		const g = groupLine(l);
-		if (!g || g.name !== name || groupProblem(g)) return;
-		if (first < 0) first = i;
-		if (labelled < 0 && g.label) labelled = i;
+		return g && g.name === from ? l.slice(0, g.head.length) + written + l.slice(g.nameEnd) : l;
 	});
-	const at = labelled >= 0 ? labelled : first;
-	if (at < 0) throw new EditError(`There is no group "${name}" in this map.`);
-	if (!Number.isFinite(dx) || !Number.isFinite(dy)) throw new EditError('The label offset must be a number.');
-	// Within what the parser reads back: a larger offset would make the line set nothing (review 0.21.0).
-	const clamp = (v: number) => Math.max(-MAX_LABEL_OFFSET, Math.min(MAX_LABEL_OFFSET, Math.round(v)));
-	const l = lines[at], g = groupLine(l)!;
-	lines[at] = `${l.slice(0, g.nameEnd)} label [${clamp(dx)}, ${clamp(dy)}]${g.label ? l.slice(g.membersFrom) : l.slice(g.nameEnd)}`;
+	// A class line naming an element of that name belongs to the element (wardley-read reports the clash).
+	if (isDeclared(lines, from)) return renamed.join('\n');
+	return editClassTargets(renamed, t => (t === from ? [to] : undefined)).join('\n');
+}
+
+/** Deletes a group: its lines and the class targets naming it. Its members stay in the map. */
+export function deleteGroup(source: string, name: string): string {
+	const lines = source.split('\n');
+	requireGroup(lines, name);
+	return withoutVanishedGroups(lines, lines.filter(l => groupLine(l)?.name !== name)).join('\n');
+}
+
+/**
+ * Shows, moves or hides a group's label. An offset (rounded, within what the parser reads back)
+ * or `auto` (the plugin's spot) is written after the name on the first line that has a label,
+ * else on the group's first line; null takes the label off every line of the group.
+ */
+export function setGroupLabel(source: string, name: string, label: LabelOffset | 'auto' | null): string {
+	const lines = source.split('\n');
+	const at = requireGroup(lines, name);
+	if (label === null) {
+		for (const i of at) {
+			const g = groupLine(lines[i])!;
+			if (g.label) lines[i] = lines[i].slice(0, g.nameEnd) + lines[i].slice(g.membersFrom);
+		}
+		return lines.join('\n');
+	}
+	let written = 'label';
+	if (label !== 'auto') {
+		const [dx, dy] = label;
+		if (!Number.isFinite(dx) || !Number.isFinite(dy)) throw new EditError('The label offset must be a number.');
+		// Within what the parser reads back: a larger offset would make the line set nothing (review 0.21.0).
+		const clamp = (v: number) => Math.max(-MAX_LABEL_OFFSET, Math.min(MAX_LABEL_OFFSET, Math.round(v)));
+		written = `label [${clamp(dx)}, ${clamp(dy)}]`;
+	}
+	const i = at.find(k => groupLine(lines[k])!.label) ?? at[0];
+	const l = lines[i], g = groupLine(l)!;
+	lines[i] = `${l.slice(0, g.nameEnd)} ${written}${g.label ? l.slice(g.membersFrom) : l.slice(g.nameEnd)}`;
 	return lines.join('\n');
 }
 

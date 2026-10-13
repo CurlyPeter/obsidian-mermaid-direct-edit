@@ -67,6 +67,15 @@ body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-node.mp-drop-target {
 body.mp-wardley-edit .mermaid svg[data-mp-src] text.mde-group-label {
 	cursor: move;
 }
+/* The group mode (a group being edited): a glow behind its boundary and label, as a node gets
+   while a link is dragged onto it, so the mode shows whatever the group's own colour is. */
+body.mp-wardley-edit .mermaid svg[data-mp-src] g.mde-group.mp-group-editing > path.mde-group-boundary {
+	stroke-width: 2.5px;
+	filter: drop-shadow(0 0 3px var(--interactive-accent)) drop-shadow(0 0 2px var(--interactive-accent));
+}
+body.mp-wardley-edit .mermaid svg[data-mp-src] g.mde-group.mp-group-editing > text.mde-group-label {
+	filter: drop-shadow(0 0 3px var(--interactive-accent));
+}
 /* A flow arrow's head takes its line's colour. Mermaid draws heads and lines in the same colour,
    so only a link with a class looks different; without context-stroke the rule is dropped and
    the heads keep Mermaid's colour. */

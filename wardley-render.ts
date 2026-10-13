@@ -334,7 +334,7 @@ export function applyGroups(svgText: string, source: string): string | null {
 	const budget = { left: GROUP_BUDGET };
 	const parts: string[] = [];
 	let size = 0;
-	const outlined: { d: (typeof drawn)[number]; loops: Pt[][]; label: Pt }[] = [];
+	const outlined: { d: (typeof drawn)[number]; loops: Pt[][]; label: Pt | null }[] = [];
 	for (const d of drawn) {
 		const at = new Map(d.nodes.map((n, k) => [n, k]));
 		const points: Pt[] = d.nodes.map(i => ({ x: centres[i]![0], y: centres[i]![1] }));
@@ -343,16 +343,20 @@ export function applyGroups(svgText: string, source: string): string | null {
 		for (const e of linkEnds) if (e && at.has(e[0]) && at.has(e[1])) links.push([at.get(e[0])!, at.get(e[1])!]);
 		const radius = d.r ?? GROUP_RADIUS + GROUP_STAGGER * Math.min(d.level, MAX_STAGGER);
 		const loops = outline(skeleton(points, links), radius, budget);
-		if (loops?.length) outlined.push({ d, loops, label: labelAt(loops, d.g.name, view.length === 4 && view.every(Number.isFinite) ? view : null, d.g.label) });
+		if (!loops?.length) continue;
+		// The name is drawn only where the group asks for it (`label`).
+		outlined.push({ d, loops, label: d.g.label ? labelAt(loops, d.g.name, view.length === 4 && view.every(Number.isFinite) ? view : null, d.g.label) : null });
 	}
-	separateLabels(outlined.map(o => ({ at: o.label, width: o.d.g.name.length * CHAR_WIDTH, fixed: !!o.d.g.label, order: o.d.level })));
+	// A label moved by hand stays where it was put; the others give way to each other.
+	const moved = ([dx, dy]: [number, number]) => dx !== 0 || dy !== 0;
+	separateLabels(outlined.filter(o => o.label).map(o => ({ at: o.label!, width: o.d.g.name.length * CHAR_WIDTH, fixed: moved(o.d.g.label!), order: o.d.level })));
 	for (const { d, loops, label } of outlined) {
 		const labelStyle: Style = { ...(d.style.color ?? d.style.stroke ? { fill: d.style.color ?? d.style.stroke } : {}), ...(d.style['font-weight'] ? { 'font-weight': d.style['font-weight'] } : {}) };
 		const part = `<g class="mde-group${d.cls.length ? ` mde-class ${d.cls.map(c => `mde-class-${c}`).join(' ')}` : ''}" data-mde-group="${d.gi}">`
 			+ withStyle(`<path class="mde-group-boundary" d="${pathOf(loops)}" fill="none" fill-opacity="0.12" stroke="${ink}" stroke-width="1.5" stroke-dasharray="4 3" stroke-linecap="round" pointer-events="none"></path>`,
 				css(d.style, ['stroke', 'stroke-width', 'stroke-dasharray', 'fill']))
-			+ withStyle(`<text class="mde-group-label" data-mde-group="${d.gi}" x="${num(label.x)}" y="${num(label.y)}" fill="${ink}" font-size="${LABEL_SIZE}" font-style="italic" text-anchor="middle">${textOf(d.g.name)}</text>`,
-				css(labelStyle, ['fill', 'font-weight']))
+			+ (label ? withStyle(`<text class="mde-group-label" data-mde-group="${d.gi}" x="${num(label.x)}" y="${num(label.y)}" fill="${ink}" font-size="${LABEL_SIZE}" font-style="italic" text-anchor="middle">${textOf(d.g.name)}</text>`,
+				css(labelStyle, ['fill', 'font-weight'])) : '')
 			+ '</g>';
 		// What the plugin inserts stays small next to Mermaid's drawing: a group over it is skipped.
 		if (size + part.length > MAX_INSERTED) continue;

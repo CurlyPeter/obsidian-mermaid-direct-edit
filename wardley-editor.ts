@@ -1,26 +1,60 @@
-import { App } from 'obsidian';
+import { App, Menu, Notice } from 'obsidian';
 import type { Mermaid } from 'mermaid';
-import { CURSOR_ADD, CURSOR_DELETE, DiagramEditor } from './editor';
+import { CURSOR_ADD, CURSOR_DELETE, CURSOR_REMOVE, DiagramEditor } from './editor';
+import { DBLCLICK_MS } from './geometry';
 import { DeletePress, Gesture, NewLinkDrag, Stub, TapPress } from './gestures';
 import { NameModal } from './modals';
-import { SourceRegistry } from './render';
+import { KEY_ATTR, SourceRegistry, isElement } from './render';
 import { STUB_LENGTH, evolutionAt, visibilityAt } from './wardley-geometry';
 import { AnnotationDrag, ForceDrag, GestureCtx, GroupLabelDrag, InertiaDrag, LinkEndDrag, NodeDrag, NoteDrag, TrendTipDrag } from './wardley-gestures';
 import { Hit, classify, componentAt, dropTargetAt } from './wardley-hit';
 import { LegendKind, WARDLEY_LEGEND } from './wardley-legend';
 import { MapModel, MapNode } from './wardley-map';
-import { EditModal, LinkModal } from './wardley-modals';
+import { EditModal, GroupModal, LabelChoice, LinkModal } from './wardley-modals';
 import {
-	EditError, ForceKind, addAnnotation, addElement, addEvolve, addForce, addLink, addNote, addToPipeline, defaultEvolveTarget,
-	deleteAnnotation, deleteElement, deleteEvolve, deleteForce, deletePipeline, freeSpot, getAnnotation, getClasses, getLink, getMethod, hasInertia,
-	type Method, nextPipelineEvolution, pipelineOf, rename, renameForce, setAnnotationText, setClass, setInertia, setLink, setMethod, unlink,
+	CLASS_NAME, EditError, ForceKind, addAnnotation, addElement, addEvolve, addForce, addGroupMember, addLink, addNote, addToPipeline, classDefs,
+	defaultEvolveTarget, deleteAnnotation, deleteElement, deleteEvolve, deleteForce, deleteGroup, deletePipeline, freeSpot, getAnnotation,
+	getClasses, getLink, getMethod, groupsOf, hasInertia, type Method, nextGroupName, nextPipelineEvolution, pipelineOf, removeGroupMember,
+	rename, renameForce, renameGroup, setAnnotationText, setClass, setClasses, setGroupLabel, setInertia, setLink, setMethod, unlink,
 } from './wardley-text';
+
+/**
+ * The group mode (DEV.md → "Editing groups (0.22.0)"): a click on a component puts it into the
+ * group or takes it out, anything else ends it. One per editor.
+ */
+interface GroupEdit {
+	/** Null until the first component clicked makes the new group. */
+	name: string | null;
+	/**
+	 * The block as the note holds it now. A click is written before the map is redrawn, so the
+	 * next one starts from here, not from the drawing; `replaced` are the sources it superseded.
+	 */
+	src: string;
+	replaced: Set<string>;
+	/** The map's container; a redraw may replace it, then the map is found again by `src`. */
+	box: Element;
+	/** Where redraws are watched, to put the mark back on the redrawn group (once per frame). */
+	root: Element;
+	observer: MutationObserver;
+	scheduled: boolean;
+	notice: Notice;
+	/** The notice's text: gone when the notice was dismissed, which ends the mode too. */
+	text: HTMLElement | null;
+	/** Clicks are written one after the other. */
+	queue: Promise<void>;
+	/** The last component clicked: a double click's second click must not take it out again. */
+	last: { member: string; at: number } | null;
+}
 
 /** Inline cursor per hit kind; '' leaves it to styles.css (nodes, labels, notes, bars, boxes). */
 const HOVER_CURSOR: Record<Hit['kind'], string> = {
 	annotation: '', note: '', 'group-label': '', force: '', inertia: '', node: '', box: '',
 	'trend-tip': 'ew-resize', 'trend-shaft': CURSOR_DELETE, 'link-end': 'crosshair', 'link-middle': 'pointer', plus: CURSOR_ADD,
 };
+
+/** The component a press in the group mode means: its circle or label, its pipeline box, its "+" ring. */
+const memberHit = (hit: Hit | null): MapNode | null =>
+	hit && (hit.kind === 'node' || hit.kind === 'box' || hit.kind === 'plus') ? hit.node : null;
 
 /**
  * Graphical editing of rendered `wardley-beta` maps. The shared `DiagramEditor` wires the DOM
@@ -31,6 +65,7 @@ const HOVER_CURSOR: Record<Hit['kind'], string> = {
 export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx {
 	/** Evolve, inertia or pipeline: the legend item waiting for a component to be pressed. */
 	private armed: { kind: 'evolve' | 'inertia' | 'pipeline'; box: Element; item: Element } | null = null;
+	private group: GroupEdit | null = null;
 	private toldStub = false;
 
 	constructor(app: App, registry: SourceRegistry, mermaid: () => Mermaid | undefined, enabled: () => boolean) {
@@ -43,6 +78,7 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 
 	protected press(e: PointerEvent, model: MapModel) {
 		if (this.armed) return this.armedPress(e, model);
+		if (this.group && this.groupPress(e, model)) return;
 		const svg = model.svg;
 		const hit = classify(model, e.target as Element, e.clientX, e.clientY);
 		if (!hit) return;
@@ -78,6 +114,12 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 
 	protected cursorAt(model: MapModel, target: Element, x: number, y: number): string {
 		if (this.armed) return componentAt(model, target) ? 'copy' : '';
+		if (this.group && this.inGroupMap(model)) {
+			const hit = classify(model, target, x, y);
+			const node = memberHit(hit);
+			if (node) return this.members().has(node.name) ? CURSOR_REMOVE : CURSOR_ADD;
+			return hit?.kind === 'group-label' ? '' : 'default';
+		}
 		const hit = classify(model, target, x, y);
 		return hit ? HOVER_CURSOR[hit.kind] : '';
 	}
@@ -123,13 +165,27 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 		this.info('drag the round end onto a component, or click the component to link; drag it into free space for a new component.');
 	}
 
-	protected pressOutside() {
+	protected pressOutside(e: PointerEvent) {
+		// The group mode's own notice (its buttons) is not "elsewhere".
+		if (isElement(e.target) && e.target.closest('.notice')?.querySelector('.mp-group-notice')) return;
 		this.disarm();
 	}
 
 	protected disarm() {
 		this.armed?.item.removeClass('is-armed');
 		this.armed = null;
+		this.endGroup();
+	}
+
+	/** `write` keeps the group mode's source current: its next click starts from what was written. */
+	protected async write(model: MapModel, edit: (src: string) => string, src = model.src) {
+		const done = await super.write(model, edit, src);
+		const g = this.group;
+		if (done && g && src === g.src) {
+			g.replaced.add(src);
+			g.src = done.next;
+		}
+		return done;
 	}
 
 	// ---- GestureCtx: dialogs -------------------------------------------------------------------
@@ -166,6 +222,40 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 				label: 'Remove pipeline',
 				onClick: () => this.applyThen(model, s => deletePipeline(s, name), `pipeline of "${name}" removed.`),
 			} : undefined,
+		}));
+	}
+
+	/** A click on a group's label starts its group mode; a second one opens its dialog. */
+	groupLabelTap(model: MapModel, name: string) {
+		if (this.group?.name !== name) this.startGroup(model, name);
+		this.tap(`group:${name}`, model, () => {
+			this.endGroup();
+			this.openGroupDialog(model, name);
+		});
+	}
+
+	/** Name, look (one class), label and delete of a group; its members change in the group mode. */
+	openGroupDialog(model: MapModel, name: string) {
+		const src = model.src;
+		const g = groupsOf(src).find(x => x.name === name);
+		if (!g) return void this.fail(`There is no group "${name}" in this map.`);
+		const defined = [...new Set(classDefs(src).map(d => d.name).filter(n => CLASS_NAME.test(n) && n !== 'highlight'))];
+		const label: LabelChoice = !g.label ? 'off' : g.label[0] || g.label[1] ? 'keep' : 'auto';
+		this.open(new GroupModal(this.app, {
+			name,
+			classes: getClasses(src, name),
+			defined,
+			label,
+			// One edit for everything that changed; the rename last, the other edits use the old name.
+			onSave: c => {
+				void this.apply(model, s => {
+					if (c.cls !== undefined) s = setClasses(s, name, c.cls ? [c.cls] : []);
+					if (c.label === 'off' || c.label === 'auto') s = setGroupLabel(s, name, c.label === 'off' ? null : 'auto');
+					if (c.name !== undefined) s = renameGroup(s, name, c.name);
+					return s;
+				});
+			},
+			onDelete: () => void this.applyThen(model, s => deleteGroup(s, name), `group "${name}" deleted, its components stay.`),
 		}));
 	}
 
@@ -213,6 +303,182 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 		));
 	}
 
+	// ---- the group mode ------------------------------------------------------------------------
+
+	/** The legend's "Group": a new group, or one of the map's groups, to edit in the group mode. */
+	private chooseGroup(model: MapModel, item: Element) {
+		const groups = groupsOf(model.src);
+		if (!groups.length) return this.startGroup(model, null);
+		const menu = new Menu();
+		menu.addItem(i => i.setTitle('New group').setIcon('plus').onClick(() => this.startGroup(model, null)));
+		menu.addSeparator();
+		for (const g of groups) menu.addItem(i => i.setTitle(g.name).setIcon('circle-dashed').onClick(() => this.startGroup(model, g.name)));
+		const r = item.getBoundingClientRect();
+		// Obsidian closes a menu on a mousedown outside it, and this press's own mousedown comes
+		// after the pointerdown that got here: open it once the press is over.
+		const win = item.ownerDocument.defaultView ?? window;
+		let shown = false;
+		const show = () => {
+			if (shown) return;
+			shown = true;
+			menu.showAtPosition({ x: r.left, y: r.bottom });
+		};
+		win.addEventListener('pointerup', () => win.setTimeout(show, 0), { once: true, capture: true });
+		win.setTimeout(show, 1500);
+	}
+
+	private startGroup(model: MapModel, name: string | null) {
+		this.disarm();
+		const root = model.svg.closest('.workspace-leaf-content') ?? model.svg.ownerDocument.body;
+		const g: GroupEdit = {
+			name, src: model.src, replaced: new Set(), box: model.svg.closest('.mermaid') ?? model.svg, root,
+			observer: new MutationObserver(() => {
+				if (g.scheduled) return;
+				g.scheduled = true;
+				window.requestAnimationFrame(() => { g.scheduled = false; this.mark(); });
+			}),
+			scheduled: false, notice: new Notice('', 0), text: null, queue: Promise.resolve(), last: null,
+		};
+		g.observer.observe(root, { childList: true, subtree: true });
+		this.group = g;
+		this.tell();
+		this.mark();
+	}
+
+	private endGroup() {
+		const g = this.group;
+		if (!g) return;
+		this.group = null;
+		g.observer.disconnect();
+		g.notice.hide();
+		g.box.ownerDocument.querySelectorAll('.mp-group-editing').forEach(el => el.classList.remove('mp-group-editing'));
+	}
+
+	/** The mode's notice: what a click does, "Properties…" for a group that exists, "Done". */
+	private tell() {
+		const g = this.group;
+		if (!g) return;
+		const verb = this.touchSeen ? 'tap' : 'click';
+		g.notice.setMessage(createFragment(f => {
+			g.text = f.createSpan({
+				cls: 'mp-group-notice',
+				text: g.name ? `Wardley map: Group "${g.name}": ${verb} components to put them in or take them out. ` : `Wardley map: New group: ${verb} components to put them into it. `,
+			});
+			// A click on the text dismisses an Obsidian notice: that ends the mode as well.
+			g.text.addEventListener('click', () => this.endGroup());
+			const button = (text: string, run: () => void) => f.createEl('button', { text, cls: 'mp-undo' }).addEventListener('click', ev => {
+				ev.stopPropagation();
+				run();
+			});
+			if (g.name) {
+				const name = g.name;
+				button('Properties…', () => {
+					const model = this.groupModel(g);
+					this.endGroup();
+					if (model) this.openGroupDialog(model, name);
+				});
+			}
+			button('Done', () => this.endGroup());
+		}));
+	}
+
+	/** Whether `model` is the map being edited (its drawing may still be the one before the last click). */
+	private inGroupMap(model: MapModel): boolean {
+		const g = this.group;
+		return !!g && (model.src === g.src || g.replaced.has(model.src) || (g.box.isConnected && g.box.contains(model.svg)));
+	}
+
+	/** The drawing of the map being edited now, the redrawn one once it is there. */
+	private groupModel(g: GroupEdit): MapModel | null {
+		const svgs = Array.from(g.root.querySelectorAll<SVGSVGElement>(`svg[${KEY_ATTR}]`));
+		const svg = svgs.find(s => this.registry.sourceOf(s) === g.src) ?? (g.box.isConnected ? svgs.find(s => g.box.contains(s)) : undefined);
+		return svg ? MapModel.of(svg, this.registry) : null;
+	}
+
+	/** Marks the group being edited (a glow behind its boundary), again after every redraw. */
+	private mark() {
+		const g = this.group;
+		if (!g) return;
+		const model = this.groupModel(g);
+		g.root.querySelectorAll('.mp-group-editing').forEach(el => el.classList.remove('mp-group-editing'));
+		if (!model || !g.name) return;
+		g.box = model.svg.closest('.mermaid') ?? model.svg;
+		const i = groupsOf(model.src).findIndex(x => x.name === g.name);
+		model.svg.querySelector(`g.mde-group[data-mde-group="${i}"]`)?.classList.add('mp-group-editing');
+	}
+
+	/** The members of the group being edited, as the note holds it now. */
+	private members(): Set<string> {
+		const g = this.group;
+		return new Set(g?.name ? groupsOf(g.src).find(x => x.name === g.name)?.members ?? [] : []);
+	}
+
+	/**
+	 * A press in the group mode: on a component (its circle, label, pipeline box or "+" ring) a
+	 * click puts it in or takes it out and a drag still moves it; a group's label still moves or
+	 * switches; anything else ends the mode and does nothing more. False when the press is on
+	 * another map: the mode ends and the press is handled as usual.
+	 */
+	private groupPress(e: PointerEvent, model: MapModel): boolean {
+		const g = this.group!;
+		if (!g.text?.isConnected || !this.inGroupMap(model)) {
+			this.endGroup();
+			return false;
+		}
+		// Someone else changed the map (not a drawing older than our last click): start from that.
+		if (model.src !== g.src && !g.replaced.has(model.src)) g.src = model.src;
+		const svg = model.svg;
+		const hit = classify(model, e.target as Element, e.clientX, e.clientY);
+		if (hit?.kind === 'group-label') {
+			this.start(e, new GroupLabelDrag(model, e, this, hit.el, hit.name), svg);
+			return true;
+		}
+		const node = memberHit(hit);
+		if (node && hit?.kind === 'plus') {
+			this.start(e, new TapPress(model, e, () => this.toggleMember(model, node.name)), svg);
+		} else if (node) {
+			this.start(e, new NodeDrag(model, e, this, node, hit?.kind === 'node' ? hit.label : null, () => this.toggleMember(model, node.name)), svg);
+		} else {
+			this.claim(e);
+			this.swallowAfter(svg);
+			this.endGroup();
+		}
+		return true;
+	}
+
+	/**
+	 * Puts a component into the group being edited or takes it out. Written one after the other,
+	 * each from the source the one before left; the first makes a new group, taking the last one
+	 * out deletes the group (with Undo) and ends the mode.
+	 */
+	private toggleMember(model: MapModel, member: string) {
+		const g = this.group;
+		if (!g) return;
+		const now = Date.now();
+		if (g.last?.member === member && now - g.last.at < DBLCLICK_MS) return;
+		g.last = { member, at: now };
+		g.queue = g.queue.then(async () => {
+			if (this.group !== g) return;
+			const src = g.src;
+			const name = g.name ?? nextGroupName(src);
+			const members = groupsOf(src).find(x => x.name === name)?.members ?? [];
+			const target = this.groupModel(g) ?? model;
+			if (members.length === 1 && members[0] === member) {
+				if (await this.applyThen(target, s => removeGroupMember(s, name, member), `group "${name}" deleted with its last component.`, src)) this.endGroup();
+				return;
+			}
+			const inside = members.includes(member);
+			const done = await this.write(target, s => (inside ? removeGroupMember(s, name, member) : addGroupMember(s, name, member)), src);
+			if (!done || this.group !== g) return;
+			if (g.name === null) {
+				g.name = name;
+				this.tell();
+			}
+			// No cursor on a phone: say what the tap did.
+			if (this.touchSeen) this.info(inside ? `"${member}" taken out of "${name}".` : `"${member}" put into "${name}".`);
+		});
+	}
+
 	/** A press while a legend action is armed: on a component it applies, anywhere else it disarms. */
 	private armedPress(e: PointerEvent, model: MapModel) {
 		const armed = this.armed!;
@@ -238,6 +504,8 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 
 	protected legendAction(model: MapModel, item: string, el: Element) {
 		const kind = item as LegendKind;
+		this.endGroup();
+		if (kind === 'group') return this.chooseGroup(model, el);
 		if (kind === 'evolve' || kind === 'inertia' || kind === 'pipeline') {
 			this.disarm();
 			this.armed = { kind, box: model.svg.closest('.mermaid') ?? model.svg, item: el };
