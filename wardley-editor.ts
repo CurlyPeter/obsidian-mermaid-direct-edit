@@ -183,6 +183,10 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 		this.endGroup();
 	}
 
+	protected isArmed(): boolean {
+		return !!this.armed || !!this.group;
+	}
+
 	/** `write` keeps the group mode's source current: its next click starts from what was written. */
 	protected async write(model: MapModel, edit: (src: string) => string, src = model.src) {
 		const done = await super.write(model, edit, src);
@@ -335,7 +339,8 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 
 	private startGroup(model: MapModel, name: string | null) {
 		this.disarm();
-		const root = model.svg.closest('.workspace-leaf-content') ?? model.svg.ownerDocument.body;
+		// The note's tab, or the zoom when the map is edited there.
+		const root = model.svg.closest('.mde-zoom, .workspace-leaf-content') ?? model.svg.ownerDocument.body;
 		const g: GroupEdit = {
 			name, src: model.src, replaced: new Set(), box: model.svg.closest('.mermaid') ?? model.svg, root,
 			observer: new MutationObserver(() => {

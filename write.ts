@@ -1,8 +1,20 @@
-import { App, MarkdownView } from 'obsidian';
+import { App, MarkdownView, TFile } from 'obsidian';
 import { fenceBreak, locateBlock } from './blocks';
 
-/** The Markdown view whose content shows `el`. */
+/**
+ * The note each open zoom (`zoom.ts`) draws a block of, by the zoom's root element: a zoomed
+ * diagram lies outside every view, so its edits are written into the note it came from, while
+ * that tab still shows it (review 0.24.0, I-1; the same guard as Undo's).
+ */
+export const zoomViews = new WeakMap<Element, { view: MarkdownView; file: TFile }>();
+
+/** The Markdown view whose content shows `el`, or whose block the zoom around `el` shows. */
 export function viewOf(app: App, el: Element): MarkdownView | null {
+	const zoom = el.closest('.mde-zoom');
+	if (zoom) {
+		const origin = zoomViews.get(zoom);
+		return origin && origin.view.file === origin.file ? origin.view : null;
+	}
 	let found: MarkdownView | null = null;
 	app.workspace.iterateAllLeaves(leaf => {
 		if (!found && leaf.view instanceof MarkdownView && leaf.view.containerEl.contains(el)) found = leaf.view;

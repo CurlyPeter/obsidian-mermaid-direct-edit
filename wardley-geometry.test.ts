@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { DOUBLE_TAP_MS, TapDetector, legendSide, segmentHit } from './geometry';
+import { DOUBLE_TAP_MS, TapDetector, fitInside, segmentHit } from './geometry';
 import { LINK_GRAB, evolutionAt, linkPart, onTrendShaft, trendTargetX, visibilityAt, xOf, yOf } from './wardley-geometry';
 
 const BOX = { left: 48, right: 1052, top: 48, bottom: 552 };
@@ -48,14 +48,27 @@ describe('evolve arrows', () => {
 	});
 });
 
-describe('legendSide', () => {
-	const r = { left: 100, right: 800, bottom: 600, width: 700, height: 500 };
-	it('answers only in the very bottom corners', () => {
-		expect(legendSide(r, 110, 590)).toBe('left');
-		expect(legendSide(r, 790, 590)).toBe('right');
-		expect(legendSide(r, 160, 540)).toBeNull();
-		expect(legendSide(r, 450, 590)).toBeNull();
-		expect(legendSide(r, 110, 300)).toBeNull();
+describe('fitInside (the zoom)', () => {
+	it('fills the limiting side and keeps the aspect, scaling up as well as down', () => {
+		expect(fitInside(1600, 900, 900, 600)).toEqual({ width: 1350, height: 900 });
+		expect(fitInside(800, 900, 900, 600)).toEqual({ width: 800, height: 533 });
+		expect(fitInside(1600, 900, 90, 60)).toEqual({ width: 1350, height: 900 });
+		expect(fitInside(1000, 1000, 300, 1200)).toEqual({ width: 250, height: 1000 });
+	});
+	it('never exceeds the space it was given', () => {
+		// Fractional space too: safe-area padding can leave a fraction of a pixel.
+		for (const [aw, ah, w, h] of [[1001, 777, 333, 211], [640, 480, 450, 219], [1919, 1079, 900, 600], [375, 667, 1200, 300], [1000.6, 500.6, 2, 1]]) {
+			const r = fitInside(aw, ah, w, h);
+			expect(r.width).toBeLessThanOrEqual(aw);
+			expect(r.height).toBeLessThanOrEqual(ah);
+			// one side touches (within the pixel the floor takes)
+			expect(Math.min(aw - r.width, ah - r.height)).toBeLessThan(1 + Math.max(w / h, h / w));
+		}
+	});
+	it('gives the whole space for a size it cannot read', () => {
+		expect(fitInside(800, 600, 0, 0)).toEqual({ width: 800, height: 600 });
+		expect(fitInside(800, 600, NaN, 10)).toEqual({ width: 800, height: 600 });
+		expect(fitInside(-5, 600, 10, 10)).toEqual({ width: 0, height: 0 });
 	});
 });
 

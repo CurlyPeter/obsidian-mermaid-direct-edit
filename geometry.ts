@@ -1,6 +1,6 @@
 /**
  * Pure geometry shared by every diagram editor: drag and tap thresholds, the double-tap rule,
- * segment distances and the legend's corner zones. No DOM, so everything here is unit-tested.
+ * segment distances and the zoom's fit. No DOM, so everything here is unit-tested.
  */
 
 export interface Pt { x: number; y: number }
@@ -15,10 +15,8 @@ export const DBLCLICK_MS = 600;
 export const LONG_PRESS_MS = 550;
 /** Screen px around a stub's free end that grab it. */
 export const STUB_GRAB = 12;
-/** Bottom corner zones (screen px) where the pointer shows the legend: about Obsidian's edit button. */
-export const LEGEND_ZONE = { width: 32, height: 32 };
-/** The same zone for a finger: 44 px, the smallest target a finger reliably hits. */
-export const LEGEND_ZONE_TOUCH = { width: 44, height: 44 };
+/** After the pointer leaves the menu button and its legend, the legend stays this long (the way between them crosses a gap). */
+export const MENU_GRACE_MS = 300;
 
 /** Where `p` lies relative to the segment a→b: distance along it from a, distance off it. */
 export function segmentHit(a: Pt, b: Pt, p: Pt): { along: number; perp: number; len: number } | null {
@@ -29,13 +27,15 @@ export function segmentHit(a: Pt, b: Pt, p: Pt): { along: number; perp: number; 
 	return { along: px * ux + py * uy, perp: Math.abs(px * uy - py * ux), len };
 }
 
-/** The bottom corner of a diagram's rectangle the point is in, if any. */
-export function legendSide(r: { left: number; right: number; bottom: number; width: number; height: number }, x: number, y: number, zone = LEGEND_ZONE): 'left' | 'right' | null {
-	const zw = Math.min(zone.width, r.width / 2), zh = Math.min(zone.height, r.height / 2);
-	if (y < r.bottom - zh || y > r.bottom) return null;
-	if (x >= r.left && x <= r.left + zw) return 'left';
-	if (x <= r.right && x >= r.right - zw) return 'right';
-	return null;
+/**
+ * The largest size with the aspect `w` : `h` inside `availW` × `availH`, in whole pixels so it
+ * never runs over (the zoomed diagram: scaled up or down to fill the window, aspect kept).
+ */
+export function fitInside(availW: number, availH: number, w: number, h: number): { width: number; height: number } {
+	const aw = Math.max(0, availW), ah = Math.max(0, availH);
+	if (!(w > 0 && h > 0) || !Number.isFinite(w / h)) return { width: Math.floor(aw), height: Math.floor(ah) };
+	const scale = Math.min(aw / w, ah / h);
+	return { width: Math.floor(w * scale), height: Math.floor(h * scale) };
 }
 
 /**

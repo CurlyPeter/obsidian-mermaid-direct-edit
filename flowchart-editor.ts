@@ -183,6 +183,10 @@ export class FlowchartEditor extends DiagramEditor<FlowModel> implements FlowCtx
 		this.armed = null;
 	}
 
+	protected isArmed(): boolean {
+		return !!this.armed;
+	}
+
 	protected legendAction(model: FlowModel, kind: string, item: Element) {
 		if (kind === 'group') {
 			this.disarm();
@@ -313,15 +317,15 @@ export class FlowchartEditor extends DiagramEditor<FlowModel> implements FlowCtx
 
 	private addShape(model: FlowModel, shape: ShapeType) {
 		this.open(new NameModal(this.app, `New ${legendName(shape).toLowerCase()}`, 'Label', label => {
-			const id = this.idFor(model, label);
-			void this.applyThen(model, s => addNode(s, label, shape), `"${label.trim()}" added.`).then(done => this.flash(done, id));
+			const id = this.idFor(model, label), zoom = model.svg.closest('.mde-zoom');
+			void this.applyThen(model, s => addNode(s, label, shape), `"${label.trim()}" added.`).then(done => this.flash(done, id, zoom));
 		}));
 	}
 
 	private newNodeAfter(model: FlowModel, from: string) {
 		this.open(new NameModal(this.app, `New node linked from "${this.labelOf(model, from)}"`, 'Label', label => {
-			const id = this.idFor(model, label);
-			void this.applyThen(model, s => addLinkedNode(s, from, label), `"${label.trim()}" added after "${this.labelOf(model, from)}".`).then(done => this.flash(done, id));
+			const id = this.idFor(model, label), zoom = model.svg.closest('.mde-zoom');
+			void this.applyThen(model, s => addLinkedNode(s, from, label), `"${label.trim()}" added after "${this.labelOf(model, from)}".`).then(done => this.flash(done, id, zoom));
 		}));
 	}
 
@@ -408,14 +412,16 @@ export class FlowchartEditor extends DiagramEditor<FlowModel> implements FlowCtx
 
 	/**
 	 * After a node is added, Mermaid lays the diagram out anew and the node may land far away:
-	 * it flashes once in the redrawn diagram (usability review 0.18.0).
+	 * it flashes once in the redrawn diagram (usability review 0.18.0), in the zoom when it was
+	 * added there (`zoom`, taken before the write: the redraw replaces the drawing).
 	 */
-	private flash(done: { view: MarkdownView; next: string } | null, id: string) {
+	private flash(done: { view: MarkdownView; next: string } | null, id: string, zoom: Element | null) {
 		if (!done || !id) return;
+		const root = zoom?.isConnected ? zoom : done.view.containerEl;
 		const until = Date.now() + 3000;
 		const own = new RegExp(`-flowchart-${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-\\d+$`);
 		const look = () => {
-			for (const svg of Array.from(done.view.containerEl.querySelectorAll<SVGSVGElement>('svg[data-mp-kind="flowchart"]'))) {
+			for (const svg of Array.from(root.querySelectorAll<SVGSVGElement>('svg[data-mp-kind="flowchart"]'))) {
 				if (this.registry.sourceOf(svg) !== done.next) continue;
 				const g = Array.from(svg.querySelectorAll('g.node')).find(n => own.test(n.id));
 				if (!g) continue;

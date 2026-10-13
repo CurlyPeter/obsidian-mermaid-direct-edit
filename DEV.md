@@ -904,7 +904,120 @@ element, in no smaller group; a click starts its mode, a double click opens its 
 run had three unrelated cases fail under heavy load (relink, two annotation cases); the rerun
 passed all 38 at a load average of 27.
 
+## Zoom and the menu button (0.24.0, 2026-10-13)
+
+Request (maintainer, 2026-10-13): a diagram gets exactly the two buttons an image has at its top
+right, "Zoom in" and the source; the legend moves from the bottom corners to a menu button at the
+top left that looks like those buttons and opens its menu on hover. A zoomed diagram fills the
+screen without running over the edge, with the image zoom's margins, and every editing function
+works there as in the note. Decisions on the open points: a dark margin with the diagram on a panel
+in the note's colour; Zoom out in place of Zoom in plus "Edit this block" in the zoom; every
+diagram type zooms (only Wardley maps and flowcharts edit); zoom and menu in reading view and on
+phones too.
+
+**Measured in Obsidian 1.14.4 before building:**
+
+- An image's buttons are Obsidian's own `.embed-actions` (`lucide-zoom-in` "Zoom in", then
+  `lucide-code-2` "Edit this block"); a mermaid block in Live Preview has the same toolbar with the
+  edit button only. Reading view has no toolbar; a click on an image opens the zoom there. Obsidian
+  offers the image zoom on desktop only.
+- The image zoom is an internal "lightbox": the whole window, `--lightbox-background` (black) at
+  90 %, the image `max-width/height: 100%` with `--size-4-2` padding, wheel zoom, Escape and a click
+  beside it close. It shows a static `<img>`, is not plugin API and cannot hold an editable SVG,
+  so the zoom is the plugin's own in the same look, built on Obsidian's CSS variables, not its classes.
+- Mermaid draws on a transparent ground (Obsidian inverts it in dark themes), black on black on the
+  lightbox backdrop: hence the panel in `--background-primary`.
+- Obsidian renders a diagram in a hidden box as wide as its parent, inserts the SVG string with
+  `innerHTML` and renames markers; reading view's recycler moves a drawn `.mermaid` into a new
+  section without rendering it again. Mermaid 12 already gives markers per-drawing ids.
+
+**Design** (CLAUDE.md → "Buttons and the zoom" has the rules): buttons inside the `.mermaid` box,
+placed after every render and again on hover; every drawing carries `data-mde-zoom`; the zoom
+renders the block anew through the same instance and render hook, so the editors work on it
+unchanged; writes go to the note the zoom came from (`zoomViews`); the zoom follows its block
+through every change and swaps only the SVG in a fixed box; Escape goes to a busy editor first;
+Cmd/Ctrl+Z and +Y are forwarded to the note's editor; no wheel zoom or panning in the zoom, it would
+compete with the editing gestures. The menu's legend opens below the button while the mouse is on
+the button or the legend and closes 300 ms after it left both (`MENU_GRACE_MS`, the way across the
+gap); a finger toggles it with a tap. The bottom-corner zones and `legendSide` are gone, so elements
+in those corners are editable again.
+
+**Found while testing:**
+
+- **A drawing can be older than its note.** After a synthetic drag (E2E `swallow_scope`) the note
+  said `Alpha [0.77, 0.32]` while Live Preview still showed the drawing of `[0.80, 0.30]`; the zoom
+  looked the drawn text up, did not find it and fell back to a picture, so the next two cases could
+  not edit. In Live Preview the zoom now finds its block by the drawing's place in the editor
+  (`posAtDOM` → `blockAt`) and draws the note's current text; the drawn text is only the fallback
+  (reading view).
+- **The toolbars lie over the drawing's corners**, as Obsidian's own edit button does, and Zoom in
+  makes the top right one button wider: with the flowchart test diagram as wide as the note,
+  Shop's group title lies under it, the double click hit Zoom in, and the open zoom then took the
+  next two cases' input (one deleted a node in the zoom). The suite now closes a zoom a case left
+  open, and `group_ungroup` opens the dialog from the group's border.
+- **Obsidian's hotkeys run before the zoom's keys.** Shift+Cmd+Z is bound to an action dialog in
+  the maintainer's vault and opened it from the zoom, exactly as it does in the note; the E2E
+  redoes with Cmd+Y.
+- **`context_menu` (flowchart E2E) is flaky, and was before:** after `handles_on_hover` it fails
+  about one run in three or four with no menu at all, on the 0.23.0 build exactly as on 0.24.0
+  (control: 0.23.0's `main.js` swapped in, the same pair three times); a pause before the right
+  click does not change it. Alone it passes. Cause not found; open.
+- Five negative controls: the zoom key, `followBlock`, `blockAt` and `fitInside` (twice) each
+  sabotaged, every one fails its tests. Rounding instead of flooring survived the first version of
+  the fit test; a fractional space (safe-area padding) now catches it.
+
+Verification (macOS desktop, Obsidian 1.14.4, Live Preview and reading view): 390 unit tests (386
+before the security fixes); E2E on the final build Wardley 52/52 and flowchart 28/29, the one
+failure the flaky `context_menu` above (passes alone; the build before the security fixes had 29/29).
+New cases, Wardley: `buttons`, `legend_menu` (the corners open nothing), `menu_tap`, `zoom_fit`
+(incl. a resized window), `zoom_edit_source`, `zoom_drag`, `zoom_touch_drag`, `zoom_dialog_escape`,
+`zoom_legend_escape`, `zoom_legend_add`, `zoom_undo`, `zoom_backdrop`, `zoom_group`,
+`zoom_follows`, `zoom_reading`, and unload removes buttons and zoom; flowchart: `zoom_add_node`
+(the node flashes in the zoom). Measured by hand: the zoom 1275×850 in a
+1380×866 window (8 px top and bottom, aspect 3:2), no duplicate ids with the note's drawing,
+readable in light and dark; mobile emulation at 356×770: both toolbars, a tap zooms (340 px wide,
+8 px margin), a finger drag in the zoom writes, a tap on Zoom out closes. Not measured: a real phone.
+
+## Security review (0.24.0, 2026-10-13)
+
+Fresh read-only agent over the 0.24.0 diff, everything run in a copy (a live E2E was driving the
+window). **Verdict: accept with fixes, two items, both fixed before release, plus four hardenings.**
+
+- **O77 (Moderate), older than this release, newly reachable:** `mermaidBlocks` opened fences with
+  `/^(`{3,}|~{3,})(.*)$/`; on a line of backticks followed by `\r`, U+2028 or U+2029 (which `.` does
+  not match, lines are split on `\n` only) the regex backtracked over the whole run, quadratic: 5.7 s
+  at 60,000 backticks. Before, it ran on writes only; the zoom runs it on every Zoom in and every
+  follow. Now the prefix is matched alone and such a line opens nothing, as before (0.17 ms on the
+  same line). Test: 1M backticks with each separator under 50 ms, the same blocks as before.
+- **O78 (Low):** `blockAt` accepted any point inside a block's extent. This scanner opens fences at
+  column 0 only, Markdown also indented up to 3 spaces; with a crafted mix (an indented ` ```js`
+  holding a column-0 ```` ````mermaid ````) the drawing of one block lay inside the scanner's other
+  block, and the zoom showed and edited text Markdown reads as part of a `js` block. Now only the
+  opening fence line counts; otherwise the drawn text is looked up, and without a match the zoom is a
+  picture. Test: the reviewer's note answers -1.
+- **Hardenings (Info):** `viewOf` refuses a zoom whose tab shows another file by now (I-1); the
+  zoom's keys only from inside it or the body, and `.app-container` inert while it is open, so Tab
+  cannot reach the hidden note where Cmd+Z would undo unseen (I-2); a picture-only zoom in a closed
+  pop-out is closed (I-3); diagrams only the zoom needs have a registry cap of their own (I-4).
+- **Clean, each measured by the reviewer:** the zoom inserts exactly what the note inserts (same
+  instance, `strict`, Mermaid's DOMPurify, the same transforms); the bundle's only new HTML sink is
+  that one `insertAdjacentHTML`; the error path is text; every write still goes through
+  `writeBlock`; the new lookups are linear (6.8 MB note, 200,000 blocks: 94 ms); listeners and refs
+  are removed on close; `main.js` rebuilt byte-identically.
+- Controls: each new test fails on the code before its fix (O78, I-4 by sabotage; O77 by timing the
+  old regex, a sabotaged run of the 1M-character test would take half an hour).
+
 ## Changelog
+
+- **0.24.0 (2026-10-13)** Zoom and a menu button. Every Mermaid diagram gets "Zoom in" at its top
+  right, beside Obsidian's "Edit this block" as on an image (in reading view in a toolbar of its
+  own): it draws the diagram as large as the window allows, in the look of Obsidian's image zoom,
+  and every edit works there as in the note and goes into the code block (Undo, Cmd/Ctrl+Z and +Y
+  included); Zoom out, Escape or the dark margin close it. The legend moved from the bottom corners
+  to a menu button at the top left (hover, or a tap on touch), so elements in the corners are
+  editable again. See "Zoom and the menu button (0.24.0)". Security review before release: a
+  crafted line could freeze the block scan (now linear), the zoom could take a block other than the
+  drawn one where fences are mixed (now only its opening line counts), four small hardenings.
 
 - **0.23.0 (2026-10-13)** A click on free space inside a group starts its group mode, a double
   click opens its dialog, as on its label and besides the legend's list; everything drawn inside a

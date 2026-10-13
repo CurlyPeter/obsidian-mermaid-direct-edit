@@ -54,7 +54,8 @@ NOTE = E.Scratch('Mermaid Direct Edit Flowchart E2E', CONTENT)
 # Locators run inside Obsidian and answer screen coordinates of rendered parts.
 LOCATE = r"""
 (async()=>{
-const root = app.workspace.activeLeaf.view.contentEl.querySelector('.markdown-source-view');
+const ZOOM = __ZOOM__;
+const root = ZOOM ? document.querySelector('.mde-zoom') : app.workspace.activeLeaf.view.contentEl.querySelector('.markdown-source-view');
 const svg = root && root.querySelector('.mermaid svg[data-mp-kind="flowchart"]');
 if (!svg) return JSON.stringify({error: 'no flowchart'});
 const mid = r => [Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2)];
@@ -97,10 +98,13 @@ for (const [k, spec] of Object.entries(ARG)) {
   else if (what === 'edge-to-end') { const p = edge(a); if (!p) { out[k] = null; continue; } const L = p.getTotalLength(); out[k] = at(p, Math.max(0, (L - 8) / L)); }
   else if (what === 'label') { const l = svg.querySelector(`g.edgeLabel g.label[data-id="${a}"]`); out[k] = l && mid(l.getBoundingClientRect()); }
   else if (what === 'cluster-label') { const c = cluster(a); out[k] = c && mid(c.querySelector('.cluster-label').getBoundingClientRect()); }
+  else if (what === 'cluster-edge') { const r = cluster(a)?.querySelector(':scope > rect').getBoundingClientRect(); out[k] = r && [Math.round(r.left + r.width / 2), Math.round(r.bottom - 1)]; }
   else if (what === 'cluster-inside') { const r = cluster(a)?.querySelector(':scope > rect').getBoundingClientRect(); out[k] = r && [Math.round(r.left + 8), Math.round(r.bottom - 8)]; }
   else if (what === 'empty') { out[k] = empty(); }
   else if (what === 'corner') { const r = svg.closest('.mermaid').getBoundingClientRect(); out[k] = a === 'left' ? [Math.round(r.left + 10), Math.round(r.bottom - 10)] : [Math.round(r.right - 10), Math.round(r.bottom - 10)]; }
   else if (what === 'legend-item') { const i = svg.closest('.mermaid').querySelector(`.mp-legend [data-mp-add="${a}"]`); out[k] = i && mid(i.getBoundingClientRect()); }
+  else if (what === 'menu') { const b = svg.closest('.mermaid').querySelector(':scope > .mde-actions-left .mde-menu-button'); out[k] = b && mid(b.getBoundingClientRect()); }
+  else if (what === 'zoom-button') { const b = svg.closest('.cm-embed-block')?.querySelector(':scope > .embed-actions .mde-zoom-button'); out[k] = b && mid(b.getBoundingClientRect()); }
   else if (what === 'scroll') { out[k] = Math.round(root.querySelector('.cm-scroller').scrollTop); }
   else if (what === 'stub-end') { const l = svg.querySelector('line.mp-new-link'); if (!l) { out[k] = null; continue; } const pt = svg.createSVGPoint(); pt.x = +l.getAttribute('x2'); pt.y = +l.getAttribute('y2'); const s = pt.matrixTransform(svg.getScreenCTM()); out[k] = [Math.round(s.x), Math.round(s.y)]; }
 }
@@ -109,6 +113,7 @@ return out;
 // Every point has to lie in the visible editor (a point under the tab bar would click a tab):
 // scroll the requested points to the middle when they do not.
 let out = compute();
+if (ZOOM) return JSON.stringify(out);  // the zoom fills the window: nothing to scroll, no other tab under it
 const scroller = root.querySelector('.cm-scroller');
 const view = scroller.getBoundingClientRect();
 const points = () => Object.values(out).filter(v => Array.isArray(v));
@@ -136,8 +141,13 @@ def locate_here(**spec):
     return _locate(spec, True)
 
 
-def _locate(spec, fixed):
-    raw = js(LOCATE.replace('__ARG__', json.dumps(spec)).replace('__FIXED__', 'true' if fixed else 'false'))
+def locate_zoom(**spec):
+    """Screen points of rendered parts of the zoomed flowchart."""
+    return _locate(spec, True, True)
+
+
+def _locate(spec, fixed, zoom=False):
+    raw = js(LOCATE.replace('__ARG__', json.dumps(spec)).replace('__FIXED__', 'true' if fixed else 'false').replace('__ZOOM__', 'true' if zoom else 'false'))
     try:
         out = json.loads(raw)
     except json.JSONDecodeError:
@@ -367,7 +377,7 @@ def case_drag_node_nowhere():
 
 
 def case_legend_add_node():
-    p = locate(c=['corner', 'left'])
+    p = locate(c=['menu'])
     mouse('mouseMoved', *p['c']); wait(0.3)
     item = locate_here(i=['legend-item', 'diamond'])['i']
     click(*item); wait(0.5)
@@ -378,7 +388,7 @@ def case_legend_add_node():
 
 
 def case_legend_direction():
-    p = locate(c=['corner', 'right'])
+    p = locate(c=['menu'])
     mouse('mouseMoved', *p['c']); wait(0.3)
     item = locate_here(i=['legend-item', 'direction'])['i']
     click(*item); wait(0.5)
@@ -389,7 +399,7 @@ def case_legend_direction():
 
 
 def case_legend_group():
-    p = locate(c=['corner', 'left'])
+    p = locate(c=['menu'])
     mouse('mouseMoved', *p['c']); wait(0.3)
     item = locate_here(i=['legend-item', 'group'])['i']
     click(*item); wait(0.4)
@@ -412,7 +422,9 @@ def case_group_dialog():
 
 
 def case_group_ungroup():
-    p = locate(l=['cluster-label', 'Shop'])
+    # Its bottom border, not its title: with the diagram as wide as the note, Shop's title lies
+    # under the block's buttons at the top right (DEV.md 0.24.0); links enter it from the left.
+    p = locate(l=['cluster-edge', 'Shop'])
     dblclick(*p['l']); wait(0.6)
     E.modal('btn("Ungroup").click()')
     wait()
@@ -483,13 +495,36 @@ def case_not_editable():
     return 'not editable here' in told and title == '' and unchanged, f'dialog={title!r}; notice={told[:80]}; unchanged={unchanged} {"" if unchanged else repr(now)}'
 
 
+def case_zoom_add_node():
+    """In the zoom the menu adds a node; the zoom draws it anew and the new node flashes there."""
+    z = locate(z=['zoom-button'])['z']
+    if not z:
+        return False, 'no zoom button'
+    mouse('mouseMoved', *z); wait(0.2)
+    click(*z); wait(1.2)
+    if js('String(!!document.querySelector(".mde-zoom svg[data-mp-kind=flowchart]"))') != 'true':
+        return False, 'the zoom did not open'
+    m = locate_zoom(m=['menu'])['m']
+    mouse('mouseMoved', *m); wait(0.3)
+    item = locate_zoom(i=['legend-item', 'square'])['i']
+    mouse('mouseMoved', m[0], m[1] + 16); mouse('mouseMoved', *item)
+    click(*item); wait(0.5)
+    title = E.modal_title()
+    E.type_text('Zoomed'); E.enter()
+    flashed = js('(async()=>{for(let i=0;i<30;i++){if(document.querySelector(".mde-zoom g.node.mp-flash")) return "true"; await new Promise(r=>setTimeout(r,100));} return "false"})()')
+    drawn = locate_zoom(n=['node', 'Zoomed'])['n']
+    js('(()=>{document.querySelector(".mde-zoom .mde-unzoom-button")?.click(); return "x"})()'); wait(0.4)
+    got = line(r'^\s*Zoomed\[Zoomed\]$')
+    return title == 'New rectangle' and got is not None and drawn is not None and flashed == 'true', f'{title!r}; {got}; drawn at {drawn}; flashed in the zoom {flashed}'
+
+
 def case_unload_cleanup():
-    p = locate(s=['plus', 'Lone'], c=['corner', 'left'])
+    p = locate(s=['plus', 'Lone'], c=['menu'])
     click(*p['s']); wait(0.3)
     mouse('mouseMoved', *p['c']); wait(0.3)
     before = js('JSON.stringify({stub:document.querySelectorAll("line.mp-new-link").length, legend:document.querySelectorAll(".mp-legend").length})')
-    after = js('(async()=>{await app.plugins.disablePlugin(' + json.dumps(E.PLUGIN_ID) + '); const r={stub:document.querySelectorAll("line.mp-new-link").length, legend:document.querySelectorAll(".mp-legend").length, host:document.querySelectorAll(".mp-legend-host").length, body:document.body.classList.contains("mp-flowchart-edit")}; await app.plugins.enablePlugin(' + json.dumps(E.PLUGIN_ID) + '); await new Promise(r=>setTimeout(r,1500)); return JSON.stringify(r)})()')
-    return json.loads(before) == {'stub': 1, 'legend': 1} and json.loads(after) == {'stub': 0, 'legend': 0, 'host': 0, 'body': False}, f'before {before}; after unload {after}'
+    after = js('(async()=>{await app.plugins.disablePlugin(' + json.dumps(E.PLUGIN_ID) + '); const r={stub:document.querySelectorAll("line.mp-new-link").length, legend:document.querySelectorAll(".mp-legend").length, host:document.querySelectorAll(".mde-host").length, buttons:document.querySelectorAll(".mde-actions, .mde-zoom-button").length, body:document.body.classList.contains("mp-flowchart-edit")}; await app.plugins.enablePlugin(' + json.dumps(E.PLUGIN_ID) + '); await new Promise(r=>setTimeout(r,1500)); return JSON.stringify(r)})()')
+    return json.loads(before) == {'stub': 1, 'legend': 1} and json.loads(after) == {'stub': 0, 'legend': 0, 'host': 0, 'buttons': 0, 'body': False}, f'before {before}; after unload {after}'
 
 
 CASES = [
@@ -501,7 +536,9 @@ CASES = [
     ('move_into_group', case_move_into_group), ('move_out_of_group', case_move_out_of_group), ('drag_node_nowhere', case_drag_node_nowhere),
     ('legend_add_node', case_legend_add_node), ('legend_direction', case_legend_direction), ('legend_group', case_legend_group),
     ('group_dialog', case_group_dialog), ('group_ungroup', case_group_ungroup), ('node_delete', case_node_delete),
-    ('hover_cursors', case_hover_cursors), ('touch', case_touch), ('not_editable', case_not_editable),
+    ('hover_cursors', case_hover_cursors), ('touch', case_touch), ('zoom_add_node', case_zoom_add_node),
+    # Replaces the note with a diagram the editor refuses: after every case that needs the test diagram.
+    ('not_editable', case_not_editable),
     ('unload_cleanup', case_unload_cleanup),
 ]
 

@@ -27,7 +27,7 @@ export interface EditorNames {
 /**
  * What every graphical editor shares, whatever the diagram type: the DOM event handlers
  * (registered by main.ts in the capture phase on every window), one active gesture at a time,
- * the waiting "+" stub, the legend, double tap, swallowing the clicks a gesture leaves behind,
+ * the waiting "+" stub, the menu button's legend, double tap, swallowing the clicks a gesture leaves behind,
  * dialogs that unload closes, and `apply`, which turns every edit into a text change of the
  * block, validated by Mermaid before it is written. A subclass says what a press on its diagram
  * means (`press`, `claims`, `cursorAt`) and what its legend adds.
@@ -101,13 +101,16 @@ export abstract class DiagramEditor<M extends Surface> implements EditCtx<M> {
 	protected pressOutside(_e: PointerEvent): void {}
 	/** Escape, unload: drop whatever the subclass keeps armed. */
 	protected disarm(): void {}
+	/** Whether the subclass keeps something armed (a legend action, a mode). */
+	protected isArmed(): boolean {
+		return false;
+	}
 
 	// ---- event handlers (registered by main.ts in the capture phase) ----------------------
 
 	onPointerDown = (e: PointerEvent) => {
 		if (!this.enabled() || this.active || e.button !== 0 || !e.isPrimary) return;
 		this.touchSeen = e.pointerType !== 'mouse';
-		if (e.pointerType !== 'mouse') this.updateLegend(e);  // touch has no hover: a tap decides
 		const stub = this.stub;
 		if (stub && this.onStubEnd(stub, e)) return this.start(e, this.stubDrag(e, stub), stub.model.svg);
 		if (stub && stub.line.isConnected && this.stubPress(e, stub)) {
@@ -116,19 +119,25 @@ export abstract class DiagramEditor<M extends Surface> implements EditCtx<M> {
 		}
 		if (stub) this.dropStub();
 
-		if (Legend.contains(e.target)) {
+		if (Legend.onMenu(e.target)) {
 			const svg = diagramIn(e.target, this.kind);
-			if (!svg) return;  // another editor's legend
+			if (!svg) return;  // another editor's menu
 			this.claim(e);
-			const kind = Legend.itemAt(e.target);
 			const model = this.modelOf(svg);
 			if (!model) return void this.fail(`This ${this.names.noun} was drawn by an earlier plugin load and is redrawn now, please try again.`);
+			if (this.tellBlocked(model)) return;
+			const box = svg.closest<HTMLElement>('.mermaid')!;
+			// The button: a finger has no hover, a tap opens and closes; a click keeps it open.
+			if (Legend.onButton(e.target)) return void (this.touchSeen ? this.legend.toggle(box) : this.legend.show(box));
+			const kind = Legend.itemAt(e.target);
 			if (kind) {
 				this.legend.hide();
 				this.legendAction(model, kind, (e.target as Element).closest('[data-mp-add]')!);
 			}
 			return;
 		}
+		// A press anywhere else closes an open legend (a finger's in particular: it has no hover to leave).
+		this.legend.hide();
 		const svg = diagramOf(e.target, this.kind);
 		if (!svg) return void this.pressOutside(e);
 		const model = this.modelOf(svg);
@@ -140,15 +149,8 @@ export abstract class DiagramEditor<M extends Surface> implements EditCtx<M> {
 			this.staleAt = Date.now();
 			return void this.fail(`This ${this.names.noun} was drawn by an earlier plugin load and is redrawn now, please try again.`);
 		}
-		const blocked = this.blockedReason(model);
-		if (blocked) {
-			// Once per drawing; the press is left to Obsidian (in Live Preview it opens the source).
-			if (!this.toldBlocked.has(model.svg)) {
-				this.toldBlocked.add(model.svg);
-				this.info(`not editable here: ${blocked} Edit it in the source.`);
-			}
-			return;
-		}
+		// The press is left to Obsidian (in Live Preview it opens the source).
+		if (this.tellBlocked(model)) return;
 		this.press(e, model);
 	};
 
@@ -202,7 +204,7 @@ export abstract class DiagramEditor<M extends Surface> implements EditCtx<M> {
 		const svg = diagramOf(e.target, this.kind);
 		const model = svg ? this.modelOf(svg) : null;
 		const onElement = model && this.claims(model, e.target, (e as MouseEvent).clientX, (e as MouseEvent).clientY, false);
-		if (recent || onElement || (Legend.contains(e.target) && diagramIn(e.target, this.kind))) {
+		if (recent || onElement || (Legend.onMenu(e.target) && diagramIn(e.target, this.kind))) {
 			e.preventDefault();
 			e.stopPropagation();
 		}
@@ -230,7 +232,7 @@ export abstract class DiagramEditor<M extends Surface> implements EditCtx<M> {
 	onTouchStart = (e: TouchEvent) => {
 		if (!this.enabled()) return;
 		const t = e.touches[0];
-		if (Legend.contains(e.target) && diagramIn(e.target, this.kind)) return void e.preventDefault();
+		if (Legend.onMenu(e.target) && diagramIn(e.target, this.kind)) return void e.preventDefault();
 		const svg = diagramOf(e.target, this.kind);
 		const model = svg ? this.modelOf(svg) : null;
 		if (!t || !model) return;
@@ -239,9 +241,23 @@ export abstract class DiagramEditor<M extends Surface> implements EditCtx<M> {
 
 	onKeyDown = (e: KeyboardEvent) => {
 		if (e.key !== 'Escape') return;
+		this.release();
+	};
+
+	/**
+	 * Whether something waits for the next press or key: a gesture, a stub, an open legend, an armed
+	 * action. The zoom's Escape leaves such a state to the editor first and closes only afterwards.
+	 */
+	busy(): boolean {
+		return !!this.active || !!this.stub?.line.isConnected || this.legend.isShown() || this.isArmed();
+	}
+
+	/** Drops whatever waits (Escape; the zoom opening or closing: a stub or an armed action must not cross between note and zoom). */
+	release() {
 		this.dropStub();
 		this.disarm();
-	};
+		this.legend.hide();
+	}
 
 	/** Undoes every trace of the editor in each of `docs`, the app's windows (plugin unload, review finding #6). */
 	destroy(docs: Iterable<Document>) {
@@ -403,13 +419,28 @@ export abstract class DiagramEditor<M extends Surface> implements EditCtx<M> {
 		try { if (g.model.svg.hasPointerCapture(e.pointerId)) g.model.svg.releasePointerCapture(e.pointerId); } catch { /* detached */ }
 	}
 
-	/** The legend of the diagram under the pointer (or of the legend under it), editable diagrams only; true while shown. */
+	/** Mouse hover: on a menu (button or legend) of this editor's kind its legend opens; anywhere else an open one closes soon. True while on the menu. */
 	private updateLegend(e: PointerEvent): boolean {
 		const target = isElement(e.target) ? e.target : null;
-		const svg = this.enabled() ? diagramOf(target, this.kind) ?? diagramIn(target, this.kind) : null;
+		const svg = this.enabled() && Legend.onMenu(target) ? diagramIn(target, this.kind) : null;
 		const model = svg ? this.modelOf(svg) : null;
-		const box = model && !this.blockedReason(model) ? model.svg.closest<HTMLElement>('.mermaid') : null;
-		return this.legend.update(box, target, e.clientX, e.clientY, e.pointerType !== 'mouse');
+		if (model && !this.blockedReason(model)) {
+			this.legend.show(model.svg.closest<HTMLElement>('.mermaid')!);
+			return true;
+		}
+		this.legend.leave();
+		return false;
+	}
+
+	/** Why this drawing is not editable, told once per drawing; true when it is not. */
+	private tellBlocked(model: M): boolean {
+		const blocked = this.blockedReason(model);
+		if (!blocked) return false;
+		if (!this.toldBlocked.has(model.svg)) {
+			this.toldBlocked.add(model.svg);
+			this.info(`not editable here: ${blocked} Edit it in the source.`);
+		}
+		return true;
 	}
 
 	/** Mouse hover: the cursor tells what a press would do (same classification as a press). */

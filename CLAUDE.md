@@ -51,11 +51,13 @@ with its kind (`data-mp-kind`), so the editors never see each other's diagrams.
 | `render.ts` | `wrapRender` with one `RenderHook` per diagram type (which `aria-roledescription`, when it stays untagged, SVG transforms), `SourceRegistry`, `diagramOf`/`diagramIn`, `isElement` | E2E |
 | `editor.ts` | `DiagramEditor`: the DOM handlers (registered by `main.ts` on every window, incl. `contextmenu`), one active gesture, the waiting stub, legend, double tap, swallowing the clicks a gesture leaves, dialogs closed on unload, `apply` (edit → `mermaid.parse` → write) and `applyThen` (the same with a notice that has an Undo button). A subclass implements `modelOf`, `press`, `claims`, `cursorAt`, `legendAction`, `stubDrag`, and may add `stubPress` (click, then click links), `hoverAt`, `contextMenu`, `stubWaits` and refuse a diagram (`blockedReason`) | E2E (both suites) |
 | `gestures.ts` | `DragGesture` (tap vs drag threshold), `Stub` (with a round handle at its free end) and `NewLinkDrag` (the "+" link, its end under the pointer: onto an element links, into free space creates one, back on its own element waits), `TapPress`, `DeletePress`, `DropHighlight` | E2E |
-| `legend.ts`, `modals.ts`, `write.ts`, `blocks.ts`, `geometry.ts` | legend (rows as the diagram's height allows, on the popover layer, closed once an entry is chosen, a 44 px corner on touch), `NameModal` and the two-click Delete, writing into the note, `locateBlock`/`mermaidBlocks`/limits/`EditError`, thresholds and `TapDetector` | vitest (`blocks`, `geometry`), E2E |
+| `legend.ts`, `modals.ts`, `write.ts`, `blocks.ts`, `geometry.ts` | the legend of the menu button (opens below it on hover or a tap, rows as the diagram's height allows, on the popover layer, closed once an entry is chosen or a moment after the mouse left), `NameModal` and the two-click Delete, writing into the note (`viewOf` also answers for a zoomed diagram), `locateBlock`/`mermaidBlocks`/`blockAt`/`followBlock`/limits/`EditError`, thresholds, `fitInside` and `TapDetector` | vitest (`blocks`, `geometry`), E2E |
+| `actions.ts`, `zoom.ts` | the buttons of a drawing (Zoom in top right, the menu top left) and the zoom (see "Buttons and the zoom") | vitest (`render`: the zoom key), E2E |
 
 `npm run e2e` runs both suites (`scripts/e2e-wardley.py`, `scripts/e2e-flowchart.py`, sharing
 `scripts/e2e_obsidian.py`); each drives every gesture with real input through `obs dev:cdp` on a
-scratch note and checks the resulting source. Run them after any change to an editor and on
+scratch note and checks the resulting source (and closes a zoom a failing case left open, which
+would otherwise take every later case's input). Run them after any change to an editor and on
 every Mermaid bump. They locate elements from the rendered SVG only, and refuse to send input
 to a point outside the scratch note's visible editor (input there lands in another tab). The
 flowchart suite holds three settings for its run and restores them: full width on and readable
@@ -64,6 +66,65 @@ page). CDP
 input reaches only the main window, so the pop-out case dispatches pointer events in the
 pop-out's own document instead; a touch double tap is dispatched in the page too (CDP is too
 slow for 400 ms).
+
+## Buttons and the zoom (0.24.0)
+
+Every drawing gets the buttons an image has (`actions.ts`): **Zoom in** at the top right, in Live
+Preview first in Obsidian's own toolbar of the block (`.embed-actions`, before "Edit this block"),
+in reading view (no toolbar there) in a toolbar of the plugin's own at the same place, same look
+(`.mde-actions`, the values of Obsidian's `.embed-actions`). An editable drawing also gets the
+**menu button** at the top left; its legend opens below it.
+
+- **The buttons live inside the `.mermaid` box.** Reading view moves a drawn box into a new section
+  without rendering again (Obsidian's recycler), so anything beside the box is lost. Live Preview
+  may rebuild a block's toolbar around the same drawing, so `decorate` is idempotent and runs after
+  every render (`wrapRender`'s `rendered(id)`: the svg's id is the render id, looked up once
+  Obsidian has inserted it) and again on every `pointerover` of a drawing.
+- **A press on Zoom in** is taken in the capture phase before anything else
+  (`stopImmediatePropagation`): Live Preview would otherwise open the source, an editor would see a
+  press. The menu button and legend are the editors' (`Legend.onMenu`), swallowed the same way.
+- **Every drawing carries `data-mde-zoom`** (any diagram type, sources up to `MAX_SOURCE`): a key
+  into the same `SourceRegistry`, separate from `data-mp-src`, which still means "an editor owns
+  this". Diagrams only the zoom needs have their own cap (200, editable ones 400), so many of them
+  cannot evict an editable map's key (review 0.24.0, I-4). A drawing without it (before the plugin
+  loaded) asks for a redraw.
+- **The zoom (`zoom.ts`) draws the block anew** with the plugin's Mermaid (hidden measuring box as
+  wide as the zoom, then the SVG string into a fixed `.mermaid` box, as Obsidian does), so the
+  drawing is tagged like any other and the editors work on it unchanged. Render ids start with
+  `mde-zoom-`; Mermaid namespaces marker ids with the svg id, so the second copy shares no id.
+- **Which block:** in Live Preview by the drawing's place in the editor (`posAtDOM` →
+  `blockAt`), so a drawing Live Preview has not redrawn yet still finds its block (E2E found
+  that case); in reading view by the drawn text (n-th of identical ones). Not found (an embed, a
+  canvas, a callout): a picture only (`mde-static`, `diagramOf` refuses it). **`blockAt` accepts
+  only a block's opening fence line**, never a point deeper inside: this scanner opens fences at
+  column 0 only, Markdown also indented up to 3 spaces, and where they disagree a point inside a
+  scanner block can be another block's drawing (security review 0.24.0, O78).
+- **Edits from the zoom** go to the note it came from: `viewOf` answers from `zoomViews` (zoom
+  element → view and file; null once that tab shows another file, the guard Undo has). Anything that looks for "the redrawn drawing" looks in the zoom when the edit
+  started there (flowchart flash: the zoom is taken before the write; group mode: root
+  `.mde-zoom, .workspace-leaf-content`).
+- **It follows its block** on `editor-change` (Live Preview: the buffer) and `vault.modify`
+  (reading view: the file): the same index while the number of blocks is unchanged, else the
+  block still holding the text (`followBlock`); gone → closed with a notice. The box stays the
+  same element and only the SVG is swapped, so an armed legend action survives the redraw.
+- **Keys** (capture phase on the zoom's document, ignored while a modal or menu is open, and taken
+  only from inside the zoom or the body): Escape closes unless an editor is `busy()` (gesture,
+  stub, open legend, armed action, group mode), then that editor's own Escape runs first. While
+  the zoom is open the window's `.app-container` is `inert`, so Tab cannot lead into the hidden
+  note (dialogs, menus and notices are outside it; review 0.24.0, I-2). Cmd/Ctrl+Z, +Shift+Z, +Y undo and redo in the note's
+  editor (Live Preview; it has no focus meanwhile). **Obsidian's hotkeys run before it**: a
+  hotkey bound to one of these keys fires in the zoom as it does in the note (the E2E redoes with
+  Cmd+Y for that reason).
+- **Size:** the panel takes the drawing's viewBox aspect and the largest size inside the window
+  minus the image zoom's margin (`--size-4-2`) and safe areas (`fitInside`, whole pixels), again on
+  every window resize; the SVG fills it (`!important` over Mermaid's `max-width` and fixed sizes).
+  Mermaid draws on a transparent ground, so the panel has the note's background on Obsidian's
+  `--lightbox-background`.
+- **Closing:** Zoom out, Escape, the backdrop, its note closed or another file in that tab, its
+  window gone (`check` on `layout-change`/`file-open`, also for a picture-only zoom), unload.
+- **Known limit:** like Obsidian's own edit button, the toolbars lie over the drawing's top
+  corners and take presses there (a flowchart group title at the top right edge, E2E
+  `group_ungroup` uses the group's border instead).
 
 ## Editing Wardley maps
 
@@ -106,11 +167,10 @@ components, which have none in wardley-beta), or delete it with its links and ev
 confirming second click). Name, inertia and type are written together with Save, as one edit
 (since 0.18.0; before, switching inertia or type wrote at once and closed the dialog, dropping a
 name typed just before); the rename goes last, so the other edits find the old name. A **legend**
-(shown only when the pointer reaches the very bottom-left or bottom-right corner, a 32 px
-zone about the size of Obsidian's edit button, in that corner; stays open while the pointer
-is on it; mobile: a tap in a corner) adds a component, anchor, note, annotation, accelerator or
-deaccelerator (name/text asked, placed on a free spot by `freeSpot`), or, armed, an evolve
-arrow, inertia or a pipeline component on the next component pressed.
+(the menu of the menu button at the top left of the map, since 0.24.0; before, a 32 px zone in
+the bottom corners) adds a component, anchor, note, annotation, accelerator or deaccelerator
+(name/text asked, placed on a free spot by `freeSpot`), or, armed, an evolve arrow, inertia or a
+pipeline component on the next component pressed.
 **Accelerators/deaccelerators** (`accelerator Name [v, e]`) drag as a whole and have a dialog
 (rename, delete). **Pipelines** (`pipeline Parent { component Child [evo] }`): drag the box
 or the parent square to move the whole pipeline (parent position plus every child's
@@ -270,8 +330,8 @@ delete).
   declared position. Inside the box the box wins over loose link zones and the "+" ring; a
   link end there needs a hit within 3 px.
 - **Gesture priority** (`classify()` in `wardley-hit.ts`, shared by press, touch start and
-  hover): before it, the waiting stub's free end, the legend, an armed legend action and the
-  group mode (`groupPress`). Then
+  hover): before it, the waiting stub's free end, the menu (button and legend), an armed legend
+  action and the group mode (`groupPress`). Then
   **elements under the pointer win over zones**: annotation circle or box, note, a group's label,
   accelerator/deaccelerator, inertia bar, node or label (a group label lies behind nodes and links,
   so it is hit only where nothing covers it); then evolve tip, evolve shaft, link end, link middle; the "+" ring; a pipeline
@@ -287,7 +347,8 @@ delete).
   callout or list is refused with a message, an identical text elsewhere is never touched.
 - **Parsers on note text must stay linear.** Notes come from sync, shared vaults and pastes; a regex
   with overlapping quantifiers (`(.+?)([ \t]+)…`, `[^\]]+?[ \t]*`) froze Obsidian on a crafted
-  line (security review 0.13.0). Use index scans and `trimTail`, and add a timing case to
+  line (security review 0.13.0), and so did a trailing `(.*)$` after a backtick run on a line holding
+  `\r`, U+2028 or U+2029, which `.` does not match (O77, 0.24.0: match the prefix only). Use index scans and `trimTail`, and add a timing case to
   `wardley-text.security.test.ts` for any new per-line parser.
 - **`placeInertia` never re-serializes the SVG**: it reads with `DOMParser` and only swaps the
   numbers of `<line class="wardley-inertia" x1=… y1=… x2=…>`, so the sanitized output stays as
@@ -334,8 +395,8 @@ says "link" for an edge, Mermaid's own word):
   swap button, label, line, ends, minimum length, delete); dragging an end re-links it.
 - **Group:** double-click its title or its border for its dialog (title, direction with a note
   when Mermaid will ignore it, ungroup, delete with its nodes).
-- **Legend** (bottom corners, as for Wardley maps; 44 px corner zone on touch): add a node of a
-  shape, put the next node clicked into a new group, the diagram's direction.
+- **Legend** (the menu button at the top left, as for Wardley maps): add a node of a shape, put
+  the next node clicked into a new group, the diagram's direction.
 - **Right-click** anywhere on the diagram: the same actions as an Obsidian menu (a node's, a
   link's, a group's, or the legend's on empty space).
 - **Structural edits** (delete, re-link, group moves, ungroup, links and nodes added) confirm with

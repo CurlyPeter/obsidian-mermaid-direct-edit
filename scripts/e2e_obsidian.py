@@ -109,7 +109,9 @@ def modal(code):
 
 
 def close_modals():
-    js('(()=>{document.querySelectorAll(".modal-container").length && [...document.querySelectorAll(".modal button")].find(b=>b.textContent==="Cancel")?.click(); return "x"})()')
+    """Cancels an open dialog and closes a zoom a case left open (it would take every later case's input)."""
+    js('(()=>{document.querySelectorAll(".modal-container").length && [...document.querySelectorAll(".modal button")].find(b=>b.textContent==="Cancel")?.click();'
+       ' document.querySelector(".mde-zoom .mde-unzoom-button")?.click(); return "x"})()')
 
 
 def wait(s=1.3):

@@ -67,7 +67,8 @@ FILLER = '\n\n'.join(f'Filler line {i} so the map sits below the top.' for i in 
 # Locators run inside Obsidian and answer screen coordinates of rendered parts.
 LOCATE = r"""
 (async()=>{
-const root = app.workspace.activeLeaf.view.contentEl.querySelector('.markdown-source-view');
+const WHERE = __WHERE__;
+const root = WHERE === 'zoom' ? document.querySelector('.mde-zoom') : app.workspace.activeLeaf.view.contentEl.querySelector(WHERE === 'preview' ? '.markdown-preview-view' : '.markdown-source-view');
 const svg = root && root.querySelector('.mermaid svg[aria-roledescription="wardley"]');
 if (!svg) return JSON.stringify({error: 'no map'});
 const ctm = svg.getScreenCTM();
@@ -106,6 +107,8 @@ for (const [k, spec] of Object.entries(ARG)) {
   else if (what === 'annotations-box') { const r = svg.querySelector('g.wardley-annotations-box > rect')?.getBoundingClientRect(); out[k] = r && [Math.round(r.right - 8), Math.round(r.bottom - 4)]; }
   else if (what === 'box') { const r = svg.querySelector('rect.wardley-pipeline-box')?.getBoundingClientRect(); out[k] = r && [Math.round(r.left + r.width / 2), Math.round(r.bottom - 4)]; }
   else if (what === 'corner') { const r = svg.closest('.mermaid').getBoundingClientRect(); out[k] = a === 'left' ? [Math.round(r.left + 10), Math.round(r.bottom - 10)] : [Math.round(r.right - 10), Math.round(r.bottom - 10)]; }
+  else if (what === 'menu') { const b = svg.closest('.mermaid').querySelector(':scope > .mde-actions-left .mde-menu-button'); out[k] = b && mid(b.getBoundingClientRect()); }
+  else if (what === 'zoom-button') { const m = svg.closest('.mermaid'); const b = m.parentElement.matches('.cm-embed-block') ? m.parentElement.querySelector(':scope > .embed-actions .mde-zoom-button') : m.querySelector(':scope > .mde-actions-right .mde-zoom-button'); out[k] = b && mid(b.getBoundingClientRect()); }
   else if (what === 'legend-item') { const i = svg.closest('.mermaid').querySelector(`.mp-legend [data-mp-add="${a}"]`); out[k] = i && mid(i.getBoundingClientRect()); }
   else if (what === 'group-free') {
     // A point inside group `a` (its index) where nothing else is: far from every node (the "+" ring),
@@ -140,8 +143,9 @@ return JSON.stringify(out);
 """
 
 
-def locate(**spec):
-    raw = js(LOCATE.replace('__ARG__', json.dumps(spec)))
+def locate(where='source', **spec):
+    """Screen points of rendered parts of the map in the note (`source`, `preview`) or in the zoom."""
+    raw = js(LOCATE.replace('__ARG__', json.dumps(spec)).replace('__WHERE__', json.dumps(where)))
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
@@ -323,7 +327,7 @@ def case_annotation_delete():
 
 
 def case_legend_annotation():
-    p = locate(c=['corner', 'right'])
+    p = locate(c=['menu'])
     mouse('mouseMoved', *p['c']); wait(0.3)
     item = locate(i=['legend-item', 'annotation'])['i']
     if not item:
@@ -389,22 +393,323 @@ def case_dialog_saves_all():
     return ok, f'open after changes: {still_open!r}; {got}; inertia comment: {leftover}'
 
 
-def case_legend_corner():
-    p = locate(c=['corner', 'left'])
-    mouse('mouseMoved', *p['c']); wait(0.3)
+def visible_legends():
+    return int(js('String(document.querySelectorAll(".mp-legend.is-visible").length)') or 0)
+
+
+def case_legend_menu():
+    """The legend opens from the menu button at the top left and adds a note. The bottom corners,
+    where it opened before 0.24.0, open nothing; leaving the menu closes it after a moment."""
+    p = locate(c=['corner', 'left'], r=['corner', 'right'], m=['menu'], far=['node', 'Alpha'])
+    mouse('mouseMoved', *p['c']); wait(0.4)
+    mouse('mouseMoved', *p['r']); wait(0.4)
+    corners = visible_legends()
+    mouse('mouseMoved', *p['m']); wait(0.3)
+    opened = visible_legends()
+    mouse('mouseMoved', *p['far']); wait(0.7)
+    left = visible_legends()
+    mouse('mouseMoved', *p['m']); wait(0.3)
     item = locate(i=['legend-item', 'note'])['i']
-    if not item:
-        return False, 'legend not shown'
+    if corners or opened != 1 or left or not item:
+        return False, f'corners opened {corners}; on the button {opened}; after leaving {left}; item {item}'
     # Every icon keeps its 24x16, also with full-width diagrams on (0.17.1: they were stretched).
     icons = js("JSON.stringify([...new Set([...app.workspace.activeLeaf.view.contentEl.querySelectorAll('.mp-legend svg')]"
                ".map(s=>{const r=s.getBoundingClientRect(); return Math.round(r.width)+'x'+Math.round(r.height)}))])")
     if icons != '["24x16"]':
         return False, f'legend icons {icons}'
+    # The way from the button down to the item crosses the gap between them: it must stay open.
+    mouse('mouseMoved', p['m'][0], p['m'][1] + 16); mouse('mouseMoved', *item); wait(0.1)
     click(*item); wait(0.5)
     title = modal_title()
     cdp('Input.insertText', {'text': 'Added note'})
     key('Enter', 'Enter', 13); wait()
     return title == 'New note' and line(r'^note "Added note" .*$') is not None, title
+
+
+def case_menu_tap():
+    """A finger has no hover: a tap on the menu button opens the legend, the next closes it, a tap
+    elsewhere closes it too, and a tap on an item acts."""
+    p = locate(m=['menu'], far=['node', 'Alpha'])
+    tap(*p['m']); wait(0.4)
+    first = visible_legends()
+    tap(*p['m']); wait(0.4)
+    second = visible_legends()
+    tap(*p['m']); wait(0.4)
+    E.tap(p['far'][0] + 60, p['far'][1] + 60); wait(0.4)
+    elsewhere = visible_legends()
+    tap(*p['m']); wait(0.4)
+    item = locate(i=['legend-item', 'anchor'])['i']
+    tap(*item); wait(0.6)
+    title = modal_title()
+    E.close_modals()
+    ok = first == 1 and second == 0 and elsewhere == 0 and title == 'New anchor'
+    return ok, f'tap: {first}; again: {second}; elsewhere: {elsewhere}; item: {title!r}'
+
+
+def case_buttons():
+    """Live Preview: "Zoom in" first in Obsidian's own toolbar of the block, before "Edit this
+    block", as on an image; the menu button at the top left, level with them and the same size."""
+    r = json.loads(js('JSON.stringify((()=>{const b=app.workspace.activeLeaf.view.contentEl.querySelector(".markdown-source-view .cm-embed-block.cm-lang-mermaid");'
+                      ' const t=[...b.querySelectorAll(":scope > .embed-actions > .embed-action")].map(a=>a.getAttribute("aria-label"));'
+                      ' const r=e=>{const x=e?.getBoundingClientRect(); return x && [Math.round(x.top), Math.round(x.width), Math.round(x.height)]};'
+                      ' return {toolbar:t, menu:r(b.querySelector(".mde-menu-button")), zoom:r(b.querySelector(".embed-actions .mde-zoom-button")), edit:r(b.querySelector(".edit-block-button"))}})())'))
+    ok = r['toolbar'] == ['Zoom in', 'Edit this block'] and r['menu'] is not None and r['menu'] == r['zoom'] == r['edit']
+    return ok, json.dumps(r)
+
+
+# ---- the zoom ----------------------------------------------------------------------------
+
+ZOOM_STATE = r"""JSON.stringify((()=>{const z=document.querySelector(".mde-zoom"); if(!z) return {open:false};
+const p=z.querySelector(".mde-zoom-panel").getBoundingClientRect(), s=z.querySelector(".mde-zoom-diagram > svg"), vb=s?.viewBox.baseVal;
+return {open:true, win:[innerWidth, innerHeight], panel:[p.left, p.top, p.width, p.height].map(Math.round), id:s?.id, vb:vb && [vb.width, vb.height],
+  buttons:[...z.querySelectorAll(".mde-actions-right .embed-action")].map(b=>b.getAttribute("aria-label")), menu:!!z.querySelector(".mde-menu-button"),
+  static:!!z.querySelector(".mde-static"), modal:document.querySelectorAll(".modal-container").length}})())"""
+
+
+def zoom_state():
+    return json.loads(js(ZOOM_STATE))
+
+
+def open_zoom(where='source'):
+    """Clicks the map's "Zoom in"; an error text, or None."""
+    p = locate(where, z=['zoom-button'])
+    if not p.get('z'):
+        return f'no zoom button in {where}'
+    mouse('mouseMoved', *p['z']); wait(0.2)
+    click(*p['z']); wait(1.2)
+    return None if zoom_state()['open'] else 'the zoom did not open'
+
+
+def close_zoom():
+    js('(()=>{document.querySelector(".mde-zoom .mde-unzoom-button")?.click(); return "x"})()'); wait(0.4)
+
+
+def fits(s, margin=8):
+    """Inside the window with the image zoom's margin, touching it on the limiting side, the drawing's aspect."""
+    W, H = s['win']
+    x, y, w, h = s['panel']
+    inside = x >= margin - 1 and y >= margin - 1 and x + w <= W - margin + 1 and y + h <= H - margin + 1
+    touches = min(abs(x - margin), abs(y - margin)) <= 1.5
+    aspect = abs(w / h - s['vb'][0] / s['vb'][1]) < 0.01
+    return inside and touches and aspect
+
+
+def case_zoom_fit():
+    """Zoom in fills the window like Obsidian's image zoom (8 px margin on the limiting side, the
+    drawing's aspect), also after the window changed size; Zoom out closes it."""
+    err = open_zoom()
+    if err:
+        return False, err
+    s1 = zoom_state()
+    cdp('Emulation.setDeviceMetricsOverride', {'width': 700, 'height': 900, 'deviceScaleFactor': 0, 'mobile': False}); wait(0.8)
+    s2 = zoom_state()
+    cdp('Emulation.clearDeviceMetricsOverride', {}); wait(0.8)
+    s3 = zoom_state()
+    close_zoom()
+    closed = not zoom_state()['open']
+    ok = all(s['open'] and fits(s) for s in (s1, s2, s3)) and s2['panel'][2] < s1['panel'][2] and closed
+    ok = ok and s1['buttons'] == ['Zoom out', 'Edit this block'] and s1['menu'] and not s1['static']
+    return ok, f'{s1["panel"]} in {s1["win"]}; resized {s2["panel"]} in {s2["win"]}; back {s3["panel"]}; buttons {s1["buttons"]}; closed {closed}'
+
+
+def case_zoom_edit_source():
+    """The zoom's "Edit this block" (Live Preview) closes it and puts the cursor into the block,
+    which then shows its source, as the same button does in the note."""
+    err = open_zoom()
+    if err:
+        return False, err
+    b = json.loads(js('JSON.stringify((()=>{const r=document.querySelector(".mde-zoom .mde-source-button")?.getBoundingClientRect(); return r ? [Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2)] : null})())'))
+    if not b:
+        close_zoom()
+        return False, 'no "Edit this block" in the zoom'
+    click(*b); wait(0.8)
+    r = json.loads(js('JSON.stringify((()=>{const e=app.workspace.activeLeaf.view.editor; const t=e.getValue(); const at=e.posToOffset(e.getCursor());'
+                      ' const a=t.indexOf("```mermaid"), z=t.indexOf("```", a + 10); return {inBlock: at > a && at < z, zoom: !!document.querySelector(".mde-zoom"), focus: e.hasFocus()}})())'))
+    return r == {'inBlock': True, 'zoom': False, 'focus': True}, json.dumps(r)
+
+
+def case_zoom_drag():
+    """A node dragged in the zoom moves in the note's source, and the zoom draws it anew there."""
+    err = open_zoom()
+    if err:
+        return False, err
+    before, src = locate('zoom', n=['node', 'Beta'])['n'], line(r'^component Beta .*$')
+    id1 = zoom_state()['id']
+    drag(*before, 70, 0, 8); wait(1.3)
+    after, got, id2 = locate('zoom', n=['node', 'Beta'])['n'], line(r'^component Beta .*$'), zoom_state()['id']
+    close_zoom()
+    ok = got != src and id2 != id1 and after and abs(after[0] - before[0] - 70) <= 5
+    return ok, f'{src} -> {got}; drawn at {before} -> {after}; drawing {id1} -> {id2}'
+
+
+def case_zoom_touch_drag():
+    """A finger drags a component in the zoom as in the note."""
+    err = open_zoom()
+    if err:
+        return False, err
+    p, src = locate('zoom', n=['node', 'Beta'])['n'], line(r'^component Beta .*$')
+    E.touch('touchStart', *p)
+    for i in range(1, 7):
+        E.touch('touchMove', p[0], p[1] + 8 * i)
+    E.touch('touchEnd', p[0], p[1] + 48); wait(1.3)
+    got = line(r'^component Beta .*$')
+    close_zoom()
+    return got != src, f'{src} -> {got}'
+
+
+def case_zoom_dialog_escape():
+    """A dialog opened in the zoom lies above it; Escape closes the dialog only, the next one the zoom."""
+    err = open_zoom()
+    if err:
+        return False, err
+    p = locate('zoom', n=['node', 'Alpha'])['n']
+    click(*p, 1); click(*p, 2); wait(0.6)
+    title = modal_title()
+    on_top = js('(()=>{const m=document.querySelector(".modal"); if(!m) return "none"; const r=m.getBoundingClientRect();'
+                ' return String(!!document.elementFromPoint(r.left + r.width / 2, r.top + 12)?.closest(".modal"))})()')
+    key('Escape', 'Escape', 27); wait(0.5)
+    s1 = zoom_state()
+    key('Escape', 'Escape', 27); wait(0.5)
+    s2 = zoom_state()
+    ok = title.startswith('Edit') and on_top == 'true' and s1['open'] and s1['modal'] == 0 and not s2['open']
+    return ok, f'{title!r} on top={on_top}; after Escape open={s1["open"]} modals={s1.get("modal")}; after 2nd Escape open={s2["open"]}'
+
+
+def case_zoom_legend_escape():
+    """The menu works in the zoom; Escape first drops the armed action, the next closes the zoom."""
+    err = open_zoom()
+    if err:
+        return False, err
+    p = locate('zoom', m=['menu'])['m']
+    mouse('mouseMoved', *p); wait(0.3)
+    item = locate('zoom', i=['legend-item', 'evolve'])['i']
+    if not item:
+        close_zoom()
+        return False, 'no legend in the zoom'
+    mouse('mouseMoved', p[0], p[1] + 16); mouse('mouseMoved', *item)
+    click(*item); wait(0.4)
+    armed = js('String(!!document.querySelector(".mde-zoom .mp-legend-item.is-armed"))')
+    key('Escape', 'Escape', 27); wait(0.4)
+    s1, still = zoom_state(), js('String(!!document.querySelector(".mp-legend-item.is-armed"))')
+    key('Escape', 'Escape', 27); wait(0.4)
+    s2 = zoom_state()
+    ok = armed == 'true' and s1['open'] and still == 'false' and not s2['open']
+    return ok, f'armed {armed}; 1st Escape: open {s1["open"]}, armed {still}; 2nd Escape: open {s2["open"]}'
+
+
+def case_zoom_legend_add():
+    """The legend in the zoom adds a component; the zoom shows it."""
+    err = open_zoom()
+    if err:
+        return False, err
+    p = locate('zoom', m=['menu'])['m']
+    mouse('mouseMoved', *p); wait(0.3)
+    item = locate('zoom', i=['legend-item', 'component'])['i']
+    mouse('mouseMoved', p[0], p[1] + 16); mouse('mouseMoved', *item)
+    click(*item); wait(0.5)
+    title = modal_title()
+    cdp('Input.insertText', {'text': 'Zoomed'})
+    key('Enter', 'Enter', 13); wait(1.3)
+    shown = locate('zoom', n=['node', 'Zoomed'])['n']
+    close_zoom()
+    return title == 'New component' and line(r'^component Zoomed .*$') is not None and shown is not None, f'{title!r}; {line(r"^component Zoomed .*$")}; drawn at {shown}'
+
+
+def case_zoom_undo():
+    """Cmd+Z and Cmd+Y in the zoom undo and redo in the note, and the zoom follows."""
+    err = open_zoom()
+    if err:
+        return False, err
+    src = line(r'^component Gamma .*$')
+    drag(*locate('zoom', n=['node', 'Gamma'])['n'], 0, 40, 6); wait(1.3)
+    moved = line(r'^component Gamma .*$')
+    key('z', 'KeyZ', 90, 4); wait(1.2)
+    undone, id_u = line(r'^component Gamma .*$'), zoom_state()['id']
+    key('y', 'KeyY', 89, 4); wait(1.2)
+    redone, id_r = line(r'^component Gamma .*$'), zoom_state()['id']
+    close_zoom()
+    ok = moved != src and undone == src and redone == moved and id_u != id_r
+    return ok, f'{src} -> {moved}; undo {undone}; redo {redone}'
+
+
+def case_zoom_backdrop():
+    """A click on the black margin closes the zoom; a drag released over it does not."""
+    err = open_zoom()
+    if err:
+        return False, err
+    s = zoom_state()
+    x, y, w, h = s['panel']
+    W, H = s['win']
+    margin = [max(2, x // 2), H // 2] if x > 12 else [W // 2, max(2, y // 2)]
+    n = locate('zoom', n=['node', 'Alpha'])['n']
+    src = line(r'^component Alpha .*$')
+    E.drag_to(n, margin); wait(1.3)
+    after_drag = zoom_state()['open']
+    if after_drag:
+        js('(app.workspace.activeLeaf.view.editor.undo(), "u")'); wait(1.2)
+    click(*margin); wait(0.5)
+    closed = not zoom_state()['open']
+    ok = after_drag and closed and line(r'^component Alpha .*$') == src
+    return ok, f'open after a drag onto the margin: {after_drag}; closed by a click there: {closed}; {line(r"^component Alpha .*$")}'
+
+
+def case_zoom_group():
+    """The group mode works in the zoom: New group, then a click on a component makes the group,
+    and the redrawn group in the zoom carries the glow."""
+    err = open_zoom()
+    if err:
+        return False, err
+    err = open_group_menu('New group', 'zoom')
+    if err:
+        close_zoom()
+        return False, err
+    click(*locate('zoom', n=['node', 'Delta two'])['n']); wait(1.4)
+    made = group_line('Group 2') or group_line('Group 1')
+    glow = js('String(document.querySelectorAll(".mde-zoom g.mde-group.mp-group-editing").length)')
+    key('Escape', 'Escape', 27); wait(0.4)
+    key('Escape', 'Escape', 27); wait(0.4)
+    closed = not zoom_state()['open']
+    if made:
+        js('(app.workspace.activeLeaf.view.editor.undo(), "u")'); wait(1)
+    return bool(made and 'Delta two' in made) and glow == '1' and closed, f'{made}; glow {glow}; closed {closed}'
+
+
+def case_zoom_follows():
+    """The zoom follows its block through a change made elsewhere (sync, another tab) and closes
+    when the block is gone."""
+    err = open_zoom()
+    if err:
+        return False, err
+    keep = js('app.workspace.activeLeaf.view.editor.getValue()')
+    js('(()=>{const e=app.workspace.activeLeaf.view.editor; const t=e.getValue(); const at=t.indexOf("component Beta "); e.replaceRange("component Outside [0.20, 0.20]\\n", e.offsetToPos(at)); return "x"})()'); wait(1.2)
+    shown = locate('zoom', n=['node', 'Outside'])['n']
+    js('(()=>{const e=app.workspace.activeLeaf.view.editor; const t=e.getValue(); const a=t.indexOf("```mermaid"), b=t.indexOf("```", a + 10); e.replaceRange("", e.offsetToPos(a), e.offsetToPos(b + 3)); return "x"})()'); wait(1.2)
+    closed = not zoom_state()['open']
+    js('(()=>{app.workspace.activeLeaf.view.editor.setValue(' + json.dumps(keep) + '); return "x"})()'); wait(1.5)
+    if not closed:
+        close_zoom()
+    return shown is not None and closed, f'outside change drawn at {shown}; closed when the block went: {closed}'
+
+
+def case_zoom_reading():
+    """Reading view: "Zoom in" in a toolbar of its own at the top right (Obsidian has none there),
+    the zoom without "Edit this block", and an edit in the zoom written into the file."""
+    js('(async()=>{const l=app.workspace.activeLeaf; const s=l.getViewState(); s.state.mode="preview"; await l.setViewState(s); await new Promise(r=>setTimeout(r,1500)); return "ok"})()')
+    try:
+        js("(()=>{app.workspace.activeLeaf.view.contentEl.querySelector('.markdown-preview-view .mermaid svg')?.scrollIntoView({block:'center'}); return 'x'})()"); wait(0.6)
+        err = open_zoom('preview')
+        if err:
+            return False, err
+        s = zoom_state()
+        file_line = lambda: next((l for l in js('(async()=>await app.vault.read(app.workspace.activeLeaf.view.file))()').split('\n') if l.startswith('component Alpha ')), None)
+        src = file_line()
+        drag(*locate('zoom', n=['node', 'Alpha'])['n'], -50, 0, 6); wait(1.6)
+        got, s2 = file_line(), zoom_state()
+        close_zoom()
+        ok = s['buttons'] == ['Zoom out'] and s['menu'] and fits(s) and got != src and s2['id'] != s['id']
+        return ok, f'buttons {s["buttons"]}; {src} -> {got}; drawing {s["id"]} -> {s2["id"]}'
+    finally:
+        js('(async()=>{const l=app.workspace.activeLeaf; const s=l.getViewState(); s.state.mode="source"; s.state.source=false; await l.setViewState(s); await new Promise(r=>setTimeout(r,1500)); return "ok"})()')
 
 
 def case_component_on_shaft():
@@ -683,11 +988,11 @@ def group_line(name):
     return line(r'^%% group "?' + re.escape(name) + r'"? .*$')
 
 
-def open_group_menu(title):
+def open_group_menu(title, where='source'):
     """The legend's "Group", then `title` in its menu; an error text, or None."""
-    p = locate(c=['corner', 'right'])
+    p = locate(where, c=['menu'])
     mouse('mouseMoved', *p['c']); wait(0.3)
-    item = locate(i=['legend-item', 'group'])['i']
+    item = locate(where, i=['legend-item', 'group'])['i']
     if not item:
         return 'legend not shown'
     click(*item); wait(0.6)
@@ -827,14 +1132,17 @@ def case_group_area_click():
 
 
 def case_unload_cleanup():
-    # Review #6: unload leaves no stub, legend, drop highlight or open dialog behind.
-    p = locate(s=['plus', 'Gamma'], c=['corner', 'left'])
+    # Review #6: unload leaves no stub, legend, drop highlight or open dialog behind; since 0.24.0
+    # no button, no zoom either (one is left open on purpose here).
+    p = locate(s=['plus', 'Gamma'], c=['menu'])
     click(*p['s']); wait(0.3)
     mouse('mouseMoved', *p['c']); wait(0.3)
     before = js('JSON.stringify({stub:document.querySelectorAll("line.mp-new-link").length, legend:document.querySelectorAll(".mp-legend").length})')
-    after = js('(async()=>{await app.plugins.disablePlugin(' + json.dumps(PLUGIN_ID) + '); const r={stub:document.querySelectorAll("line.mp-new-link").length, legend:document.querySelectorAll(".mp-legend").length, host:document.querySelectorAll(".mp-legend-host").length}; await app.plugins.enablePlugin(' + json.dumps(PLUGIN_ID) + '); await new Promise(r=>setTimeout(r,1500)); return JSON.stringify(r)})()')
+    open_zoom()
+    count = '{stub:document.querySelectorAll("line.mp-new-link").length, legend:document.querySelectorAll(".mp-legend").length, host:document.querySelectorAll(".mde-host").length, buttons:document.querySelectorAll(".mde-actions, .mde-zoom-button").length, zoom:document.querySelectorAll(".mde-zoom").length}'
+    after = js('(async()=>{await app.plugins.disablePlugin(' + json.dumps(PLUGIN_ID) + '); const r=' + count + '; await app.plugins.enablePlugin(' + json.dumps(PLUGIN_ID) + '); await new Promise(r=>setTimeout(r,1500)); return JSON.stringify(r)})()')
     a = json.loads(after)
-    return json.loads(before)['stub'] == 1 and a == {'stub': 0, 'legend': 0, 'host': 0}, f'before {before}; after unload {after}'
+    return json.loads(before)['stub'] == 1 and a == {'stub': 0, 'legend': 0, 'host': 0, 'buttons': 0, 'zoom': 0}, f'before {before}; after unload {after}'
 
 
 CASES = [
@@ -848,13 +1156,17 @@ CASES = [
     ('annotation_drag', case_annotation_drag), ('annotations_box_drag', case_annotations_box_drag),
     ('annotation_dialog', case_annotation_dialog), ('annotation_delete', case_annotation_delete),
     ('legend_annotation', case_legend_annotation),
-    ('rename_dialog', case_rename_dialog), ('type_dialog', case_type_dialog), ('legend_corner', case_legend_corner),
+    ('rename_dialog', case_rename_dialog), ('type_dialog', case_type_dialog), ('buttons', case_buttons), ('legend_menu', case_legend_menu), ('menu_tap', case_menu_tap),
     ('highlight_dialog', case_highlight_dialog), ('highlight_link_dialog', case_highlight_link_dialog),
     ('group_render', case_group_render), ('group_highlight', case_group_highlight), ('group_label_drag', case_group_label_drag),
     ('group_new_from_legend', case_group_new_from_legend), ('group_members', case_group_members), ('group_touch_tap', case_group_touch_tap),
     ('group_properties_delete', case_group_properties_delete), ('group_label_dialog', case_group_label_dialog),
     ('group_area_click', case_group_area_click),
     ('component_on_shaft', case_component_on_shaft), ('swallow_scope', case_swallow_scope),
+    ('zoom_fit', case_zoom_fit), ('zoom_edit_source', case_zoom_edit_source), ('zoom_drag', case_zoom_drag), ('zoom_touch_drag', case_zoom_touch_drag),
+    ('zoom_dialog_escape', case_zoom_dialog_escape), ('zoom_legend_escape', case_zoom_legend_escape), ('zoom_legend_add', case_zoom_legend_add),
+    ('zoom_undo', case_zoom_undo), ('zoom_backdrop', case_zoom_backdrop), ('zoom_group', case_zoom_group),
+    ('zoom_follows', case_zoom_follows), ('zoom_reading', case_zoom_reading),
     ('popout_window', case_popout_window),
     ('unload_cleanup', case_unload_cleanup),
 ]

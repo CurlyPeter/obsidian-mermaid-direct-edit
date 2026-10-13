@@ -1,12 +1,14 @@
 import { App, Plugin, PluginSettingTab, Setting } from 'obsidian';
 import type { Mermaid, MermaidConfig } from 'mermaid';
+import { boxAt, boxOfZoomButton, decorate, undecorate } from './actions';
 import { registerCliCommands } from './cli';
 import { DiagramEditor } from './editor';
 import { FlowchartEditor, flowchartRender } from './flowchart-editor';
-import { SourceRegistry, wrapRender } from './render';
+import { SourceRegistry, isElement, wrapRender } from './render';
 import { WardleyEditor } from './wardley-editor';
 import { wardleyCliSpecs } from './wardley-cli';
 import { wardleyRender } from './wardley-render';
+import { DiagramZoom, ZOOM_ID_PREFIX } from './zoom';
 
 declare const __MERMAID_VERSION__: string;
 declare const require: (id: string) => any;
@@ -82,6 +84,8 @@ export default class MermaidDirectEditPlugin extends Plugin {
 	private readonly flowchart = new FlowchartEditor(this.app, this.registry, () => this.pinned, () => this.settings.editFlowchart);
 	/** One editor per diagram type; each handles only the diagrams tagged with its kind. */
 	private readonly editors: DiagramEditor<any>[] = [this.wardley, this.flowchart];
+	/** The zoom (one at a time); Escape there goes to an editor first while it has something waiting. */
+	private readonly zoom = new DiagramZoom(this.app, this.registry, () => this.current(), () => this.editors.some(ed => ed.busy()), () => this.editors.forEach(ed => ed.release()));
 
 	async onload() {
 		registerCliCommands(this, [{
@@ -129,6 +133,12 @@ export default class MermaidDirectEditPlugin extends Plugin {
 		this.applyEditClass();
 		// Capture phase: Live Preview would otherwise take the gesture and open the source.
 		const opts = { capture: true };
+		// The zoom buttons first: nothing else (an editor, Live Preview) may see a press on them.
+		for (const type of ['pointerdown', 'mousedown', 'mouseup', 'click', 'dblclick'] as const) {
+			this.registerDomEvent(doc, type, this.onZoomButton, opts);
+		}
+		// Buttons for a drawing the after-render step missed (reading view recycles drawn boxes).
+		this.registerDomEvent(doc, 'pointerover', this.onPointerOver, opts);
 		for (const ed of this.editors) {
 			this.registerDomEvent(doc, 'pointerdown', ed.onPointerDown, opts);
 			this.registerDomEvent(doc, 'pointermove', ed.onPointerMove, opts);
@@ -171,8 +181,45 @@ export default class MermaidDirectEditPlugin extends Plugin {
 		}
 	}
 
+	/** A press on a "Zoom in" button: the zoom opens on click, every other event of the press is swallowed. */
+	private onZoomButton = (e: MouseEvent) => {
+		const button = isElement(e.target) ? e.target.closest('.mde-zoom-button') : null;
+		if (!button) return;
+		e.preventDefault();
+		e.stopImmediatePropagation();
+		const box = e.type === 'click' ? boxOfZoomButton(button) : null;
+		if (box) void this.zoom.open(box);
+	};
+
+	/** Idempotent and a few lookups only, so it runs on every hover: Live Preview may rebuild a block's toolbar around the same drawing. */
+	private onPointerOver = (e: PointerEvent) => {
+		const box = boxAt(e.target);
+		if (box && !box.closest('.mde-zoom')) decorate(box);
+	};
+
+	/**
+	 * After a render: once Obsidian has inserted the drawing (its own code continues right after the
+	 * render resolves), it gets its buttons. The zoom decorates its own drawings.
+	 */
+	private rendered(id: string) {
+		if (id.startsWith(ZOOM_ID_PREFIX)) return;
+		let tries = 0;
+		const look = () => {
+			for (const doc of this.docs) {
+				const svg = doc.getElementById(id);
+				const box = svg?.parentElement;
+				if (svg && box?.hasClass('mermaid') && !svg.closest('.mde-zoom')) return decorate(box);
+			}
+			// Not inserted yet (a block outside the viewport waits for its widget): a few frames more.
+			if (++tries < 10) window.requestAnimationFrame(look);
+		};
+		window.setTimeout(look, 0);
+	}
+
 	onunload() {
+		this.zoom.close();
 		for (const ed of this.editors) ed.destroy(this.docs);
+		undecorate(this.docs);
 		const w = window as any;
 		delete w.mermaid;
 		if (this.obsidianMermaid) {
@@ -215,7 +262,7 @@ export default class MermaidDirectEditPlugin extends Plugin {
 		const m: Mermaid = require('mermaid').default;
 		const initialize = m.initialize.bind(m);
 		m.initialize = (config: MermaidConfig) => initialize({ ...config, ...CLASSIC });
-		wrapRender(m, this.registry, [wardleyRender, flowchartRender]);
+		wrapRender(m, this.registry, [wardleyRender, flowchartRender], id => this.rendered(id));
 		return m;
 	}
 
@@ -258,11 +305,11 @@ class MermaidDirectEditSettingTab extends PluginSettingTab {
 			.setDesc(`Pinned in this build. ${state} Disable the plugin to return to Obsidian's bundled Mermaid.`);
 		new Setting(containerEl)
 			.setName('Edit Wardley maps')
-			.setDesc('Drag elements, labels, arrow tips and link ends; double-click (double-tap) an element for its dialog; the legend in a bottom corner of a map adds elements. Changes go into the code block and can be undone.')
+			.setDesc('Drag elements, labels, arrow tips and link ends; double-click (double-tap) an element for its dialog; the menu button at the top left of a map adds elements. Changes go into the code block and can be undone.')
 			.addToggle(t => t.setValue(this.plugin.settings.editWardley).onChange(v => this.plugin.setEditWardley(v)));
 		new Setting(containerEl)
 			.setName('Edit flowcharts')
-			.setDesc('Double-click (double-tap) a node or a group\'s title, or click (tap) a link, for its dialog; right-click for a menu. Drag from the + beside a node to link it (into free space: a new node); drag a link\'s end onto another node; drag a node onto a group to move it there. The legend in a bottom corner adds nodes and groups and sets the direction. On a phone, swipes always scroll: edit with taps. Changes go into the code block and can be undone.')
+			.setDesc('Double-click (double-tap) a node or a group\'s title, or click (tap) a link, for its dialog; right-click for a menu. Drag from the + beside a node to link it (into free space: a new node); drag a link\'s end onto another node; drag a node onto a group to move it there. The menu button at the top left adds nodes and groups and sets the direction. On a phone, swipes always scroll: edit with taps. Changes go into the code block and can be undone.')
 			.addToggle(t => t.setValue(this.plugin.settings.editFlowchart).onChange(v => this.plugin.setEditFlowchart(v)));
 		new Setting(containerEl)
 			.setName('Full-width diagrams without readable line length')

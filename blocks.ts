@@ -34,31 +34,70 @@ export function locateBlock(text: string, src: string): number | string {
 	return 'The diagram changed in the meantime, nothing was written.';
 }
 
+/** A fenced mermaid block: where its opening fence line starts, where its body starts, the body, where the block ends. */
+export interface MermaidBlock {
+	start: number;
+	from: number;
+	body: string;
+	end: number;
+}
+
 /**
  * Every fenced ```mermaid (or ~~~mermaid) block of its own in a note: the offset of its body
- * and the body. Fences inside other code blocks are skipped; a block in a callout, list or
- * quote has a prefix on its fence line and is not one of them.
+ * and the body, plus the block's whole extent (fences included). Fences inside other code blocks
+ * are skipped; a block in a callout, list or quote has a prefix on its fence line and is not one
+ * of them.
  */
-export function mermaidBlocks(text: string): { from: number; body: string }[] {
+export function mermaidBlocks(text: string): MermaidBlock[] {
 	const lines = text.split('\n');
 	const starts: number[] = [];
 	let offset = 0;
 	for (const l of lines) { starts.push(offset); offset += l.length + 1; }
-	const out: { from: number; body: string }[] = [];
+	const out: MermaidBlock[] = [];
 	for (let i = 0; i < lines.length; i++) {
-		const open = /^(`{3,}|~{3,})(.*)$/.exec(lines[i]);
-		if (!open) continue;
+		// The fence prefix only, then the rest of the line on its own: `(.*)$` backtracked over the
+		// whole backtick run on a line holding \r, U+2028 or U+2029 (which `.` does not match),
+		// quadratic in its length (security review 0.24.0, O77). Such a line opens nothing, as before.
+		const open = /^(`{3,}|~{3,})/.exec(lines[i]);
+		if (!open || /[\r\u2028\u2029]/.test(lines[i])) continue;
 		const fence = open[1];
 		let close = i + 1;
 		while (close < lines.length && !isClosingFence(lines[close], fence)) close++;
-		if (/^mermaid(?:[ \t]|$)/.test(open[2].trim()) && i + 1 <= lines.length - 1) {
+		if (/^mermaid(?:[ \t]|$)/.test(lines[i].slice(fence.length).trim()) && i + 1 <= lines.length - 1) {
 			const from = starts[i + 1];
 			const body = close < lines.length ? text.slice(from, Math.max(from, starts[close] - 1)) : text.slice(from);
-			out.push({ from, body });
+			const end = close < lines.length ? starts[close] + lines[close].length : text.length;
+			out.push({ start: starts[i], from, body, end });
 		}
 		i = close;
 	}
 	return out;
+}
+
+/**
+ * The index of the block whose opening fence line holds `offset` (where Live Preview puts the
+ * drawing of a block), or -1. Only the opening line: where this scanner and Markdown read fences
+ * differently, an offset deeper inside a block would name another block than the one drawn, and
+ * an edit there would land in text Markdown reads as something else (security review 0.24.0, O78).
+ */
+export function blockAt(blocks: MermaidBlock[], offset: number): number {
+	return blocks.findIndex(b => offset >= b.start && offset < b.from);
+}
+
+/**
+ * Which of a note's mermaid blocks a zoomed diagram shows after the note changed (`bodies`, in
+ * order). It showed block `index` of `count` with the text `body`. While the number of blocks is
+ * the same, it is still block `index` (that block, or another, was edited). Otherwise a block was
+ * added or removed elsewhere: the block still holding `body`, the one nearest `index` when several
+ * do. Null when none does: the diagram is gone, or it changed at the same time as the count.
+ */
+export function followBlock(bodies: string[], count: number, index: number, body: string): number | null {
+	if (bodies.length === count && index >= 0 && index < count) return index;
+	let best: number | null = null;
+	for (let i = 0; i < bodies.length; i++) {
+		if (bodies[i] === body && (best === null || Math.abs(i - index) < Math.abs(best - index))) best = i;
+	}
+	return best;
 }
 
 /**

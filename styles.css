@@ -97,14 +97,58 @@ body.mp-wardley-edit .mermaid svg[data-mp-src] g.mde-group.mp-group-editing > te
 	cursor: grab;
 }
 
-/* Legend: add elements to the map. Shown only while the pointer is in a bottom corner zone
-   of the map (desktop: hover, mobile: a tap), in that corner. Never printed (PDF export). */
-.mermaid.mp-legend-host {
+/* Buttons of a rendered diagram (actions.ts): "Zoom in" at the top right, the menu at the top
+   left of an editable one. In Live Preview "Zoom in" sits in Obsidian's own toolbar of the block,
+   beside "Edit this block"; elsewhere (reading view, the zoom) the plugin's toolbars get the same
+   look, size and fade-in from these rules (values as in Obsidian's own `.embed-actions`). Never
+   printed (PDF export). */
+.mermaid.mde-host {
 	position: relative;
 }
+.mde-actions {
+	position: absolute;
+	top: var(--size-2-2);
+	z-index: 2;
+	display: flex;
+	gap: var(--size-2-1);
+	opacity: 0;
+	transition: opacity 0.07s ease-out;
+}
+.mde-actions-left {
+	inset-inline-start: var(--size-2-2);
+}
+.mde-actions-right {
+	inset-inline-end: var(--size-2-2);
+}
+.mermaid.mde-host:hover > .mde-actions,
+.cm-embed-block:hover > .mermaid.mde-host > .mde-actions,
+.mde-actions.is-open,
+.mde-zoom .mde-actions {
+	opacity: 1;
+}
+.mde-actions .embed-action {
+	display: flex;
+	padding: var(--size-2-2) var(--size-2-3);
+	color: var(--embed-action-color);
+	border-radius: var(--embed-action-radius);
+	cursor: var(--cursor);
+}
+.mde-actions .embed-action:hover {
+	background-color: var(--background-modifier-hover);
+}
+/* The menu only while editing that diagram type is switched on. */
+body:not(.mp-wardley-edit) .mde-actions-left[data-kind="wardley"],
+body:not(.mp-flowchart-edit) .mde-actions-left[data-kind="flowchart"] {
+	display: none;
+}
+
+/* Legend: the menu of the menu button, adds elements to the diagram. Opens below the button while
+   the mouse is on the button or on it (mobile: a tap on the button), in rows as the diagram's
+   height allows, then more columns. */
 .mp-legend {
 	position: absolute;
-	bottom: 8px;
+	top: calc(100% + 4px);
+	inset-inline-start: 0;
 	z-index: var(--layer-popover);
 	/* Rows as the diagram's height allows (set by the plugin), then more columns. */
 	display: grid;
@@ -112,6 +156,7 @@ body.mp-wardley-edit .mermaid svg[data-mp-src] g.mde-group.mp-group-editing > te
 	gap: 2px 8px;
 	padding: 4px 6px;
 	font-size: var(--font-ui-smaller);
+	white-space: nowrap;
 	background: var(--background-primary);
 	border: 1px solid var(--background-modifier-border);
 	border-radius: var(--radius-s);
@@ -119,12 +164,6 @@ body.mp-wardley-edit .mermaid svg[data-mp-src] g.mde-group.mp-group-editing > te
 	opacity: 0;
 	pointer-events: none;
 	transition: opacity 120ms;
-}
-.mp-legend.is-left {
-	left: 8px;
-}
-.mp-legend.is-right {
-	right: 8px;
 }
 .mp-legend.is-visible {
 	opacity: 1;
@@ -147,9 +186,61 @@ body.mp-wardley-edit .mermaid svg[data-mp-src] g.mde-group.mp-group-editing > te
 	outline: 1px solid var(--interactive-accent);
 }
 @media print {
+	.mde-actions,
+	.mde-zoom-button,
 	.mp-legend {
 		display: none;
 	}
+}
+
+/* The zoom (zoom.ts): Obsidian's image zoom in look and margin. The whole window, a black
+   backdrop (`--lightbox-background` at 90 %), the diagram on a panel in the note's colour (Mermaid
+   draws on a transparent ground) as large as fits, the image zoom's margin of --size-4-2 plus the
+   safe areas. The panel's size is set by the plugin in the diagram's aspect; the SVG fills it. */
+.mde-zoom {
+	position: fixed;
+	inset: 0;
+	z-index: var(--layer-modal);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	box-sizing: border-box;
+	padding:
+		calc(var(--safe-area-inset-top, 0px) + var(--size-4-2))
+		calc(var(--safe-area-inset-right, 0px) + var(--size-4-2))
+		calc(var(--safe-area-inset-bottom, 0px) + var(--size-4-2))
+		calc(var(--safe-area-inset-left, 0px) + var(--size-4-2));
+	outline: none;
+	touch-action: none;
+	overscroll-behavior: contain;
+}
+.mde-zoom-bg {
+	position: absolute;
+	inset: 0;
+	background-color: var(--lightbox-background, black);
+	opacity: 0.9;
+}
+.mde-zoom-panel {
+	position: relative;
+	max-width: 100%;
+	max-height: 100%;
+	background-color: var(--background-primary);
+}
+.mde-zoom-diagram {
+	width: 100%;
+	height: 100%;
+}
+.mde-zoom .mde-zoom-diagram > svg {
+	display: block;
+	width: 100% !important;
+	height: 100% !important;
+	max-width: none !important;
+	max-height: none !important;
+}
+.mde-zoom-error {
+	padding: var(--size-4-4);
+	white-space: pre-wrap;
+	color: var(--text-error);
 }
 body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-notes > text {
 	cursor: grab;

@@ -26,7 +26,7 @@ It covers **Wardley maps** (`wardley-beta`) and **flowcharts** (`flowchart` / `g
 | Click a red evolve arrow's shaft (long press on touch) | the evolve arrow is deleted |
 | Double-click (double-tap) an element | a dialog: rename everywhere, toggle inertia, set the type (`(build)`, `(buy)`, `(outsource)`, `(market)` or none), highlight, all written together with Save; delete |
 | Double-click an annotation's circle or its line in the box | a dialog: edit the text, delete (the box goes with the last one) |
-| Hover a bottom corner of the map | a legend to add a component, anchor, note, annotation, evolve arrow, inertia, accelerator, deaccelerator or pipeline |
+| Hover the menu button at the top left of the map (tap it on touch) | a legend to add a component, anchor, note, annotation, evolve arrow, inertia, accelerator, deaccelerator, pipeline or group |
 | Drag from beside an element into free space | a new component right there, linked from the first |
 | Click beside an element (the "+"), then click another one | a new link `A -> B` |
 
@@ -43,12 +43,14 @@ Every edit is checked with Mermaid's own parser before it is written; an edit th
 | Grab a link near one of its ends and drop it on another node | `A --> B` becomes `A --> C` |
 | Drag a node onto a group (subgraph) | the node moves into that group; dragged outside every group, it leaves its group (a hint at the pointer says which) |
 | Double-click a group's title or border | a dialog: title, direction, ungroup (keep the nodes), delete with its nodes |
-| Hover a bottom corner of the flowchart | a legend to add a node of a shape, put a node into a new group, or change the direction |
+| Hover the menu button at the top left of the flowchart (tap it on touch) | a legend to add a node of a shape, put a node into a new group, or change the direction |
 | Right-click a node, a link, a group or empty space | the same actions as a menu |
 
 Edits change only what they must: a label edit touches the label, chains like `A --> B --> C` and `A & B --> C` are split only when an edit needs it, and `linkStyle` numbers follow when links are added or removed. Before anything is written, the editor checks that the result means exactly what you asked for and nothing else (no other node's label, group or link changes); if not, it refuses with a notice. Deleting, re-linking, moving into or out of a group and adding confirm with a notice that has an **Undo** button, which also works in reading view and on a phone. On a phone, swiping across a flowchart always scrolls and never edits: edit with taps (double-tap for the dialogs, tap a "+" and then a node to link). A flowchart whose drawing the editor cannot match to its code exactly (rare syntax) is shown as usual and left alone, with a notice on the first click.
 
-**4. Wardley maps as data, for scripts and agents.** Two [Obsidian CLI](https://help.obsidian.md/cli) commands (desktop, Obsidian 1.12+) read a map as JSON and bring a map in line with a JSON model, by the same in-place edits: everything the model does not mention stays exactly as written.
+**4. Zooms any diagram to the whole window, still editable.** Every Mermaid diagram gets the two buttons an image has at its top right: **Zoom in** and, in live preview, Obsidian's **Edit this block** (in reading view, where Obsidian shows no buttons, Zoom in alone). Zoom in draws the diagram as large as the window allows, in the look of Obsidian's image zoom: a dark backdrop, the same margin, the diagram's proportions kept, small diagrams scaled up too. Everything you can do to a diagram in the note works in the zoom as well (dragging, dialogs, the menu, Undo, Cmd/Ctrl+Z and +Y), and every edit goes into the note's code block; the zoom redraws itself after every change, wherever it came from. **Zoom out** (where Zoom in was), Escape or a click on the dark margin closes it; while something waits for your next click (a link being drawn, an armed legend item, a group being edited), the first Escape cancels that. Works with touch, on a phone too. Like Obsidian's own edit button, the buttons lie over the diagram's top corners while the pointer is on it.
+
+**5. Wardley maps as data, for scripts and agents.** Two [Obsidian CLI](https://help.obsidian.md/cli) commands (desktop, Obsidian 1.12+) read a map as JSON and bring a map in line with a JSON model, by the same in-place edits: everything the model does not mention stays exactly as written.
 
 ```bash
 obsidian mermaid-direct-edit:wardley-read  path="Maps/Tea Shop.md"

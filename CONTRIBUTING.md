@@ -42,6 +42,7 @@ In short:
 |---|---|
 | `main.ts` | loads the pinned Mermaid in place of Obsidian's, settings, event wiring |
 | `editor.ts`, `gestures.ts`, `render.ts`, `legend.ts`, `modals.ts`, `write.ts` | the editor core every diagram type shares: events, gestures, legend, dialogs, writing into the note |
+| `actions.ts`, `zoom.ts` | the buttons of every drawing (Zoom in, the menu) and the zoom, in which every editor works unchanged |
 | `wardley-text.ts`, `flowchart-text.ts` | every edit as a pure function on the code block's text (unit tested against Mermaid's parser) |
 | `flowchart-scan.ts` | reads a flowchart's code into nodes and edges with their positions in the text |
 | `wardley-hit.ts`, `flowchart-hit.ts` | what a press at a point means |
