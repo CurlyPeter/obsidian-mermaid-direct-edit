@@ -1062,6 +1062,11 @@ a 2-core VM needs 3.
 
 ## Changelog
 
+- **0.25.1 (2026-10-16)** Documentation only, no code change. The README opens with the features
+  at a glance (rendering, both editors, zoom, share and export, the CLI); the Wardley table lists
+  group editing and the menu's *Export…*; the security note says what an export writes. The
+  manifest description names zoom and export.
+
 - **0.25.0 (2026-10-16)** Export. A share button beside "Zoom in" on every diagram (and in the
   zoom): on a phone the system share sheet with the diagram as PNG (or SVG, setting "Share
   format"), on the desktop the export dialog, which the menu's new last entry "Export…" opens too.

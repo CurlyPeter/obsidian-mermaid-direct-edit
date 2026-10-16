@@ -2,7 +2,17 @@
 
 Edit Mermaid diagrams in Obsidian by dragging the drawing itself. Every change is written back into the ` ```mermaid ` code block as plain text, so the code stays the single source of truth and keeps working everywhere else Mermaid runs.
 
-It covers **Wardley maps** (`wardley-beta`) and **flowcharts** (`flowchart` / `graph`). More diagram types are planned, and contributions are welcome (see [Contributing](#contributing)).
+At a glance:
+
+- **A current Mermaid in every note.** Native Mermaid blocks are drawn with Mermaid 12.1.0 instead of Obsidian's older bundled one, so `wardley-beta` and other new diagram types work in reading view, live preview and PDF export.
+- **Wardley maps editable in the drawing** (`wardley-beta`): move, link and re-link, evolve arrows and inertia, pipelines, annotations, highlights and groups.
+- **Flowcharts editable in the drawing** (`flowchart` / `graph`): labels, shapes, colours, links, groups and direction, with Undo.
+- **Zoom any diagram to the whole window**; Wardley maps and flowcharts stay editable there.
+- **Share and export any diagram as PNG or SVG:** the share sheet on a phone, copy into a mail or a whiteboard, or save both files next to the note. The SVG opens in vector editors with its text editable.
+- **A CLI for scripts and agents:** Wardley maps read and changed as JSON, and any diagram exported to a path, with a check whether an exported file still matches its diagram.
+- Mouse and touch, desktop and mobile.
+
+Editing covers Wardley maps and flowcharts; zoom and export work for every diagram type. More diagram types are planned, and contributions are welcome (see [Contributing](#contributing)).
 
 ![Editing a Wardley map: adding a component from the legend, linking it, moving elements](docs/demo.gif)
 
@@ -26,7 +36,8 @@ It covers **Wardley maps** (`wardley-beta`) and **flowcharts** (`flowchart` / `g
 | Click a red evolve arrow's shaft (long press on touch) | the evolve arrow is deleted |
 | Double-click (double-tap) an element | a dialog: rename everywhere, toggle inertia, set the type (`(build)`, `(buy)`, `(outsource)`, `(market)` or none), highlight, all written together with Save; delete |
 | Double-click an annotation's circle or its line in the box | a dialog: edit the text, delete (the box goes with the last one) |
-| Hover the menu button at the top left of the map (tap it on touch) | a legend to add a component, anchor, note, annotation, evolve arrow, inertia, accelerator, deaccelerator, pipeline or group |
+| Hover the menu button at the top left of the map (tap it on touch) | a legend to add a component, anchor, note, annotation, evolve arrow, inertia, accelerator, deaccelerator, pipeline or group, and *Export…* |
+| Pick *Group* in the menu (or click inside a group), then click components | they go into the group or out of it: `%% group "Name" A, B` (see [Good to know](#good-to-know)) |
 | Drag from beside an element into free space | a new component right there, linked from the first |
 | Click beside an element (the "+"), then click another one | a new link `A -> B` |
 
@@ -108,7 +119,7 @@ Requires Obsidian with Mermaid enabled for the vault. `main.js` is about 5 MB be
 - **Highlights are Mermaid's `class` statement, commented out.** Wardley maps cannot mark an element or a link yet, so the plugin reads `%% class Kettle highlight` and `%% class Kettle -> Power highlight` (a link, either order of the names) and draws them in your theme's accent colour: a thick outline and a bold label, a link in that colour (up to 8 classes per element, class names up to 40 characters). `%% classDef highlight stroke:#8000F0,stroke-width:3px` gives a map its own colour (stroke, stroke-width, stroke-dasharray, fill, color and font-weight, plain values only; the colour names red, orange, yellow, green, cyan, blue, purple and pink take your theme's shade, in light and dark mode). The Highlight toggle in the element and link dialogs writes these lines, and renaming, deleting and re-linking keep them in step. Other renderers ignore the comments; once Mermaid supports `class` for Wardley maps, deleting `%% ` is the migration.
 - **Flowcharts that render but are not editable:** very large ones (as below), and the rare ones whose drawing cannot be matched to the code exactly. Edit those in the code.
 - **Maps that render but are not editable:** maps written on the 0-100 scale (the editor writes 0-1), maps inside a callout, list or quote, maps embedded from another note (open that note), maps with a multi-line `accDescr { … }` block, and very large maps (a line over 1000 characters or more than 64 KB). Edit those in the code.
-- **Security:** Mermaid runs with `securityLevel: strict`, as in Obsidian. The plugin makes no network requests. Edits only ever change the one code block they belong to.
+- **Security:** Mermaid runs with `securityLevel: strict`, as in Obsidian. The plugin makes no network requests. Edits only ever change the one code block they belong to. An export writes only the files you asked for: next to the note from the dialog, or the vault path given to the CLI (never outside the vault or into a hidden folder). An exported file carries no note path.
 
 ## Contributing
 
