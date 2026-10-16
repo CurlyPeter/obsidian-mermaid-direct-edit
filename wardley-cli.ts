@@ -3,46 +3,20 @@
  * The model and its rules live in `wardley-model.ts`; this file finds the block in a note,
  * validates with the running Mermaid and writes. Contract: `docs/wardley-model.md`.
  */
-import { App, TFile } from 'obsidian';
+import { App } from 'obsidian';
 import type { Mermaid } from 'mermaid';
 import { CliCommandSpec, CliError } from './cli';
 import { ParseFn, SCHEMA, applyModel, readModel } from './wardley-model';
-import { fenceBreak, locateBlock, mermaidBlocks } from './blocks';
+import { fenceBreak, locateBlock } from './blocks';
+import { cliBlock } from './cli-blocks';
 import { isWardley } from './wardley-text';
 
 /** Mermaid's own parser, loaded on first use (it is part of the bundled Mermaid). */
 const parser: ParseFn = async (type, text) => (await import('@mermaid-js/parser')).parse(type, text);
 
-interface Block {
-	source: string;
-	file?: TFile;
-	/** 1-based among the note's wardley blocks. */
-	block?: number;
-}
-
-/** `source=` as given; `\n` stands for a line break when the value has no real one. */
-const sourceFlag = (v: string) => (v.includes('\n') ? v : v.replace(/\\n/g, '\n'));
-
-async function blockOf(app: App, flags: Record<string, string>): Promise<Block> {
-	if (flags.source !== undefined) {
-		if (flags.path !== undefined) throw new CliError('bad-flag', 'Give either path= or source=, not both.');
-		return { source: sourceFlag(flags.source) };
-	}
-	if (!flags.path) throw new CliError('bad-flag', 'path=<note> or source=<wardley-beta text> is required.');
-	const file = app.vault.getFileByPath(flags.path) ?? app.vault.getFileByPath(`${flags.path}.md`)
-		?? app.metadataCache.getFirstLinkpathDest(flags.path, '');
-	if (!file) throw new CliError('not-found', `No note "${flags.path}".`);
-	const blocks = mermaidBlocks(await app.vault.read(file)).filter(b => isWardley(b.body));
-	if (!blocks.length) throw new CliError('no-block', `${file.path} has no \`\`\`mermaid block with a wardley-beta map of its own.`);
-	let n = 1;
-	if (flags.block !== undefined) {
-		n = Number(flags.block);
-		if (!Number.isInteger(n) || n < 1 || n > blocks.length) throw new CliError('bad-flag', `block=${flags.block}: the note has ${blocks.length} wardley block(s).`);
-	} else if (blocks.length > 1) {
-		throw new CliError('ambiguous-block', `${file.path} has ${blocks.length} wardley blocks; choose one with block=1..${blocks.length}.`);
-	}
-	return { source: blocks[n - 1].body, file, block: n };
-}
+/** The wardley block a command works on (`cli-blocks.ts`). */
+const blockOf = (app: App, flags: Record<string, string>) =>
+	cliBlock(app, flags, { accept: isWardley, noun: 'wardley', none: 'with a wardley-beta map of its own' });
 
 /** Whether the running Mermaid accepts `src`; its message when not. */
 async function mermaidError(mermaid: Mermaid | undefined, src: string): Promise<string | null> {

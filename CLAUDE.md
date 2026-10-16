@@ -52,12 +52,17 @@ with its kind (`data-mp-kind`), so the editors never see each other's diagrams.
 | `editor.ts` | `DiagramEditor`: the DOM handlers (registered by `main.ts` on every window, incl. `contextmenu`), one active gesture, the waiting stub, legend, double tap, swallowing the clicks a gesture leaves, dialogs closed on unload, `apply` (edit → `mermaid.parse` → write) and `applyThen` (the same with a notice that has an Undo button). A subclass implements `modelOf`, `press`, `claims`, `cursorAt`, `legendAction`, `stubDrag`, and may add `stubPress` (click, then click links), `hoverAt`, `contextMenu`, `stubWaits` and refuse a diagram (`blockedReason`) | E2E (both suites) |
 | `gestures.ts` | `DragGesture` (tap vs drag threshold), `Stub` (with a round handle at its free end) and `NewLinkDrag` (the "+" link, its end under the pointer: onto an element links, into free space creates one, back on its own element waits), `TapPress`, `DeletePress`, `DropHighlight` | E2E |
 | `legend.ts`, `modals.ts`, `write.ts`, `blocks.ts`, `geometry.ts` | the legend of the menu button (opens below it on hover or a tap, rows as the diagram's height allows, on the popover layer, closed once an entry is chosen or a moment after the mouse left), `NameModal` and the two-click Delete, writing into the note (`viewOf` also answers for a zoomed diagram), `locateBlock`/`mermaidBlocks`/`blockAt`/`followBlock`/limits/`EditError`, thresholds, `fitInside` and `TapDetector` | vitest (`blocks`, `geometry`), E2E |
-| `actions.ts`, `zoom.ts` | the buttons of a drawing (Zoom in top right, the menu top left) and the zoom (see "Buttons and the zoom") | vitest (`render`: the zoom key), E2E |
+| `actions.ts`, `zoom.ts` | the buttons of a drawing (share and Zoom in top right, the menu top left) and the zoom (see "Buttons and the zoom") | vitest (`render`: the zoom key), E2E |
+| `export-format.ts`, `export.ts`, `export-ui.ts`, `export-cli.ts`, `cli-blocks.ts` | a drawing as a PNG or SVG file: the parts without a DOM (checksum, PNG text chunk, `out=` check, scale), drawing and freezing the styles, the share button and export dialog, the CLI commands `export`/`export-check`, the block a CLI command works on (see "Export") | vitest (`export-format`), E2E (both suites) |
 
 `npm run e2e` runs both suites (`scripts/e2e-wardley.py`, `scripts/e2e-flowchart.py`, sharing
 `scripts/e2e_obsidian.py`); each drives every gesture with real input through `obs dev:cdp` on a
 scratch note and checks the resulting source (and closes a zoom a failing case left open, which
-would otherwise take every later case's input). Run them after any change to an editor and on
+would otherwise take every later case's input). They also run on Linux (key modifier `MOD`: Ctrl
+there, Cmd on macOS) and against an Obsidian started just before (`Scratch.ready` waits for the
+first drawing); `OBSIDIAN_CLI` may point at a wrapper that targets a separate test instance. The
+export cases check the files with independent tools: `hashlib` for the checksum, a stdlib PNG
+reader, `rsvg-convert` when installed. Run them after any change to an editor and on
 every Mermaid bump. They locate elements from the rendered SVG only, and refuse to send input
 to a point outside the scratch note's visible editor (input there lands in another tab). The
 flowchart suite holds three settings for its run and restores them: full width on and readable
@@ -125,6 +130,53 @@ in reading view (no toolbar there) in a toolbar of the plugin's own at the same 
 - **Known limit:** like Obsidian's own edit button, the toolbars lie over the drawing's top
   corners and take presses there (a flowchart group title at the top right edge, E2E
   `group_ungroup` uses the group's border instead).
+
+## Export (0.25.0)
+
+Any diagram as a standalone PNG or SVG file. Contract of the CLI commands: `docs/export.md`.
+
+- **Drawn anew, not copied from the screen** (`export.ts`): the block text goes through the pinned
+  Mermaid and the render hook like the zoom's drawing, so the plugin's extensions are in the file.
+  `withExportConfig` appends a directive (`htmlLabels: false`, `fontFamily: EXPORT_FONT`): labels
+  are SVG text, never HTML in a `foreignObject` (Affinity, Miro, mail clients and librsvg do not
+  show that), and the font exists everywhere. Mermaid strips directives before any diagram parser,
+  so it works for every type; appended, it wins over the diagram's own config. Render ids start
+  with `mde-export-`, which the after-render step skips.
+- **Styles frozen.** The drawing goes into an off-screen `.mermaid` box under `.theme-light` (off
+  screen, never `visibility: hidden`, which every element would inherit), and `freezeStyles`
+  writes each SVG element's computed presentation values into its `style` (inherited properties
+  only where they differ from the parent's). Then the registry keys and Mermaid's `max-width` go,
+  `width`/`height` come from the viewBox, `resolveVars` clears the style sheet of `var()` (fallbacks
+  only, never a theme value: a note's `classDef` reaches that sheet), and no frozen value keeps a
+  `url()` other than `url(#…)` (`portableValue`; security review 0.25.0, I-3). Obsidian's
+  dark mode is `filter: invert(…)` on `.theme-dark .mermaid > svg`, not other colours, so an export
+  is always the light drawing (the filter is not a frozen property).
+- **PNG** (`svgToPng`): the SVG as an image on a canvas, white unless transparent, `fitScale` keeps
+  it within `MAX_PIXELS` (4096 x 4096, iOS refuses larger canvases) and `MAX_SIDE`. **No floor on
+  the scale:** a drawing that would need less than `MIN_SCALE` is refused (`TooLargeError`, CLI
+  `too-large`), since a floor let three lines of note text (`size [160000, 160000]`) ask for a
+  1 GiB canvas (security review 0.25.0, O79).
+- **The checksum** is the SHA-256 of the block text (`mermaidBlocks` body), on the SVG's root
+  (`data-mde-source-sha256`) and in a PNG `tEXt` chunk (`pngWithText`). `export-check` hashes every
+  block of the note: `current` when one matches. **Never a note path in a file**: exports are
+  mailed and uploaded.
+- **`out=` is the only write path of the CLI** (`checkOutPath`): vault-relative, no `..`/`.`, no
+  hidden folder or file (the config folder: a write there could plant plugin code), none of
+  `* " < > : | ?` (a `:` never syncs to iOS), `.png`/`.svg` only; `writeExport` creates folders and
+  replaces a file. The CLI export also respects the vault's Mermaid permission (Obsidian 1.13+,
+  `<appId>-mermaid-vault-trust` in local storage): `not-permitted` where the note shows its guard. The dialog's Save writes
+  `<note> <n>.png/.svg` next to the note through the same function.
+- **The share button** (`export-ui.ts`, beside Zoom in and in the zoom, handled with the zoom
+  button in `main.ts`): on a phone `navigator.share` with a file in the share format; Obsidian's
+  desktop app has no `navigator.share` (Electron, measured), so there it opens the dialog. The
+  menu's last legend entry (`EXPORT_KIND`, added to every legend by `Legend`) and the flowchart's
+  right-click menu on empty space open the dialog through `DiagramEditor.onExport`.
+- **User activation:** Copy and Share must happen within the click (WebKit is strict). The dialog
+  prepares the export for the chosen options as they change; Copy hands `ClipboardItem` a promise;
+  a share refused with `NotAllowedError` is offered again in the dialog.
+- **A CLI export before any diagram was drawn** configures the pinned instance itself
+  (`OBSIDIAN_CONFIG`, the `initialized` flag in `main.ts`): Obsidian calls `initialize` only once
+  it loaded its own Mermaid.
 
 ## Editing Wardley maps
 
@@ -491,12 +543,14 @@ says "link" for an edge, Mermaid's own word):
 ## Build and check
 
 ```bash
-npm test               # vitest: text edits (checked by the real parsers), geometry
+npm test               # vitest: text edits (checked by the real parsers), geometry, export format
+                       # (timing limits stretch on a slow machine: MDE_TIME_SCALE=3 npm test)
 npm run e2e            # real-input regression of every gesture in the running Obsidian (both editors)
 npm run build          # tsc + esbuild production; postbuild reloads this plugin via obs
 obs mermaid-direct-edit:status   # {pinnedVersion, state, obsidianMermaidLoaded, obsidianLoadedFirst, rendering, error}
 obs mermaid-direct-edit:info
 obs mermaid-direct-edit:wardley-read path="<note>"         # the map as data (docs/wardley-model.md)
+obs mermaid-direct-edit:export path="<note>" out="<file>.png"   # a diagram as a file (docs/export.md)
 ```
 
 `obs` is a thin wrapper around the Obsidian CLI (Obsidian 1.12+, `obsidian <command>`) that

@@ -21,6 +21,7 @@ Thank you for helping. Small pull requests are as welcome as big ones: a fixed t
    ```bash
    npm test           # unit tests, run on every pull request
    ```
+   On a slow machine the timing tests (a crafted note must never freeze Obsidian) may miss their limits; `MDE_TIME_SCALE=3 npm test` stretches them all alike.
    For changes to gestures, try them in a note with a `wardley-beta` or `flowchart` block (the README has an example).
 
 ## Open a pull request

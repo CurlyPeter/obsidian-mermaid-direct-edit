@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { timeLimit } from './test-timing';
 import { blockAt, followBlock, mermaidBlocks } from './blocks';
 
 const note = (...bodies: string[]) => bodies.map(b => '```mermaid\n' + b + '\n```').join('\n\ntext\n\n');
@@ -73,7 +74,7 @@ describe('mermaidBlocks on crafted lines (security review 0.24.0, O77)', () => {
 			const t = '```mermaid\nflowchart LR\nA-->B\n```\n' + '`'.repeat(1_000_000) + sep + 'x\n';
 			const t0 = performance.now();
 			const b = mermaidBlocks(t);
-			expect(performance.now() - t0).toBeLessThan(50);
+			expect(performance.now() - t0).toBeLessThan(timeLimit(50));
 			expect(b.map(x => x.body)).toEqual(['flowchart LR\nA-->B']);
 		}
 	});

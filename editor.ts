@@ -3,7 +3,7 @@ import type { Mermaid } from 'mermaid';
 import { EditError } from './blocks';
 import { DBLCLICK_MS, STUB_GRAB, TapDetector } from './geometry';
 import { EditCtx, Gesture, NewLinkDrag, Stub, Surface } from './gestures';
-import { Legend, LegendItem } from './legend';
+import { EXPORT_KIND, Legend, LegendItem } from './legend';
 import { KEY_ATTR, KIND_ATTR, SourceRegistry, diagramIn, diagramOf, isElement } from './render';
 import { viewOf, writeBlock } from './write';
 
@@ -35,6 +35,8 @@ export interface EditorNames {
 export abstract class DiagramEditor<M extends Surface> implements EditCtx<M> {
 	protected readonly legend: Legend;
 	protected readonly taps = new TapDetector();
+	/** The menu's "Export…" on the drawing in `box` (set by main.ts: the export dialog). */
+	onExport: ((box: HTMLElement) => void) | null = null;
 	/** The diagram container of the last tap, so a dblclick elsewhere does not claim it. */
 	private tapBox: Element | null = null;
 	/** The one gesture in progress (a second finger is ignored meanwhile, review finding #5). */
@@ -132,6 +134,7 @@ export abstract class DiagramEditor<M extends Surface> implements EditCtx<M> {
 			const kind = Legend.itemAt(e.target);
 			if (kind) {
 				this.legend.hide();
+				if (kind === EXPORT_KIND) return void this.onExport?.(box);
 				this.legendAction(model, kind, (e.target as Element).closest('[data-mp-add]')!);
 			}
 			return;

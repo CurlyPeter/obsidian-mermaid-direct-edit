@@ -1,4 +1,4 @@
-import { setIcon, setTooltip } from 'obsidian';
+import { Platform, setIcon, setTooltip } from 'obsidian';
 import { KEY_ATTR, KIND_ATTR, ZOOM_ATTR, isElement } from './render';
 
 /** Marks a `.mermaid` box the plugin decorated (positioning for its buttons, removed on unload). */
@@ -50,11 +50,23 @@ export function decorate(box: HTMLElement, zoomed = false) {
 	const toolbar = box.parentElement?.matches('.cm-embed-block') ? box.parentElement.querySelector<HTMLElement>(':scope > .embed-actions') : null;
 	if (toolbar) {
 		if (!toolbar.querySelector('.mde-zoom-button')) toolbar.prepend(actionButton(createDiv(), 'lucide-zoom-in', 'Zoom in', 'mde-zoom-button'));
+		if (!toolbar.querySelector('.mde-share-button')) toolbar.prepend(shareButton(createDiv()));
 		return;
 	}
-	if (!box.querySelector(':scope > .mde-actions-right')) {
-		actionButton(box.createDiv({ cls: 'mde-actions mde-actions-right' }), 'lucide-zoom-in', 'Zoom in', 'mde-zoom-button');
+	let right = box.querySelector<HTMLElement>(':scope > .mde-actions-right');
+	if (!right) {
+		right = box.createDiv({ cls: 'mde-actions mde-actions-right' });
+		actionButton(right, 'lucide-zoom-in', 'Zoom in', 'mde-zoom-button');
 	}
+	if (!right.querySelector('.mde-share-button')) right.prepend(shareButton(createDiv()));
+}
+
+/**
+ * The share button (`export-ui.ts`): on a phone the share sheet, on the desktop the export dialog.
+ * Left of "Zoom in", so that one stays beside "Edit this block" where an image has it.
+ */
+export function shareButton(parent: HTMLElement): HTMLElement {
+	return actionButton(parent, 'lucide-share', Platform.isMobile ? null : 'Share or export', 'mde-share-button');
 }
 
 /** The `.mermaid` box of the diagram under `target`: inside it, or anywhere in its Live Preview block. */
@@ -64,15 +76,16 @@ export function boxAt(target: EventTarget | null): HTMLElement | null {
 	return (block?.querySelector<HTMLElement>(':scope > .mermaid') ?? target.closest<HTMLElement>('.mermaid')) || null;
 }
 
-/** The box a zoom button belongs to: in its own toolbar, or in Obsidian's toolbar beside the box. */
-export function boxOfZoomButton(button: Element): HTMLElement | null {
-	return button.closest<HTMLElement>('.mermaid') ?? button.closest('.cm-embed-block')?.querySelector<HTMLElement>(':scope > .mermaid') ?? null;
+/** The box a zoom or share button belongs to: in its own toolbar, in Obsidian's toolbar beside the box, or in the zoom's. */
+export function boxOfButton(button: Element): HTMLElement | null {
+	return button.closest<HTMLElement>('.mermaid') ?? button.closest('.cm-embed-block')?.querySelector<HTMLElement>(':scope > .mermaid')
+		?? button.closest('.mde-zoom-panel')?.querySelector<HTMLElement>(':scope > .mde-zoom-diagram') ?? null;
 }
 
 /** Removes every button and mark the plugin added (unload), in each of `docs` (the app's windows). */
 export function undecorate(docs: Iterable<Document>) {
 	for (const doc of docs) {
-		doc.querySelectorAll('.mde-actions, .mde-zoom-button').forEach(el => el.remove());
+		doc.querySelectorAll('.mde-actions, .mde-zoom-button, .mde-share-button').forEach(el => el.remove());
 		doc.querySelectorAll(`.${HOST}`).forEach(el => el.removeClass(HOST));
 	}
 }

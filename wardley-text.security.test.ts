@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { timeLimit } from './test-timing';
 import { EditError, addGroupMember, classDefs, classMarkers, deleteElement, deleteGroup, deleteNote, nextGroupName, removeGroupMember, renameGroup, getAnnotation, getClasses, groupMarkers, groupsOf, setAnnotationsBoxPosition, setGroupLabel, editBlocker, freeSpot, getPosition, inertiaPositions, isWardley, nameSpans, rename, setClass, setMethod, setPosition, setTitle } from './wardley-text';
 import { locateBlock, mermaidBlocks } from './blocks';
 import { SourceRegistry } from './render';
@@ -8,7 +9,7 @@ import { SourceRegistry } from './render';
 const fast = (f: () => unknown, ms = 250) => {
 	const t = performance.now();
 	try { f(); } catch { /* only the time counts */ }
-	expect(performance.now() - t).toBeLessThan(ms);
+	expect(performance.now() - t).toBeLessThan(timeLimit(ms));
 };
 const pad = (n: number) => ' '.repeat(n);
 

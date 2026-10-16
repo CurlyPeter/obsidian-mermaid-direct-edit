@@ -18,6 +18,9 @@ import time
 # asynchronous answers when stdin is closed) and returns real exit codes.
 CLI = os.environ.get('OBSIDIAN_CLI', 'obs')
 PLUGIN_ID = 'mermaid-direct-edit'
+# The platform's command modifier for CDP key events: Cmd (Meta, 4) on macOS, Ctrl (2) elsewhere.
+# The suites run on the machine Obsidian runs on.
+MOD = 4 if sys.platform == 'darwin' else 2
 
 
 def obs(*args, timeout=60):
@@ -91,7 +94,7 @@ def enter():
 
 def undo():
     js('(app.workspace.activeLeaf.view.editor.focus(),"f")')
-    key('z', 'KeyZ', 90, 4, ['undo'])
+    key('z', 'KeyZ', 90, MOD, ['undo'])
 
 
 def modal_title():
@@ -118,6 +121,59 @@ def wait(s=1.3):
     time.sleep(s)
 
 
+def cli(action, **flags):
+    """A plugin CLI command (`mermaid-direct-edit:<action>`), its answer as a dict ({ok, data|error})."""
+    raw = obs(f'{PLUGIN_ID}:{action}', *[f'{k}={v}' for k, v in flags.items()], timeout=120)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {'ok': False, 'error': {'code': 'no-json', 'message': raw[:300]}}
+
+
+def vault_dir():
+    """The test vault on disk (the suites run on the machine Obsidian runs on)."""
+    return js('app.vault.adapter.basePath')
+
+
+def trash_path(path):
+    """Moves a vault file or folder to the trash, if it exists."""
+    js('(async()=>{const f=app.vault.getAbstractFileByPath(' + json.dumps(path) + '); if(f) await app.fileManager.trashFile(f); return "ok"})()')
+
+
+def png_facts(data):
+    """Width, height and the text chunks of a PNG, read here without the plugin's code (stdlib only)."""
+    import struct
+    import zlib
+    if data[:8] != b'\x89PNG\r\n\x1a\n':
+        return None
+    w, h = struct.unpack('>II', data[16:24])
+    texts, crc_ok, at = {}, True, 8
+    while at + 12 <= len(data):
+        n = struct.unpack('>I', data[at:at + 4])[0]
+        kind, body = data[at + 4:at + 8], data[at + 8:at + 8 + n]
+        crc_ok = crc_ok and struct.unpack('>I', data[at + 8 + n:at + 12 + n])[0] == zlib.crc32(kind + body)
+        if kind == b'tEXt' and b'\0' in body:
+            k, v = body.split(b'\0', 1)
+            texts[k.decode('latin-1')] = v.decode('latin-1')
+        at += 12 + n
+        if kind == b'IEND':
+            break
+    return {'width': w, 'height': h, 'texts': texts, 'crc_ok': crc_ok}
+
+
+def rsvg_size(path):
+    """
+    The size librsvg (no browser, no foreignObject) renders the SVG at `path` to, as (width, height);
+    False when it fails, None when it is not installed. To stdout: it refuses /dev/null as a file.
+    """
+    import shutil
+    if not shutil.which('rsvg-convert'):
+        return None
+    r = subprocess.run(['rsvg-convert', path], capture_output=True, timeout=60)
+    facts = png_facts(r.stdout) if r.returncode == 0 and not r.stderr.strip() else None
+    return (facts['width'], facts['height']) if facts else False
+
+
 class Scratch:
     """A note with a unique name at the vault root, open in Live Preview; trashed afterwards."""
 
@@ -130,6 +186,21 @@ class Scratch:
            " const f=await app.vault.create(p," + json.dumps(self.content) + "); await app.workspace.getLeaf('tab').openFile(f);"
            " const l=app.workspace.activeLeaf; const s=l.getViewState(); s.state.mode='source'; s.state.source=false; await l.setViewState(s);"
            " await new Promise(r=>setTimeout(r,1500)); return 'ok'})()")
+
+    def ready(self, timeout=60):
+        """
+        Waits until the note's diagram is drawn and editable, then a moment longer; call it once the
+        diagram is scrolled into view (Live Preview draws a block only then). On an Obsidian started
+        just before the run, the first drawing loads the bundled Mermaid and may be drawn twice;
+        input sent meanwhile hit a drawing that was replaced (the first two cases failed).
+        """
+        end = time.time() + timeout
+        while time.time() < end:
+            if js("String(!!app.workspace.activeLeaf?.view?.contentEl?.querySelector('.mermaid svg[data-mp-src]'))") == 'true':
+                wait(2)
+                return
+            wait(0.5)
+        raise RuntimeError(f'no editable diagram drawn in {self.path} after {timeout} s')
 
     def active(self):
         return js("app.workspace.activeLeaf?.view?.file?.path ?? ''") == self.path
@@ -169,6 +240,8 @@ def run(cases, scratch, park, between=None, settings=None, config=None):
     failed = 0
     try:
         scratch.create()
+        park()
+        scratch.ready()
         for name, fn in cases:
             if sel not in name:
                 continue

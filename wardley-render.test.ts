@@ -5,6 +5,7 @@
  * nothing else in the string changes.
  */
 import { describe, expect, it } from 'vitest';
+import { timeLimit } from './test-timing';
 import { applyClasses, wardleyRender } from './wardley-render';
 import { SOURCE, SVG } from './wardley.fixtures';
 
@@ -67,7 +68,7 @@ describe('applyClasses', () => {
 		const src = `${SOURCE}\n${'%% class Kettle, Public -> Kettle, Teapot highlight\n'.repeat(20000)}`;
 		const t = performance.now();
 		expect(applyClasses(SVG, src)).toContain('mde-class-highlight');
-		expect(performance.now() - t).toBeLessThan(400);
+		expect(performance.now() - t).toBeLessThan(timeLimit(400));
 	});
 
 	describe('security review 0.19.0 (F-A, F-D): bounded on crafted class lines', () => {
@@ -79,7 +80,7 @@ describe('applyClasses', () => {
 		const timed = (f: () => string | null, ms: number) => {
 			const t = performance.now();
 			const out = f();
-			expect(performance.now() - t).toBeLessThan(ms);
+			expect(performance.now() - t).toBeLessThan(timeLimit(ms));
 			return out;
 		};
 		it('many classes on a link drawn many times: at most 8 per element, a bounded insertion', () => {

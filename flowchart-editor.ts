@@ -226,6 +226,7 @@ export class FlowchartEditor extends DiagramEditor<FlowModel> implements FlowCtx
 			for (const [t, name] of LEGEND_SHAPES) item(`Add ${name.toLowerCase()}…`, 'plus', () => this.addShape(model, t));
 			menu.addSeparator();
 			item('Direction…', 'arrow-right', () => this.openDirectionDialog(model));
+			item('Export…', 'share', () => this.onExport?.(model.svg.closest<HTMLElement>('.mermaid')!));
 		}
 		menu.showAtMouseEvent(e);
 		return true;

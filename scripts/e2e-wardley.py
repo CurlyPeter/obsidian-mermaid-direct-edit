@@ -14,10 +14,12 @@ the run; it never touches an existing note. Input goes to screen coordinates, so
 as soon as the active note is not the scratch note (a click elsewhere would otherwise land in a
 real note). Exit 0 when every selected case passed.
 """
+import hashlib
 import importlib.util
 import json
 import os
 import re
+import time
 
 _spec = importlib.util.spec_from_file_location('e2e_obsidian', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'e2e_obsidian.py'))
 E = importlib.util.module_from_spec(_spec)
@@ -109,6 +111,7 @@ for (const [k, spec] of Object.entries(ARG)) {
   else if (what === 'corner') { const r = svg.closest('.mermaid').getBoundingClientRect(); out[k] = a === 'left' ? [Math.round(r.left + 10), Math.round(r.bottom - 10)] : [Math.round(r.right - 10), Math.round(r.bottom - 10)]; }
   else if (what === 'menu') { const b = svg.closest('.mermaid').querySelector(':scope > .mde-actions-left .mde-menu-button'); out[k] = b && mid(b.getBoundingClientRect()); }
   else if (what === 'zoom-button') { const m = svg.closest('.mermaid'); const b = m.parentElement.matches('.cm-embed-block') ? m.parentElement.querySelector(':scope > .embed-actions .mde-zoom-button') : m.querySelector(':scope > .mde-actions-right .mde-zoom-button'); out[k] = b && mid(b.getBoundingClientRect()); }
+  else if (what === 'share-button') { const m = svg.closest('.mermaid'); const b = m.parentElement.matches('.cm-embed-block') ? m.parentElement.querySelector(':scope > .embed-actions .mde-share-button') : m.querySelector(':scope > .mde-actions-right .mde-share-button'); out[k] = b && mid(b.getBoundingClientRect()); }
   else if (what === 'legend-item') { const i = svg.closest('.mermaid').querySelector(`.mp-legend [data-mp-add="${a}"]`); out[k] = i && mid(i.getBoundingClientRect()); }
   else if (what === 'group-free') {
     // A point inside group `a` (its index) where nothing else is: far from every node (the "+" ring),
@@ -186,7 +189,7 @@ def case_node_drag():
 
 def case_undo():
     js('(app.workspace.activeLeaf.view.editor.focus(),"f")')
-    key('z', 'KeyZ', 90, 4, ['undo']); wait(1)
+    key('z', 'KeyZ', 90, E.MOD, ['undo']); wait(1)
     got = line(r'^component Alpha .*$')
     return got == 'component Alpha [0.80, 0.30]', got
 
@@ -447,13 +450,14 @@ def case_menu_tap():
 
 
 def case_buttons():
-    """Live Preview: "Zoom in" first in Obsidian's own toolbar of the block, before "Edit this
-    block", as on an image; the menu button at the top left, level with them and the same size."""
+    """Live Preview: "Zoom in" in Obsidian's own toolbar of the block, right before "Edit this
+    block" as on an image, the share button before it; the menu button at the top left, level with
+    them and the same size."""
     r = json.loads(js('JSON.stringify((()=>{const b=app.workspace.activeLeaf.view.contentEl.querySelector(".markdown-source-view .cm-embed-block.cm-lang-mermaid");'
                       ' const t=[...b.querySelectorAll(":scope > .embed-actions > .embed-action")].map(a=>a.getAttribute("aria-label"));'
                       ' const r=e=>{const x=e?.getBoundingClientRect(); return x && [Math.round(x.top), Math.round(x.width), Math.round(x.height)]};'
                       ' return {toolbar:t, menu:r(b.querySelector(".mde-menu-button")), zoom:r(b.querySelector(".embed-actions .mde-zoom-button")), edit:r(b.querySelector(".edit-block-button"))}})())'))
-    ok = r['toolbar'] == ['Zoom in', 'Edit this block'] and r['menu'] is not None and r['menu'] == r['zoom'] == r['edit']
+    ok = r['toolbar'] == ['Share or export', 'Zoom in', 'Edit this block'] and r['menu'] is not None and r['menu'] == r['zoom'] == r['edit']
     return ok, json.dumps(r)
 
 
@@ -508,7 +512,7 @@ def case_zoom_fit():
     close_zoom()
     closed = not zoom_state()['open']
     ok = all(s['open'] and fits(s) for s in (s1, s2, s3)) and s2['panel'][2] < s1['panel'][2] and closed
-    ok = ok and s1['buttons'] == ['Zoom out', 'Edit this block'] and s1['menu'] and not s1['static']
+    ok = ok and s1['buttons'] == ['Share or export', 'Zoom out', 'Edit this block'] and s1['menu'] and not s1['static']
     return ok, f'{s1["panel"]} in {s1["win"]}; resized {s2["panel"]} in {s2["win"]}; back {s3["panel"]}; buttons {s1["buttons"]}; closed {closed}'
 
 
@@ -623,9 +627,9 @@ def case_zoom_undo():
     src = line(r'^component Gamma .*$')
     drag(*locate('zoom', n=['node', 'Gamma'])['n'], 0, 40, 6); wait(1.3)
     moved = line(r'^component Gamma .*$')
-    key('z', 'KeyZ', 90, 4); wait(1.2)
+    key('z', 'KeyZ', 90, E.MOD); wait(1.2)
     undone, id_u = line(r'^component Gamma .*$'), zoom_state()['id']
-    key('y', 'KeyY', 89, 4); wait(1.2)
+    key('y', 'KeyY', 89, E.MOD); wait(1.2)
     redone, id_r = line(r'^component Gamma .*$'), zoom_state()['id']
     close_zoom()
     ok = moved != src and undone == src and redone == moved and id_u != id_r
@@ -706,10 +710,151 @@ def case_zoom_reading():
         drag(*locate('zoom', n=['node', 'Alpha'])['n'], -50, 0, 6); wait(1.6)
         got, s2 = file_line(), zoom_state()
         close_zoom()
-        ok = s['buttons'] == ['Zoom out'] and s['menu'] and fits(s) and got != src and s2['id'] != s['id']
+        ok = s['buttons'] == ['Share or export', 'Zoom out'] and s['menu'] and fits(s) and got != src and s2['id'] != s['id']
         return ok, f'buttons {s["buttons"]}; {src} -> {got}; drawing {s["id"]} -> {s2["id"]}'
     finally:
         js('(async()=>{const l=app.workspace.activeLeaf; const s=l.getViewState(); s.state.mode="source"; s.state.source=false; await l.setViewState(s); await new Promise(r=>setTimeout(r,1500)); return "ok"})()')
+
+
+# ---- export ------------------------------------------------------------------------------
+
+def block_text():
+    """The map's block text as the plugin reads it (without the line break before the closing fence)."""
+    s = source()
+    return s[:-1] if s.endswith('\n') else s
+
+
+def case_export_cli():
+    """`export` writes the map as PNG and SVG into the vault: the PNG at twice the drawing's size
+    with the block's SHA-256 in a text chunk, the SVG standalone (no Obsidian variable or plugin key
+    left, labels as text, highlight and group frozen in, librsvg draws it). `export-check` says
+    current, stale once the map changed, current after a new export; a hidden folder is refused."""
+    d = f'E2E export {time.strftime("%H%M%S")}'
+    try:
+        want = hashlib.sha256(block_text().encode()).hexdigest()
+        png = E.cli('export', path=SCRATCH.path, out=f'{d}/map.png')
+        svg = E.cli('export', path=SCRATCH.path, out=f'{d}/map.svg', background='transparent')
+        if not (png.get('ok') and svg.get('ok')):
+            return False, f'png {png}; svg {svg}'
+        p, s = png['data'], svg['data']
+        base = E.vault_dir()
+        with open(os.path.join(base, d, 'map.png'), 'rb') as f:
+            facts = E.png_facts(f.read())
+        with open(os.path.join(base, d, 'map.svg'), encoding='utf-8') as f:
+            text = f.read()
+        hl = re.search(r'<line[^>]*class="wardley-link mde-class mde-class-highlight"[^>]*>', text)
+        hl_stroke = re.search(r'stroke:\s*(rgb\([^)]*\))', hl.group(0)) if hl else None
+        rsvg = E.rsvg_size(os.path.join(base, d, 'map.svg'))
+        checks = {
+            'sha': p['sha256'] == s['sha256'] == want,
+            'png_size': bool(facts) and facts['width'] == round(s['width'] * 2) and facts['height'] == round(s['height'] * 2) and p['scale'] == 2,
+            'png_chunk': bool(facts) and facts['texts'].get('mde-source-sha256') == want and facts['crc_ok'],
+            'svg_attr': f'data-mde-source-sha256="{want}"' in text,
+            'no_vars': 'var(--' not in text,
+            'font': bool(re.search(r'font-family:\s*"?Helvetica', text)) and not re.search(r'font-family:\s*[;}]', text),
+            'no_keys': 'data-mp-src' not in text and 'data-mde-zoom' not in text,
+            'labels': bool(re.search(r'<text[^>]*>[^<]*Alpha', text)),
+            'highlight': bool(hl_stroke) and hl_stroke.group(1) != 'rgb(51, 51, 51)',
+            'group': 'mde-group-boundary' in text,
+            'rsvg': rsvg is None or rsvg == (s['width'], s['height']),
+        }
+        status = lambda out: E.cli('export-check', path=SCRATCH.path, out=out)['data']['status']
+        first = status(f'{d}/map.png')
+        drag(*locate(n=['node', 'Alpha'])['n'], 30, 0); wait()
+        # The CLI reads the note as saved; Live Preview saves a moment after the edit.
+        js('(async()=>{await app.workspace.activeLeaf.view.save(); return "ok"})()')
+        stale = status(f'{d}/map.png')
+        E.cli('export', path=SCRATCH.path, out=f'{d}/map.png')
+        again, missing = status(f'{d}/map.png'), status(f'{d}/none.svg')
+        refused = E.cli('export', path=SCRATCH.path, out='.obsidian/x.png')
+        ok = all(checks.values()) and (first, stale, again, missing) == ('current', 'stale', 'current', 'missing') and not refused['ok']
+        failed = [k for k, v in checks.items() if not v]
+        return ok, f'{failed or "all checks"}; rsvg {rsvg}; check {first} -> {stale} -> {again}, {missing}; hidden folder refused {not refused["ok"]}; {s["width"]}x{s["height"]}'
+    finally:
+        E.trash_path(d)
+
+
+def case_export_menu():
+    """The menu's last entry "Export…" opens the export dialog; "Save PNG and SVG" writes both next
+    to the note, named after it and the diagram's number, and closes the dialog."""
+    name = SCRATCH.path[:-3] + ' 1'
+    try:
+        p = locate(m=['menu'])
+        mouse('mouseMoved', *p['m']); wait(0.4)
+        item = locate(i=['legend-item', 'export'])['i']
+        if not item:
+            return False, 'no "Export…" in the legend'
+        mouse('mouseMoved', p['m'][0], p['m'][1] + 16); mouse('mouseMoved', *item); wait(0.1)
+        click(*item); wait(0.8)
+        title = modal_title()
+        E.modal('btn("Save PNG and SVG").click()'); wait(3)
+        files = js('JSON.stringify([' + json.dumps(name + '.png') + ',' + json.dumps(name + '.svg') + '].map(p=>!!app.vault.getFileByPath(p)))')
+        left_open = js('String(document.querySelectorAll(".modal-container").length)')
+        check = E.cli('export-check', path=SCRATCH.path, out=name + '.svg').get('data', {}).get('status')
+        ok = title == 'Export diagram' and files == '[true,true]' and left_open == '0' and check == 'current'
+        return ok, f'{title!r}; files {files}; dialogs open {left_open}; check {check}'
+    finally:
+        E.trash_path(name + '.png')
+        E.trash_path(name + '.svg')
+
+
+def case_export_limits():
+    """The limits of the CLI export (security review 0.25.0): a map too large for a PNG is refused
+    with `too-large` but exports as SVG; `out=` with a character Obsidian refuses in names is
+    refused; without the vault's Mermaid permission nothing is drawn (`not-permitted`)."""
+    d = f'E2E limits {time.strftime("%H%M%S")}'
+    huge = 'wardley-beta\\nsize [160000, 160000]\\ncomponent A [0.50, 0.50]'
+    key_js = 'app.appId+"-mermaid-vault-trust"'
+    try:
+        png = E.cli('export', source=huge, out=f'{d}/huge.png')
+        svg = E.cli('export', source=huge, out=f'{d}/huge.svg')
+        colon = E.cli('export', path=SCRATCH.path, out=f'{d}/a:b.png')
+        js(f'(()=>{{localStorage.setItem({key_js},"false"); return "x"}})()')
+        try:
+            refused = E.cli('export', path=SCRATCH.path, out=f'{d}/x.png')
+        finally:
+            js(f'(()=>{{localStorage.setItem({key_js},"true"); return "x"}})()')
+        code = lambda r: (r.get('error') or {}).get('code')
+        ok = code(png) == 'too-large' and svg.get('ok') and code(colon) == 'bad-flag' and code(refused) == 'not-permitted'
+        return ok, f'png {code(png)}; svg ok {svg.get("ok")} {svg.get("data", {}).get("width")}; colon {code(colon)}; no permission {code(refused)}'
+    finally:
+        E.trash_path(d)
+
+
+SHARE_IN_ZOOM = 'JSON.stringify((()=>{const b=document.querySelector(".mde-zoom .mde-share-button")?.getBoundingClientRect(); return b && [Math.round(b.left+b.width/2), Math.round(b.top+b.height/2)]})())'
+CLIPBOARD = '(async()=>{try{const i=await navigator.clipboard.read(); return JSON.stringify(i.flatMap(x=>x.types))}catch(e){return "error "+e.name}})()'
+
+
+def close_dialog():
+    """Escape, as a user closes it (this Obsidian's dialogs have no close button element)."""
+    key('Escape', 'Escape', 27); wait(0.6)
+
+
+def case_share_button():
+    """On the desktop the share button opens the export dialog (Obsidian's app has no system share
+    sheet); a real click on Copy puts a PNG on the clipboard. The zoom's share button does the same."""
+    js('(async()=>{await navigator.clipboard.writeText("before"); return "x"})()')
+    b = locate(s=['share-button'])['s']
+    if not b:
+        return False, 'no share button'
+    mouse('mouseMoved', *b); wait(0.2)
+    click(*b); wait(1.2)
+    title = modal_title()
+    copy = json.loads(js('JSON.stringify((()=>{const c=[...document.querySelectorAll(".modal button")].find(b=>b.textContent==="Copy")?.getBoundingClientRect(); return c && [Math.round(c.left+c.width/2), Math.round(c.top+c.height/2)]})())'))
+    if copy:
+        click(*copy); wait(2)
+    clip = js(CLIPBOARD)
+    close_dialog()
+    err = open_zoom()
+    if err:
+        return False, err
+    z = json.loads(js(SHARE_IN_ZOOM))
+    click(*z); wait(1.2)
+    zoom_title = modal_title()
+    close_dialog()
+    close_zoom()
+    ok = title == 'Export diagram' and 'image/png' in clip and zoom_title == 'Export diagram'
+    return ok, f'{title!r}; clipboard {clip}; in the zoom {zoom_title!r}'
 
 
 def case_component_on_shaft():
@@ -1139,7 +1284,7 @@ def case_unload_cleanup():
     mouse('mouseMoved', *p['c']); wait(0.3)
     before = js('JSON.stringify({stub:document.querySelectorAll("line.mp-new-link").length, legend:document.querySelectorAll(".mp-legend").length})')
     open_zoom()
-    count = '{stub:document.querySelectorAll("line.mp-new-link").length, legend:document.querySelectorAll(".mp-legend").length, host:document.querySelectorAll(".mde-host").length, buttons:document.querySelectorAll(".mde-actions, .mde-zoom-button").length, zoom:document.querySelectorAll(".mde-zoom").length}'
+    count = '{stub:document.querySelectorAll("line.mp-new-link").length, legend:document.querySelectorAll(".mp-legend").length, host:document.querySelectorAll(".mde-host").length, buttons:document.querySelectorAll(".mde-actions, .mde-zoom-button, .mde-share-button").length, zoom:document.querySelectorAll(".mde-zoom").length}'
     after = js('(async()=>{await app.plugins.disablePlugin(' + json.dumps(PLUGIN_ID) + '); const r=' + count + '; await app.plugins.enablePlugin(' + json.dumps(PLUGIN_ID) + '); await new Promise(r=>setTimeout(r,1500)); return JSON.stringify(r)})()')
     a = json.loads(after)
     return json.loads(before)['stub'] == 1 and a == {'stub': 0, 'legend': 0, 'host': 0, 'buttons': 0, 'zoom': 0}, f'before {before}; after unload {after}'
@@ -1162,6 +1307,7 @@ CASES = [
     ('group_new_from_legend', case_group_new_from_legend), ('group_members', case_group_members), ('group_touch_tap', case_group_touch_tap),
     ('group_properties_delete', case_group_properties_delete), ('group_label_dialog', case_group_label_dialog),
     ('group_area_click', case_group_area_click),
+    ('export_cli', case_export_cli), ('export_limits', case_export_limits), ('export_menu', case_export_menu), ('share_button', case_share_button),
     ('component_on_shaft', case_component_on_shaft), ('swallow_scope', case_swallow_scope),
     ('zoom_fit', case_zoom_fit), ('zoom_edit_source', case_zoom_edit_source), ('zoom_drag', case_zoom_drag), ('zoom_touch_drag', case_zoom_touch_drag),
     ('zoom_dialog_escape', case_zoom_dialog_escape), ('zoom_legend_escape', case_zoom_legend_escape), ('zoom_legend_add', case_zoom_legend_add),

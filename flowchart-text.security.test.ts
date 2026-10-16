@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { timeLimit } from './test-timing';
 import { MAX_LINE, fenceBreak, isClosingFence, mermaidBlocks } from './blocks';
 import { scan } from './flowchart-scan';
 import { deleteEdge, flowchartBlocker, nodeInfo, setNodeLabel, ungroup } from './flowchart-text';
@@ -7,7 +8,7 @@ import { deleteEdge, flowchartBlocker, nodeInfo, setNodeLabel, ungroup } from '.
 function fast(f: () => unknown, ms = 150) {
 	const t = performance.now();
 	try { f(); } catch { /* refusing is fine, hanging is not */ }
-	expect(performance.now() - t).toBeLessThan(ms);
+	expect(performance.now() - t).toBeLessThan(timeLimit(ms));
 }
 
 const lines = (line: string) => `flowchart LR\n${Array.from({ length: 64 }, () => line).join('\n')}`;

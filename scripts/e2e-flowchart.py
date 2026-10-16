@@ -14,10 +14,12 @@ root) and trashes it after the run; it never touches an existing note. Input goe
 coordinates, so the run stops as soon as the active note is not the scratch note. The note is
 reset to the map below before every case, so cases do not depend on each other.
 """
+import hashlib
 import importlib.util
 import json
 import os
 import re
+import time
 
 _spec = importlib.util.spec_from_file_location('e2e_obsidian', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'e2e_obsidian.py'))
 E = importlib.util.module_from_spec(_spec)
@@ -518,12 +520,48 @@ def case_zoom_add_node():
     return title == 'New rectangle' and got is not None and drawn is not None and flashed == 'true', f'{title!r}; {got}; drawn at {drawn}; flashed in the zoom {flashed}'
 
 
+def case_export_svg_text():
+    """`export` draws a flowchart's labels as SVG text, not as HTML in a foreignObject, so librsvg,
+    Affinity and Miro show them; no Obsidian variable is left; PNG and SVG carry the block's SHA-256
+    and `export-check` says current for both, stale for neither."""
+    d = f'E2E flowchart export {time.strftime("%H%M%S")}'
+    try:
+        src = source()
+        want = hashlib.sha256((src[:-1] if src.endswith('\n') else src).encode()).hexdigest()
+        svg = E.cli('export', path=NOTE.path, out=f'{d}/flow.svg')
+        png = E.cli('export', path=NOTE.path, out=f'{d}/flow.png', scale='1')
+        if not (svg.get('ok') and png.get('ok')):
+            return False, f'svg {svg}; png {png}'
+        base = E.vault_dir()
+        with open(os.path.join(base, d, 'flow.svg'), encoding='utf-8') as f:
+            text = f.read()
+        with open(os.path.join(base, d, 'flow.png'), 'rb') as f:
+            facts = E.png_facts(f.read())
+        labels = [l for l in ('Brew tea', 'Stock?', 'Lone node', 'Kitchen') if not re.search(r'<(text|tspan)[^>]*>[^<]*' + re.escape(l.split()[0]), text)]
+        rsvg = E.rsvg_size(os.path.join(base, d, 'flow.svg'))
+        checks = {
+            'sha': svg['data']['sha256'] == png['data']['sha256'] == want,
+            'no_foreign': '<foreignObject' not in text,
+            'labels': not labels,
+            'no_vars': 'var(--' not in text,
+            'font': bool(re.search(r'font-family:\s*"?Helvetica', text)) and not re.search(r'font-family:\s*[;}]', text),
+            'ground': 'class="mde-export-ground"' in text,
+            'png': bool(facts) and facts['width'] == svg['data']['width'] and facts['texts'].get('mde-source-sha256') == want and facts['crc_ok'],
+            'rsvg': rsvg is None or rsvg == (svg['data']['width'], svg['data']['height']),
+        }
+        status = [E.cli('export-check', path=NOTE.path, out=f'{d}/flow.{x}').get('data', {}).get('status') for x in ('svg', 'png')]
+        failed = [k for k, v in checks.items() if not v]
+        return not failed and status == ['current', 'current'], f'{failed or "all checks"}; labels missing {labels}; rsvg {rsvg}; check {status}'
+    finally:
+        E.trash_path(d)
+
+
 def case_unload_cleanup():
     p = locate(s=['plus', 'Lone'], c=['menu'])
     click(*p['s']); wait(0.3)
     mouse('mouseMoved', *p['c']); wait(0.3)
     before = js('JSON.stringify({stub:document.querySelectorAll("line.mp-new-link").length, legend:document.querySelectorAll(".mp-legend").length})')
-    after = js('(async()=>{await app.plugins.disablePlugin(' + json.dumps(E.PLUGIN_ID) + '); const r={stub:document.querySelectorAll("line.mp-new-link").length, legend:document.querySelectorAll(".mp-legend").length, host:document.querySelectorAll(".mde-host").length, buttons:document.querySelectorAll(".mde-actions, .mde-zoom-button").length, body:document.body.classList.contains("mp-flowchart-edit")}; await app.plugins.enablePlugin(' + json.dumps(E.PLUGIN_ID) + '); await new Promise(r=>setTimeout(r,1500)); return JSON.stringify(r)})()')
+    after = js('(async()=>{await app.plugins.disablePlugin(' + json.dumps(E.PLUGIN_ID) + '); const r={stub:document.querySelectorAll("line.mp-new-link").length, legend:document.querySelectorAll(".mp-legend").length, host:document.querySelectorAll(".mde-host").length, buttons:document.querySelectorAll(".mde-actions, .mde-zoom-button, .mde-share-button").length, body:document.body.classList.contains("mp-flowchart-edit")}; await app.plugins.enablePlugin(' + json.dumps(E.PLUGIN_ID) + '); await new Promise(r=>setTimeout(r,1500)); return JSON.stringify(r)})()')
     return json.loads(before) == {'stub': 1, 'legend': 1} and json.loads(after) == {'stub': 0, 'legend': 0, 'host': 0, 'buttons': 0, 'body': False}, f'before {before}; after unload {after}'
 
 
@@ -537,6 +575,7 @@ CASES = [
     ('legend_add_node', case_legend_add_node), ('legend_direction', case_legend_direction), ('legend_group', case_legend_group),
     ('group_dialog', case_group_dialog), ('group_ungroup', case_group_ungroup), ('node_delete', case_node_delete),
     ('hover_cursors', case_hover_cursors), ('touch', case_touch), ('zoom_add_node', case_zoom_add_node),
+    ('export_svg_text', case_export_svg_text),
     # Replaces the note with a diagram the editor refuses: after every case that needs the test diagram.
     ('not_editable', case_not_editable),
     ('unload_cleanup', case_unload_cleanup),

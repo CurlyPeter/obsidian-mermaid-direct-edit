@@ -1,21 +1,13 @@
-import { App, EventRef, MarkdownView, Notice, Platform, TFile } from 'obsidian';
+import { App, EventRef, Notice, Platform } from 'obsidian';
 import type { Mermaid } from 'mermaid';
-import { STATIC, actionButton, decorate } from './actions';
-import { blockAt, followBlock, mermaidBlocks } from './blocks';
+import { STATIC, actionButton, decorate, shareButton } from './actions';
+import { followBlock, mermaidBlocks } from './blocks';
 import { fitInside } from './geometry';
 import { SourceRegistry } from './render';
-import { viewOf, zoomViews } from './write';
+import { Origin, originOf, zoomViews } from './write';
 
 /** Render ids of the zoom's drawings; the plugin's after-render step leaves them to the zoom. */
 export const ZOOM_ID_PREFIX = 'mde-zoom-';
-
-/** The note and block a zoomed diagram comes from: block `index` of `count` mermaid blocks. */
-interface Origin {
-	view: MarkdownView;
-	file: TFile;
-	index: number;
-	count: number;
-}
 
 let renders = 0;
 
@@ -69,7 +61,7 @@ export class DiagramZoom {
 	async open(box: HTMLElement) {
 		const svg = box.querySelector(':scope > svg');
 		const drawn = svg ? this.registry.zoomSourceOf(svg) : undefined;
-		const found = this.originOf(box, drawn);
+		const found = originOf(this.app, this.registry, box, drawn);
 		const src = found?.src ?? drawn;
 		if (src === undefined) {
 			new Notice('Mermaid: this diagram was drawn before the plugin was loaded and is redrawn now, please try again.');
@@ -87,6 +79,7 @@ export class DiagramZoom {
 		this.box = panel.createDiv({ cls: `mermaid mde-zoom-diagram${this.origin ? '' : ` ${STATIC}`}` });
 		// The image zoom's two buttons at the same place: Zoom out where Zoom in was, then the source.
 		const right = panel.createDiv('mde-actions mde-actions-right');
+		shareButton(right);  // handled by main.ts with the other buttons
 		actionButton(right, 'lucide-zoom-out', 'Zoom out', 'mde-unzoom-button').addEventListener('click', () => this.close());
 		if (this.origin?.view.getMode() === 'source') {
 			actionButton(right, 'lucide-code-2', 'Edit this block', 'mde-source-button').addEventListener('click', () => this.editSource());
@@ -132,35 +125,6 @@ export class DiagramZoom {
 		this.el = this.panel = this.box = null;
 		this.origin = null;
 		this.toggled();
-	}
-
-	/**
-	 * The block `box` shows and its text now, or null when it is not one of a note's own mermaid
-	 * blocks (an embed, a canvas, a callout). In Live Preview the drawing's place in the editor
-	 * says which block it is, even when the note changed since it was drawn (Live Preview does not
-	 * always redraw at once); in reading view the drawn text is looked up, the n-th of identical ones.
-	 */
-	private originOf(box: HTMLElement, drawn: string | undefined): { origin: Origin; src: string } | null {
-		if (box.closest('.markdown-embed')) return null;
-		const view = viewOf(this.app, box);
-		if (!view?.file) return null;
-		const blocks = mermaidBlocks(view.getViewData());
-		let index = -1;
-		const widget = box.closest('.cm-embed-block');
-		const cm = (view.editor as unknown as { cm?: { contentDOM: Element; posAtDOM(node: Node, offset?: number): number } }).cm;
-		if (widget && cm?.contentDOM.contains(widget)) {
-			try { index = blockAt(blocks, cm.posAtDOM(widget)); } catch { /* not in the editor's document */ }
-		}
-		if (index < 0 && drawn !== undefined) {
-			const hits = blocks.flatMap((b, i) => (b.body === drawn ? [i] : []));
-			const same = Array.from(view.containerEl.querySelectorAll('.mermaid')).filter(m => {
-				const s = m.querySelector(':scope > svg');
-				return s && this.registry.zoomSourceOf(s) === drawn;
-			});
-			if (hits.length) index = hits[Math.min(Math.max(0, same.indexOf(box)), hits.length - 1)];
-		}
-		if (index < 0) return null;
-		return { origin: { view, file: view.file, index, count: blocks.length }, src: blocks[index].body };
 	}
 
 	/** Draws `src` into the zoom; one drawing at a time, the newest source wins. */

@@ -6,6 +6,7 @@
  * its properties, and the drawing on an SVG Mermaid produced.
  */
 import { describe, expect, it } from 'vitest';
+import { timeLimit } from './test-timing';
 import { parse } from '@mermaid-js/parser';
 import type { Pt } from './wardley-geometry';
 import { GROUP_BUDGET, GROUP_RADIUS, inside, outline, pathOf, skeleton, type Segment } from './wardley-groups';
@@ -277,7 +278,7 @@ describe('the model', () => {
 		const src = `wardley-beta\ncomponent A [0.5, 0.5]\n${'%% just a comment\n'.repeat(50000)}component B [0.4, 0.4]`;
 		const t = performance.now();
 		const m = await readModel(src, parse);
-		expect(performance.now() - t).toBeLessThan(800);
+		expect(performance.now() - t).toBeLessThan(timeLimit(800));
 		expect(m.elements.find(e => e.name === 'B')?.line).toBe(50003);
 		const d = 'wardley-beta\naccDescr {\n  first\n  %% kept as text\n}\ncomponent A [0.5, 0.5]';
 		expect((await readModel(d, parse)).accDescr).toBe(((await parse('wardley', d)) as any).accDescr.trim());
@@ -394,7 +395,7 @@ describe('the boundary', () => {
 		const t = performance.now();
 		const shared = { left: GROUP_BUDGET };
 		const drawn = Array.from({ length: 20 }, () => outline(skeleton(pts, links), r, shared)).filter(l => l?.length);
-		expect(performance.now() - t).toBeLessThan(600);
+		expect(performance.now() - t).toBeLessThan(timeLimit(600));
 		expect(drawn.length).toBeGreaterThanOrEqual(1);
 		for (const p of pts) expect(inside(p, drawn[0]![0])).toBe(true);
 	});
@@ -539,7 +540,7 @@ describe('drawing groups on the SVG Mermaid returned', () => {
 		const many = `${SOURCE}\n${'%% group G Kettle, Power, Grid, Market, Public\n'.repeat(5000)}${Array.from({ length: 200 }, (_, i) => `%% group g${i} Kettle, Market, Grid`).join('\n')}`;
 		const t = performance.now();
 		const out = applyGroups(SVG, many);
-		expect(performance.now() - t).toBeLessThan(1500);
+		expect(performance.now() - t).toBeLessThan(timeLimit(1500));
 		expect((out!.match(/<path class="mde-group-boundary"/g) ?? []).length).toBe(20);
 	});
 });

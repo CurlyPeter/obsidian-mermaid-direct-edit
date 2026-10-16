@@ -206,6 +206,8 @@ inertia removal by a **toggle in the component dialog** (instead of long press).
 - Applied in `wrapRender` by rewriting the bar's `x1/x2` in the returned SVG string
   (DOMParser/XMLSerializer, only when such a comment exists).
 - Debt: an export pipeline (mmdc pre-render) must apply the same transform, or show the default position.
+  Resolved for the plugin's own export in 0.25.0: it draws through the render hook, so the dragged
+  position is in every PNG and SVG it writes. A third-party renderer still shows the default.
   Upstream proposal (e.g. `(inertia 0.48)`) would remove the extension.
 
 Verification (macOS desktop, real CDP input in Live Preview on a scratch note): inertia added to Kettle
@@ -1007,7 +1009,68 @@ window). **Verdict: accept with fixes, two items, both fixed before release, plu
 - Controls: each new test fails on the code before its fix (O78, I-4 by sabotage; O77 by timing the
   old regex, a sabotaged run of the 1M-character test would take half an hour).
 
+## Export (0.25.0, 2026-10-16)
+
+Request: export any diagram directly as SVG and PNG, also through the CLI for agents. Goals: agents
+review their result faster (no screenshot of the shared window), files go into mails and onto Miro
+boards, figures can be finished in Affinity for the book. Maintainer decisions 2026-10-16, each
+weighed against alternatives:
+
+- **No automatic export.** Excalidraw-style auto-export (files next to the note that follow every
+  change) was weighed and dropped: as simple as possible. Exports happen on request; a checksum in
+  every file plus `export-check` lets a later website or book build export only what changed.
+- **Only the checksum in a file, no note path:** an exported file is mailed and uploaded, and the
+  path would travel with it. Consequence: `export-check` is given note and file by the caller.
+  "Current" means "a block of the note has exactly this text", which stays true when other blocks
+  are added around it.
+- **Save writes PNG and SVG next to the note** (`<note> <n>`); the CLI writes to the path it is
+  given, and the format follows the extension.
+- **Share button beside Zoom in, Export… as the menu's last entry.** On a phone the share button
+  opens the system share sheet in the share format (setting, PNG by default); Obsidian's desktop
+  app has no `navigator.share` (Electron 43, measured), so there it opens the dialog. The menu
+  exists only on editable diagrams; the share button is on every drawing, so every type exports.
+- **Portable, not "as seen":** labels as SVG text (`htmlLabels: false`), the font `Helvetica, Arial,
+  sans-serif`. A `foreignObject` label is invisible in Affinity, Miro, mail clients and librsvg.
+  Price: flowchart labels may wrap slightly differently from the note. Since the drawing is made
+  anew, Mermaid measures with the export font and the labels fit.
+- **Always the light drawing.** Measured in Obsidian 1.14.4's `app.css`: dark mode is
+  `.theme-dark .mermaid > svg { filter: invert(100%) hue-rotate(180deg) saturate(1.25) }`, not
+  other colours, so a `theme=` option would only have re-created that filter. Dropped.
+- **Styles frozen by computed values,** not by copying CSS rules: the plugin's rules, the theme's
+  variables and Mermaid's scoped sheet all end up as plain values on each element, which also suits
+  editors that read inline styles better than selectors.
+
+How it works: `export.ts` (see CLAUDE.md → "Export"). The checksum is SHA-256 over the block body
+(`mermaidBlocks`), an SVG root attribute and a PNG `tEXt` chunk inserted after `IHDR`.
+
+**Security review before release** (2026-10-16): accept with
+changes. Fixed before release: the PNG cap had a floor at scale 0.1, so `size [160000, 160000]`
+asked for a 1 GiB canvas (O79: no floor, `too-large` instead); `out=` took `* " < > : | ?` (a `:`
+never syncs to iOS); the CLI drew in a vault whose Mermaid permission was not granted
+(`not-permitted` now); `resolveVars` filled in theme values a note's `classDef` named (fallbacks
+only now) and a frozen `url()` could point outside the drawing (`portableValue`). Clean: `out=`
+cannot leave the vault or reach the config folder (15 crafted paths), no new active content in the
+SVG (same Mermaid, DOMPurify, render hook; the PNG is drawn through an image), parsing stays linear
+(`resolveVars` 1 M characters in 13 ms).
+
+**Tests moved off the maintainer's window.** The E2E suites send real input to the Obsidian window,
+so they now also run on a Linux test machine in a separate Obsidian instance with its own display.
+Two portability fixes came out of it: the command modifier (`MOD`, Ctrl outside macOS; `zoom_undo`
+sent Cmd) and `Scratch.ready` (on an Obsidian started just before, the first two cases ran into the
+first drawing). Timing limits of the unit tests stretch with `MDE_TIME_SCALE` (`test-timing.ts`);
+a 2-core VM needs 3.
+
 ## Changelog
+
+- **0.25.0 (2026-10-16)** Export. A share button beside "Zoom in" on every diagram (and in the
+  zoom): on a phone the system share sheet with the diagram as PNG (or SVG, setting "Share
+  format"), on the desktop the export dialog, which the menu's new last entry "Export…" opens too.
+  The dialog copies, shares or saves PNG and SVG next to the note (`<note> <n>`). CLI for scripts
+  and agents: `export` writes any diagram as PNG or SVG to a vault path, `export-check` tells
+  whether such a file still matches its note (`docs/export.md`). Files stand on their own: labels as
+  SVG text, a portable font, colours written onto the elements, the plugin's extensions included,
+  the SHA-256 of the block text inside. See "Export (0.25.0)". The E2E suites run on Linux too and
+  wait for the first drawing; `MDE_TIME_SCALE` stretches the timing tests on slow machines.
 
 - **0.24.0 (2026-10-13)** Zoom and a menu button. Every Mermaid diagram gets "Zoom in" at its top
   right, beside Obsidian's "Edit this block" as on an image (in reading view in a toolbar of its

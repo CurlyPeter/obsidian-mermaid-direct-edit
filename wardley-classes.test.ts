@@ -5,6 +5,7 @@
  * draw nothing (a stale name, a dropped link) shows up as an error here.
  */
 import { describe, expect, it } from 'vitest';
+import { timeLimit } from './test-timing';
 import { parse } from '@mermaid-js/parser';
 import { applyModel, readModel } from './wardley-model';
 import {
@@ -229,7 +230,7 @@ describe('the model', () => {
 		const src = `${MAP}\n${Array.from({ length: 40000 }, (_, i) => `%% class Staff c${i}`).join('\n')}`;
 		const t = performance.now();
 		const m = await read(src);
-		expect(performance.now() - t).toBeLessThan(1500);
+		expect(performance.now() - t).toBeLessThan(timeLimit(1500));
 		expect(m.elements.find(e => e.name === 'Staff')?.classes?.length).toBe(40000);
 	});
 });

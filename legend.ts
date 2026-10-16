@@ -8,6 +8,10 @@ const MIN_ROWS = 3;
 /** One legend entry: what it adds (`data-mp-add`), its label, and a fixed 24x16 SVG icon body. */
 export type LegendItem = readonly [kind: string, label: string, icon: string];
 
+/** The last entry of every legend: not something to add, the export dialog (`export-ui.ts`). */
+export const EXPORT_KIND = 'export';
+const EXPORT_ITEM: LegendItem = [EXPORT_KIND, 'Export…', "<path d='M12 2v8M8.5 6.5 12 10l3.5-3.5M5 10v4h14v-4' fill='none' stroke='currentColor' stroke-width='1.5'/>"];
+
 /**
  * The legend that adds elements to a diagram, the menu of its menu button (top left, `actions.ts`).
  * It opens below the button while the mouse is on the button or on the legend, and closes a moment
@@ -19,7 +23,11 @@ export class Legend {
 	private shown: HTMLElement | null = null;
 	private hideTimer = 0;
 
-	constructor(private items: readonly LegendItem[]) {}
+	private readonly items: readonly LegendItem[];
+
+	constructor(items: readonly LegendItem[]) {
+		this.items = [...items, EXPORT_ITEM];
+	}
 
 	/** The legend item under the target, if any. */
 	static itemAt(target: EventTarget | null): string | null {
@@ -99,7 +107,7 @@ export class Legend {
 		if (existing) return existing;
 		const legend = host.createDiv({ cls: 'mp-legend' });
 		for (const [kind, label, icon] of this.items) {
-			const item = legend.createDiv({ cls: 'mp-legend-item', attr: { 'data-mp-add': kind, 'aria-label': `Add ${label.toLowerCase()}` } });
+			const item = legend.createDiv({ cls: 'mp-legend-item', attr: { 'data-mp-add': kind, 'aria-label': kind === EXPORT_KIND ? label : `Add ${label.toLowerCase()}` } });
 			item.innerHTML = `<svg width='24' height='16' viewBox='0 0 24 16'>${icon}</svg>`;
 			item.createSpan({ text: label });
 		}

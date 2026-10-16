@@ -1,8 +1,12 @@
 import { App, Plugin, PluginSettingTab, Setting } from 'obsidian';
 import type { Mermaid, MermaidConfig } from 'mermaid';
-import { boxAt, boxOfZoomButton, decorate, undecorate } from './actions';
+import { boxAt, boxOfButton, decorate, undecorate } from './actions';
 import { registerCliCommands } from './cli';
 import { DiagramEditor } from './editor';
+import { EXPORT_ID_PREFIX, ExportOptions, exportDrawing } from './export';
+import { exportCliSpecs } from './export-cli';
+import { ExportFormat } from './export-format';
+import { ExportUi } from './export-ui';
 import { FlowchartEditor, flowchartRender } from './flowchart-editor';
 import { SourceRegistry, isElement, wrapRender } from './render';
 import { WardleyEditor } from './wardley-editor';
@@ -53,9 +57,11 @@ interface Settings {
 	editFlowchart: boolean;
 	/** Diagrams fill the note width while Obsidian's "Readable line length" is off. */
 	fullWidth: boolean;
+	/** What the share button sends on a phone, and the format the export dialog starts with. */
+	shareFormat: ExportFormat;
 }
 
-const DEFAULT_SETTINGS: Settings = { editWardley: true, editFlowchart: true, fullWidth: false };
+const DEFAULT_SETTINGS: Settings = { editWardley: true, editFlowchart: true, fullWidth: false, shareFormat: 'png' };
 
 /**
  * Swaps the Mermaid that Obsidian renders with, without patching Obsidian.
@@ -71,6 +77,8 @@ export default class MermaidDirectEditPlugin extends Plugin {
 	/** Obsidian's own instance, once its loader has assigned it. */
 	private obsidianMermaid: Mermaid | undefined;
 	private pinned: Mermaid | undefined;
+	/** The pinned instance got a configuration (Obsidian's, or the copy of it): an export before any diagram was drawn needs one. */
+	private initialized = false;
 	state: State = 'waiting';
 	/** Obsidian had loaded its Mermaid before this plugin (enabled late, or reloaded). */
 	obsidianLoadedFirst = false;
@@ -85,6 +93,8 @@ export default class MermaidDirectEditPlugin extends Plugin {
 	/** One editor per diagram type; each handles only the diagrams tagged with its kind. */
 	private readonly editors: DiagramEditor<any>[] = [this.wardley, this.flowchart];
 	/** The zoom (one at a time); Escape there goes to an editor first while it has something waiting. */
+	/** The share button and the export dialog. */
+	private readonly exporter = new ExportUi(this.app, this.registry, (src, format, opts, doc) => this.draw(src, format, opts, doc), () => this.settings.shareFormat);
 	private readonly zoom = new DiagramZoom(this.app, this.registry, () => this.current(), () => this.editors.some(ed => ed.busy()), () => this.editors.forEach(ed => ed.release()));
 
 	async onload() {
@@ -92,7 +102,8 @@ export default class MermaidDirectEditPlugin extends Plugin {
 			action: 'status',
 			description: 'Pinned Mermaid version and whether it is rendering (JSON)',
 			run: () => this.status(),
-		}, ...wardleyCliSpecs(this.app, () => this.current())]);
+		}, ...wardleyCliSpecs(this.app, () => this.current()), ...exportCliSpecs(this.app, (src, format, opts) => this.draw(src, format, opts, document))]);
+		for (const ed of this.editors) ed.onExport = box => this.exporter.openDialog(box);
 
 		const w = window as any;
 		const loadedFirst: Mermaid | undefined = w.mermaid;
@@ -166,6 +177,11 @@ export default class MermaidDirectEditPlugin extends Plugin {
 		await this.saveData(this.settings);
 	}
 
+	async setShareFormat(format: ExportFormat) {
+		this.settings.shareFormat = format;
+		await this.saveData(this.settings);
+	}
+
 	async setFullWidth(on: boolean) {
 		this.settings.fullWidth = on;
 		this.applyEditClass();
@@ -181,15 +197,28 @@ export default class MermaidDirectEditPlugin extends Plugin {
 		}
 	}
 
-	/** A press on a "Zoom in" button: the zoom opens on click, every other event of the press is swallowed. */
+	/**
+	 * A press on a "Zoom in" or share button: the zoom or the share/export opens on click, every
+	 * other event of the press is swallowed.
+	 */
 	private onZoomButton = (e: MouseEvent) => {
-		const button = isElement(e.target) ? e.target.closest('.mde-zoom-button') : null;
+		const button = isElement(e.target) ? e.target.closest('.mde-zoom-button, .mde-share-button') : null;
 		if (!button) return;
 		e.preventDefault();
 		e.stopImmediatePropagation();
-		const box = e.type === 'click' ? boxOfZoomButton(button) : null;
-		if (box) void this.zoom.open(box);
+		const box = e.type === 'click' ? boxOfButton(button) : null;
+		if (!box) return;
+		if (button.hasClass('mde-share-button')) void this.exporter.share(box);
+		else void this.zoom.open(box);
 	};
+
+	/** A drawing as a file (`export.ts`), with the pinned Mermaid configured even before any diagram was drawn. */
+	private async draw(src: string, format: ExportFormat, opts: ExportOptions, doc: Document) {
+		const m = this.current();
+		if (!m) throw new Error('Mermaid is not loaded.');
+		if (m === this.pinned && !this.initialized) m.initialize(OBSIDIAN_CONFIG);
+		return exportDrawing(m, src, format, doc, opts);
+	}
 
 	/** Idempotent and a few lookups only, so it runs on every hover: Live Preview may rebuild a block's toolbar around the same drawing. */
 	private onPointerOver = (e: PointerEvent) => {
@@ -202,7 +231,7 @@ export default class MermaidDirectEditPlugin extends Plugin {
 	 * render resolves), it gets its buttons. The zoom decorates its own drawings.
 	 */
 	private rendered(id: string) {
-		if (id.startsWith(ZOOM_ID_PREFIX)) return;
+		if (id.startsWith(ZOOM_ID_PREFIX) || id.startsWith(EXPORT_ID_PREFIX)) return;
 		let tries = 0;
 		const look = () => {
 			for (const doc of this.docs) {
@@ -218,6 +247,7 @@ export default class MermaidDirectEditPlugin extends Plugin {
 
 	onunload() {
 		this.zoom.close();
+		this.exporter.destroy();
 		for (const ed of this.editors) ed.destroy(this.docs);
 		undecorate(this.docs);
 		const w = window as any;
@@ -261,7 +291,10 @@ export default class MermaidDirectEditPlugin extends Plugin {
 	private loadPinned(): Mermaid {
 		const m: Mermaid = require('mermaid').default;
 		const initialize = m.initialize.bind(m);
-		m.initialize = (config: MermaidConfig) => initialize({ ...config, ...CLASSIC });
+		m.initialize = (config: MermaidConfig) => {
+			this.initialized = true;
+			initialize({ ...config, ...CLASSIC });
+		};
 		wrapRender(m, this.registry, [wardleyRender, flowchartRender], id => this.rendered(id));
 		return m;
 	}
@@ -280,6 +313,7 @@ export default class MermaidDirectEditPlugin extends Plugin {
 			editWardley: this.settings.editWardley,
 			editFlowchart: this.settings.editFlowchart,
 			fullWidth: this.settings.fullWidth,
+			shareFormat: this.settings.shareFormat,
 			rendering: this.state === 'active' ? `pinned ${PINNED_VERSION}` : this.obsidianMermaid ? 'obsidian' : 'none yet',
 			error: this.error,
 		};
@@ -315,5 +349,9 @@ class MermaidDirectEditSettingTab extends PluginSettingTab {
 			.setName('Full-width diagrams without readable line length')
 			.setDesc('While Obsidian\'s "Readable line length" is off, every diagram fills the width of the note, small ones included (for presenting, e.g. on a second screen). With it on, diagrams keep their usual size. Switch with the command "Toggle readable line length"; a hotkey for it can be set under Settings → Hotkeys.')
 			.addToggle(t => t.setValue(this.plugin.settings.fullWidth).onChange(v => this.plugin.setFullWidth(v)));
+		new Setting(containerEl)
+			.setName('Share format')
+			.setDesc('What the share button beside "Zoom in" sends on a phone, and the format the export dialog starts with. On the desktop the button opens the export dialog.')
+			.addDropdown(d => d.addOptions({ png: 'PNG', svg: 'SVG' }).setValue(this.plugin.settings.shareFormat).onChange(v => this.plugin.setShareFormat(v as ExportFormat)));
 	}
 }
