@@ -57,7 +57,8 @@ it is opened (a browser, Affinity, Miro, a mail, librsvg):
 - **Colours are written onto the elements.** Every element carries its computed colours, line
   widths and font values in a `style` attribute, and Mermaid's style sheet has no CSS variable
   left (each takes its fallback, never a value of the theme): a highlight in the theme's accent
-  colour stays that colour outside Obsidian. A `url()` goes into the file only as a reference
+  colour stays that colour outside Obsidian, and a mark a style takes away (`stroke:none` in a
+  Wardley group's `classDef`, a flowchart `style` or `linkStyle`) stays away. A `url()` goes into the file only as a reference
   inside the drawing (`url(#…)`). Always the light drawing: Obsidian's dark mode is a filter over
   the diagram, not other colours.
 

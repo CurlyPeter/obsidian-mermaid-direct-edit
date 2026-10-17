@@ -23,11 +23,11 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 /** Render ids of exports; the plugin's after-render step leaves them alone. */
 export const EXPORT_ID_PREFIX = 'mde-export-';
 
-/** Inherited presentation properties: written where they differ from the parent's value. */
+/** Inherited presentation properties: written where they differ from the parent's value or the file sets them (`setInFile`). */
 const INHERITED = ['fill', 'fill-opacity', 'fill-rule', 'stroke', 'stroke-width', 'stroke-opacity', 'stroke-dasharray', 'stroke-dashoffset',
 	'stroke-linecap', 'stroke-linejoin', 'stroke-miterlimit', 'font-family', 'font-size', 'font-weight', 'font-style', 'text-anchor',
 	'letter-spacing', 'visibility'];
-/** Properties that are not inherited: written where they differ from their initial value. */
+/** Properties that are not inherited: written where they differ from their initial value or the file sets them. */
 const OWN: [string, string][] = [['opacity', '1'], ['dominant-baseline', 'auto'], ['alignment-baseline', 'auto']];
 
 export interface ExportOptions {
@@ -114,6 +114,8 @@ function sizeOf(root: SVGSVGElement): { width: number; height: number } {
  * Writes every element's computed presentation values onto it (`style`), and resolves the
  * variables in Mermaid's style sheet: the file must look the same where neither the plugin's
  * rules nor Obsidian's variables exist. HTML inside a `foreignObject` keeps the style sheet.
+ * A value equal to the parent's (or the initial one) is left out only where nothing in the file
+ * sets it (`setInFile`); where the file's own sheet sets it `!important`, so is the frozen value.
  */
 function freezeStyles(root: SVGSVGElement, doc: Document) {
 	const win = doc.defaultView ?? window;
@@ -123,19 +125,24 @@ function freezeStyles(root: SVGSVGElement, doc: Document) {
 		if (!cs) computed.set(el, (cs = win.getComputedStyle(el)));
 		return cs;
 	};
+	const setBy = setInFile(root);
 	const writes: [Element, string][] = [];
 	for (const el of [root, ...Array.from(root.querySelectorAll('*'))]) {
 		if (el.namespaceURI !== SVG_NS || el.localName === 'style' || el.localName === 'title' || el.localName === 'desc') continue;
 		const cs = style(el);
 		const parent = el === root || !el.parentElement ? null : style(el.parentElement);
 		const decl: string[] = [];
+		const put = (p: string, v: string, differs: boolean) => {
+			const by = setBy(el, p);
+			if (v && portableValue(v) && (differs || by)) decl.push(by === 'important' ? `${p}:${v} !important` : `${p}:${v}`);
+		};
 		for (const p of INHERITED) {
 			const v = cs.getPropertyValue(p);
-			if (v && portableValue(v) && (!parent || parent.getPropertyValue(p) !== v)) decl.push(`${p}:${v}`);
+			put(p, v, !parent || parent.getPropertyValue(p) !== v);
 		}
 		for (const [p, initial] of OWN) {
 			const v = cs.getPropertyValue(p);
-			if (v && portableValue(v) && v !== initial) decl.push(`${p}:${v}`);
+			put(p, v, v !== initial);
 		}
 		if (cs.getPropertyValue('display') === 'none') decl.push('display:none');
 		writes.push([el, decl.join(';')]);
@@ -150,6 +157,55 @@ function freezeStyles(root: SVGSVGElement, doc: Document) {
 	for (const sheet of Array.from(root.querySelectorAll('style'))) {
 		sheet.textContent = resolveVars(sheet.textContent ?? '', () => '');
 	}
+}
+
+/**
+ * Whether the file itself sets property `p` on `el`: `'important'` where a rule of the drawing's own
+ * style sheets (they stay in the file) sets it `!important`, which beats a plain inline value;
+ * `'set'` for another such rule or a presentation attribute; else null. Such a value is frozen even
+ * where it equals the parent's, else the attribute or rule decides in the file while Obsidian
+ * showed something else: a group's `classDef … stroke:none` gave the boundary its dashed `stroke`
+ * attribute back, a flowchart's `style A stroke:none` Mermaid's default border, and with a
+ * `classDef` on the same node (Mermaid writes it as `!important` rules) its border and fill.
+ * Duck-typed: in a pop-out the rules belong to another window's realm.
+ */
+function setInFile(root: SVGSVGElement): (el: Element, p: string) => 'important' | 'set' | null {
+	const props = [...INHERITED, ...OWN.map(([p]) => p)];
+	// Per element, the properties a rule sets: true where one sets it `!important`.
+	const ruled = new Map<Element, Map<string, boolean>>();
+	const visit = (rules: CSSRuleList) => {
+		for (const rule of Array.from(rules)) {
+			const r = rule as CSSRule & { selectorText?: string; style?: CSSStyleDeclaration; cssRules?: CSSRuleList };
+			if (r.cssRules) visit(r.cssRules);
+			if (!r.selectorText || !r.style) continue;
+			const sets = props.filter(p => r.style!.getPropertyValue(p) !== '');
+			if (!sets.length) continue;
+			let hits: Element[];
+			try {
+				hits = Array.from(root.querySelectorAll(r.selectorText));
+			} catch {
+				continue;  // a selector this engine does not take matches nothing here either
+			}
+			for (const el of hits) {
+				const own = ruled.get(el) ?? new Map<string, boolean>();
+				for (const p of sets) own.set(p, own.get(p) === true || r.style.getPropertyPriority(p) === 'important');
+				ruled.set(el, own);
+			}
+		}
+	};
+	for (const sheet of Array.from(root.querySelectorAll('style'))) {
+		try {
+			const rules = sheet.sheet?.cssRules;
+			if (rules) visit(rules);
+		} catch {
+			// no rules to read: nothing more is frozen than before
+		}
+	}
+	return (el, p) => {
+		const important = ruled.get(el)?.get(p);
+		if (important) return 'important';
+		return important === false || el.hasAttribute(p) ? 'set' : null;
+	};
 }
 
 /**

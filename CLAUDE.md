@@ -145,7 +145,13 @@ Any diagram as a standalone PNG or SVG file. Contract of the CLI commands: `docs
 - **Styles frozen.** The drawing goes into an off-screen `.mermaid` box under `.theme-light` (off
   screen, never `visibility: hidden`, which every element would inherit), and `freezeStyles`
   writes each SVG element's computed presentation values into its `style` (inherited properties
-  only where they differ from the parent's). Then the registry keys and Mermaid's `max-width` go,
+  only where they differ from the parent's, **unless the file itself sets them on that element**:
+  a presentation attribute or a rule of the drawing's own style sheet, `setInFile`; else that
+  attribute or rule decides in the file, and a group's `classDef … stroke:none` got its dashed
+  boundary back, 0.26.1). Where such a rule is `!important` (Mermaid writes every flowchart
+  `classDef` that way) the frozen value is too, or the rule beats it. E2E `export_faithful` (both
+  suites) compares every element of the file (shapes, groups, text spans) in an empty iframe with
+  the drawing under Obsidian's CSS. Then the registry keys and Mermaid's `max-width` go,
   `width`/`height` come from the viewBox, `resolveVars` clears the style sheet of `var()` (fallbacks
   only, never a theme value: a note's `classDef` reaches that sheet), and no frozen value keeps a
   `url()` other than `url(#…)` (`portableValue`; security review 0.25.0, I-3). Obsidian's

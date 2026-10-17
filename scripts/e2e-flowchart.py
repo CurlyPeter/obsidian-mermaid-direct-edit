@@ -556,6 +556,36 @@ def case_export_svg_text():
         E.trash_path(d)
 
 
+FAITHFUL = """flowchart LR
+  A[One] --> B[Two] --> C[Three] --> D[Four] --> E[Five]
+  style A fill:none,stroke:none
+  classDef dark fill:#333333,stroke:#333333,color:#ff0000
+  class B,C dark
+  style C fill:#000000,stroke:none,stroke-width:1px
+  classDef faded opacity:0.5
+  class D faded
+  style D opacity:1
+  linkStyle 0 stroke:none"""
+
+
+def case_export_faithful():
+    """The exported SVG paints every element as Obsidian does, also where `style` or `linkStyle`
+    take a border away (`stroke:none`), alone or over a `classDef` (Mermaid writes it as
+    `!important` rules), and where `style D opacity:1` overrides a faded class: before 0.26.1 the
+    frozen style dropped a value that equalled the parent's (or the initial one) and froze none as
+    important, so Mermaid's style sheet in the file decided. Checked in an empty iframe, against
+    the diagram drawn under Obsidian's CSS."""
+    d = f'E2E flowchart faithful {time.strftime("%H%M%S")}'
+    try:
+        got = E.cli('export', source=FAITHFUL.replace('\n', '\\n'), out=f'{d}/flow.svg')
+        if not got.get('ok'):
+            return False, f'export {got}'
+        diff = E.export_differences(FAITHFUL, f'{d}/flow.svg')
+        return diff.get('count') == 0, f'{diff}'
+    finally:
+        E.trash_path(d)
+
+
 def case_unload_cleanup():
     p = locate(s=['plus', 'Lone'], c=['menu'])
     click(*p['s']); wait(0.3)
@@ -575,7 +605,7 @@ CASES = [
     ('legend_add_node', case_legend_add_node), ('legend_direction', case_legend_direction), ('legend_group', case_legend_group),
     ('group_dialog', case_group_dialog), ('group_ungroup', case_group_ungroup), ('node_delete', case_node_delete),
     ('hover_cursors', case_hover_cursors), ('touch', case_touch), ('zoom_add_node', case_zoom_add_node),
-    ('export_svg_text', case_export_svg_text),
+    ('export_svg_text', case_export_svg_text), ('export_faithful', case_export_faithful),
     # Replaces the note with a diagram the editor refuses: after every case that needs the test diagram.
     ('not_editable', case_not_editable),
     ('unload_cleanup', case_unload_cleanup),

@@ -950,6 +950,42 @@ def case_export_limits():
         E.trash_path(d)
 
 
+FAITHFUL = """wardley-beta
+title E2E faithful
+anchor User [0.95, 0.60]
+component Tea [0.70, 0.50]
+component Water [0.40, 0.80]
+component Kettle [0.30, 0.35]
+User -> Tea
+Tea -> Water
+Tea -> Kettle
+%% group Area label Tea, Water
+%% classDef area fill:purple, stroke:none, color:purple
+%% class Area area
+%% group Thin Kettle, Water
+%% classDef thin fill:green, stroke-width:0
+%% class Thin thin
+%% classDef quiet stroke:none
+%% class Kettle quiet
+%% class Tea -> Water highlight"""
+
+
+def case_export_faithful():
+    """The exported SVG paints every element as Obsidian does, also where a `classDef` takes a mark
+    away: a group with `stroke:none` exports without the dashed boundary its own attribute draws
+    (0.26.1; before, the frozen style dropped the value that equalled the parent's and the
+    attribute came back). Checked in an empty iframe, against the map drawn under Obsidian's CSS."""
+    d = f'E2E faithful {time.strftime("%H%M%S")}'
+    try:
+        got = E.cli('export', source=FAITHFUL.replace('\n', '\\n'), out=f'{d}/map.svg')
+        if not got.get('ok'):
+            return False, f'export {got}'
+        diff = E.export_differences(FAITHFUL, f'{d}/map.svg')
+        return diff.get('count') == 0, f'{diff}'
+    finally:
+        E.trash_path(d)
+
+
 SHARE_IN_ZOOM = 'JSON.stringify((()=>{const b=document.querySelector(".mde-zoom .mde-share-button")?.getBoundingClientRect(); return b && [Math.round(b.left+b.width/2), Math.round(b.top+b.height/2)]})())'
 CLIPBOARD = '(async()=>{try{const i=await navigator.clipboard.read(); return JSON.stringify(i.flatMap(x=>x.types))}catch(e){return "error "+e.name}})()'
 
@@ -1437,7 +1473,7 @@ CASES = [
     ('group_new_from_legend', case_group_new_from_legend), ('group_members', case_group_members), ('group_touch_tap', case_group_touch_tap),
     ('group_properties_delete', case_group_properties_delete), ('group_label_dialog', case_group_label_dialog),
     ('group_area_click', case_group_area_click),
-    ('export_cli', case_export_cli), ('export_limits', case_export_limits), ('export_menu', case_export_menu), ('share_button', case_share_button),
+    ('export_cli', case_export_cli), ('export_limits', case_export_limits), ('export_faithful', case_export_faithful), ('export_menu', case_export_menu), ('share_button', case_share_button),
     ('component_on_shaft', case_component_on_shaft), ('swallow_scope', case_swallow_scope),
     ('zoom_fit', case_zoom_fit), ('zoom_edit_source', case_zoom_edit_source), ('zoom_drag', case_zoom_drag), ('zoom_touch_drag', case_zoom_touch_drag),
     ('zoom_dialog_escape', case_zoom_dialog_escape), ('zoom_legend_escape', case_zoom_legend_escape), ('zoom_legend_add', case_zoom_legend_add),

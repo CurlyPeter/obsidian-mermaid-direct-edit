@@ -174,6 +174,42 @@ def rsvg_size(path):
     return (facts['width'], facts['height']) if facts else False
 
 
+# The export's labels (`withExportConfig` in export-format.ts): drawn with them, the editor's
+# drawing has the same elements as the file.
+EXPORT_INIT = '%%{init: ' + json.dumps({'htmlLabels': False, 'flowchart': {'htmlLabels': False}, 'fontFamily': 'Helvetica, Arial, sans-serif'}, separators=(',', ':')) + '}%%'
+# What a viewer paints: compared per element.
+PAINT = ['stroke', 'fill', 'stroke-width', 'stroke-dasharray', 'stroke-opacity', 'fill-opacity', 'opacity', 'visibility', 'display']
+
+
+def export_differences(source, svg_path):
+    """
+    Where the exported SVG at `svg_path` (vault path) paints an element differently than Obsidian
+    paints the same diagram. `source` is drawn off screen under `.theme-light .mermaid`, so
+    Obsidian's and the plugin's CSS apply; the file is loaded into an empty iframe, where none
+    does. Both drawings' shapes, groups and text spans are compared in document order. Answers
+    {'count', 'diffs', 'shapes'} or {'error'}.
+    """
+    code = ('(async()=>{const src=' + json.dumps(source + '\n' + EXPORT_INIT) + ', props=' + json.dumps(PAINT) + ';'
+            'const sel="g,path,line,circle,rect,text,tspan,polygon,polyline,ellipse", id="mde-export-e2e"+Date.now();'
+            'const host=document.body.createDiv({cls:"theme-light"}); host.style.cssText="position:fixed;left:-100000px;top:0;width:1400px;pointer-events:none";'
+            'const box=host.createDiv({cls:"mermaid"}); const ifr=document.createElement("iframe"); ifr.style.cssText="position:fixed;left:-100000px;top:0;width:1400px;height:1000px";'
+            'try{const {svg}=await window.mermaid.render(id, src, box); box.insertAdjacentHTML("afterbegin", svg);'
+            'const live=box.querySelector(":scope > svg"); const text=await app.vault.adapter.read(' + json.dumps(svg_path) + ');'
+            'await new Promise(r=>{ifr.onload=r; ifr.srcdoc="<!doctype html><html><body style=\\"margin:0\\">"+text.slice(text.indexOf("<svg"))+"</body></html>"; document.body.appendChild(ifr);});'
+            'const file=ifr.contentDocument.querySelector("svg"); const a=[...live.querySelectorAll(sel)];'
+            'const b=[...file.querySelectorAll(sel)].filter(e=>e.getAttribute("class")!=="mde-export-ground");'
+            'if(a.length!==b.length) return JSON.stringify({error:"shapes "+a.length+" in Obsidian, "+b.length+" in the file"});'
+            'const diffs=[]; for(let i=0;i<a.length;i++){const ca=getComputedStyle(a[i]), cb=ifr.contentWindow.getComputedStyle(b[i]);'
+            'for(const p of props){const x=ca.getPropertyValue(p), y=cb.getPropertyValue(p); if(x!==y) diffs.push(b[i].localName+"."+(b[i].getAttribute("class")||"")+" "+p+": "+x+" in Obsidian, "+y+" in the file");}}'
+            'return JSON.stringify({count:diffs.length, diffs:diffs.slice(0,5), shapes:a.length});'
+            '}finally{host.remove(); ifr.remove(); document.getElementById("d"+id)?.remove();}})()')
+    raw = js(code)
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {'error': raw[:300]}
+
+
 class Scratch:
     """A note with a unique name at the vault root, open in Live Preview; trashed afterwards."""
 

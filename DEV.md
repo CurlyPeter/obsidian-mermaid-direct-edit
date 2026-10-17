@@ -1101,6 +1101,21 @@ the other side of the line (Mermaid offsets it to the left of the direction), by
 
 ## Changelog
 
+- **0.26.1 (2026-10-17)** Export paints what the note shows where a style takes a mark away. A
+  Wardley group with `classDef … stroke:none` was exported with a dashed boundary, a component with
+  `stroke:none` with its circle outline, a flowchart node or link with `style`/`linkStyle …
+  stroke:none` with Mermaid's default border, and a node with both a `classDef` and its own
+  `style` with the class's border and fill. Cause: the frozen style kept a value only where it
+  differed from the parent's (or the initial one), and `none` equals it, so the element's own
+  attribute (`stroke="#333"`) or Mermaid's style sheet decided in the file; and Mermaid writes a
+  flowchart `classDef` as `!important` rules, which beat a plain frozen value. Now a value the file
+  itself sets on an element (attribute or sheet rule) is always frozen, `!important` where the rule
+  is (`setInFile` in `export.ts`). New E2E case `export_faithful` in both suites: the file in an
+  empty iframe against the drawing under Obsidian's CSS, every shape, group and text span; with
+  the fix switched off it fails. Checked besides on 9 real notes (Wardley, flowchart, state,
+  sequence): no difference. Files grow by about 8 %; the rule scan takes 55 ms on a flowchart of
+  4846 elements (code review).
+
 - **0.26.0 (2026-10-17)** Links read top to bottom, and a shadow shows what a press takes. A link
   without a head of its own is written from the upper element to the lower one whenever the editor
   draws it, re-links it, saves it in its dialog or moves one of its elements, so the
