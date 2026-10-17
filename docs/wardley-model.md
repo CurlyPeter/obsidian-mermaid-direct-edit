@@ -74,10 +74,11 @@ usually `wardley-beta`). Optional keys are absent when the map has nothing for t
 | `method` | `build`, `buy`, `outsource` or `market`. |
 | `links[].kind` | The arrow as written: `->`, `-->`, `-.->`, `+>`, `+<`, `+<>`, `+'label'>`, `+'label'<`, `+'label'<>`. `flow` is set for the `+` arrows. |
 | `links[].label` | The `; label` after a link, or the inline label of a flow arrow. |
+| `links[].from`, `links[].to` | The names as written. Since plugin 0.26.0 the graphical editor writes a link without a head of its own (`->`, `-->`, `-.->`, `+<>`) from the upper element to the lower one whenever it draws or touches it, so `A -> B` reads as the drawing does: A needs B. A flow arrow is written `source +> target`. Links written by hand, or never touched since, may still run upwards; `wardley-apply` turns nothing. |
 | `forces` | Accelerators and deaccelerators. |
 | `classes` | On elements, links and groups: the classes set by `%% class` lines (see below), in source order. |
 | `groups` | `%% group <name> [label [dx, dy]] <members>` lines (see below), lines with one name merged: the members that exist, in source order, the line of the first statement, `label` when the name is drawn (its offset, the first among the group's lines; `[0, 0]` for `label` alone), and `classes` when a class line names the group. |
-| `classDefs` | `%% classDef <class> <styles>` lines with the properties this plugin applies (`stroke`, `stroke-width`, `stroke-dasharray`, `fill`, `color`, `font-weight`, and `r` from 8 to 48 for a group's radius; colours and plain numbers only). A later definition of the same class adds to an earlier one. |
+| `classDefs` | `%% classDef <class> <styles>` lines with the properties this plugin applies (`stroke`, `stroke-width`, `stroke-dasharray`, `fill`, `color`, `font-weight`, and `r` from 8 to 120 for a group's radius; colours and plain numbers only). A later definition of the same class adds to an earlier one. |
 | `errors` | `{line, message}`: the map parses but something in it is wrong (see below). `line` is `null` for the whole map. At most 200, sorted by line; beyond them a last entry with `line: null` counts the rest. |
 | `unsupported` | `{line, text}`: a statement Mermaid parses that this model has no field for. Expected empty; it lists what a newer Mermaid added before the model knows it. |
 
@@ -123,7 +124,7 @@ This plugin draws a dashed boundary around the members and their links, in the m
 with the name as its label when the line asks for it. Classes style it like a node (`%% class "Human + AI" highlight`): the
 boundary and the label take the class's colour, a `classDef` may set `stroke`, `stroke-width`,
 `stroke-dasharray`, a pale `fill`, the label's `color` and `font-weight`, and `r`, the radius of
-the circle swept along the members (8 to 48, default 16). Groups sharing members are drawn with
+the circle swept along the members (8 to 120 since plugin 0.26.0, before 48; default 16). Groups sharing members are drawn with
 radii 6 apart, the smaller group inside, unless a class sets `r`. `wardley-apply` leaves the lines
 alone (removing an element takes it out of its groups, and a group that loses its last member
 takes the class lines naming it along).
@@ -141,7 +142,7 @@ takes the class lines naming it along).
 - a `%% class` line without a target, with an empty name or a class name that is not one
   (letters, digits, `_`, `-`), or naming an element, group or link the map does not have; a class
   whose `classDef` sets `r` on an element or a link (it only sets a group's radius); a `classDef`
-  part the plugin does not apply (`fill:url(…)`, an unknown property, `r` outside 8-48);
+  part the plugin does not apply (`fill:url(…)`, an unknown property, `r` outside 8-120);
 - a `%% group` line without a name or members, with a name that starts or ends with a blank or
   holds a control character, with a link as a member, a label offset that is not `label [dx, dy]`
   (each value at most ±9999.99), or naming an element the map does not have; a group named like an

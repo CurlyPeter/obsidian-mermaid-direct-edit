@@ -15,7 +15,7 @@ import {
 	CLASS_NAME, EditError, MAX_CLASSES, Method, STYLE_PROPERTIES, addElement, addEvolve, addForce, addLink, addNote, addToPipeline,
 	classDefs, classMarkers, deleteElement, groupMarkers, groupsOf, deleteEvolve, deleteForce, deleteNote, editBlocker, inertiaMarkers,
 	setClasses, setEvolveTarget, setInertiaPosition, setForcePosition, setInertia, setLabelOffset, setLink, setMethod,
-	setNotePosition, setPosition, setTitle, unlink, LinkKind,
+	setNotePosition, setPosition, setTitle, unlink, LinkKind, linkKindOf,
 } from './wardley-text';
 
 /** Version of the model shape. Bump on any incompatible change. */
@@ -360,7 +360,7 @@ export async function readModel(source: string, parse: ParseFn): Promise<Wardley
 	for (const d of classDefs(source)) {
 		if (!CLASS_NAME.test(d.name)) errors.push({ line: d.line, message: `classDef: "${d.name}" is not a class name (letters, digits, _ and -, at most 40).` });
 		for (const r of d.rejected) {
-			errors.push({ line: d.line, message: `classDef ${d.name}: "${r}" is not applied (only ${STYLE_PROPERTIES.join(', ')} with colours or plain numbers; r from 8 to 48).` });
+			errors.push({ line: d.line, message: `classDef ${d.name}: "${r}" is not applied (only ${STYLE_PROPERTIES.join(', ')} with colours or plain numbers; r from 8 to 120).` });
 		}
 		(model.classDefs ??= []).push({ name: d.name, style: d.style, line: d.line });
 	}
@@ -396,12 +396,6 @@ const portForm = (arrow: string) => arrow.replace(/^\+'[^']*'/, '+');
 
 const pairKey = (a: string, b: string) => (a < b ? `${a}\u0000${b}` : `${b}\u0000${a}`);
 
-/** The drawing of an arrow as the editor writes it (`setLink`). */
-function linkKindOf(arrow: string): LinkKind {
-	const bare = arrow.replace(/^\+'[^']*'|^\+"[^"]*"/, '+');
-	if (bare.startsWith('+')) return bare.includes('<>') ? 'both' : bare.includes('<') ? 'backward' : 'forward';
-	return bare.includes('.') ? 'dashed' : 'line';
-}
 
 // ---- apply --------------------------------------------------------------------------
 

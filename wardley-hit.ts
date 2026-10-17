@@ -16,7 +16,7 @@ export type Hit =
 	| { kind: 'trend-tip'; line: SVGLineElement; name: string }
 	| { kind: 'trend-shaft'; name: string }
 	| { kind: 'link-end'; line: SVGLineElement; end: 1 | 2; names: [string, string] }
-	| { kind: 'link-middle'; names: [string, string] }
+	| { kind: 'link-middle'; line: SVGLineElement; names: [string, string] }
 	| { kind: 'plus'; node: MapNode }
 	| { kind: 'box'; node: MapNode }
 	/** Free space inside a group's boundary (`%% group`): the smallest group there. */
@@ -136,7 +136,7 @@ function linkHit(model: MapModel, p: Pt, width: number): Hit | null {
 	const n2 = model.ownerAt(Number(l.getAttribute('x2')), Number(l.getAttribute('y2')));
 	if (!n1 || !n2) return null;
 	const names: [string, string] = [n1.name, n2.name];
-	return best.part === 'middle' ? { kind: 'link-middle', names } : { kind: 'link-end', line: l, end: best.part, names };
+	return best.part === 'middle' ? { kind: 'link-middle', line: l, names } : { kind: 'link-end', line: l, end: best.part, names };
 }
 
 function plusHit(model: MapModel, p: Pt): Hit | null {

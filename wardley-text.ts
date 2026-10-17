@@ -600,9 +600,10 @@ const STYLE_VALUE = new Map<string, RegExp>([
 	['stroke-width', /^\d{1,2}(?:\.\d{1,2})?(?:px)?$/],
 	['stroke-dasharray', /^\d{1,3}(?: {1,3}\d{1,3}){0,7}$/],
 	['font-weight', /^(?:normal|bold|[1-9]00)$/],
-	// A group's radius, 8 to 48 drawing units: CSS's `r` (a circle's radius), here the radius of
-	// the circle swept along the members. Elements ignore it.
-	['r', /^(?:(?:[89]|[1-3]\d|4[0-7])(?:\.\d{1,2})?|48)(?:px)?$/],
+	// A group's radius, 8 to 120 drawing units: CSS's `r` (a circle's radius), here the radius of
+	// the circle swept along the members. Elements ignore it. The cost is bounded by the group
+	// budget, not by this cap (DEV.md 0.26.0); 120 is a fifth of the default map's height.
+	['r', /^(?:(?:[89]|[1-9]\d|1[01]\d)(?:\.\d{1,2})?|120)(?:px)?$/],
 ]);
 export const STYLE_PROPERTIES = [...STYLE_VALUE.keys()];
 
@@ -1345,6 +1346,16 @@ export interface LinkInfo {
 	label: string;
 }
 
+/**
+ * How an arrow is drawn. The direction is read without the inline label (`+'a<b'>` is forward):
+ * the one place that knows the arrow forms, for the dialog, the model and `orient`.
+ */
+export function linkKindOf(arrow: string): LinkKind {
+	const bare = arrow.replace(/^\+'[^']*'|^\+"[^"]*"/, '+');
+	if (bare.startsWith('+')) return bare.includes('<>') ? 'both' : bare.includes('<') ? 'backward' : 'forward';
+	return bare.includes('.') ? 'dashed' : 'line';
+}
+
 /** Reads the link between `a` and `b` (either order). */
 export function getLink(source: string, a: string, b: string): LinkInfo {
 	const lines = source.split('\n');
@@ -1354,12 +1365,7 @@ export function getLink(source: string, a: string, b: string): LinkInfo {
 	const after = line.slice(sp[1].end);
 	const inline = /^\+'([^']*)'/.exec(arrow)?.[1] ?? /^\+"([^"]*)"/.exec(arrow)?.[1];
 	const annotation = /^[ \t]*;(.*)$/.exec(after)?.[1].trim();
-	// The direction is read from the arrow without its inline label (`+'a<b'>` is forward).
-	const bare = arrow.replace(/^\+'[^']*'|^\+"[^"]*"/, '+');
-	const kind: LinkKind = bare.startsWith('+')
-		? (bare.includes('<>') ? 'both' : bare.includes('<') ? 'backward' : 'forward')
-		: bare.includes('.') ? 'dashed' : 'line';
-	return { from: sp[0].name, to: sp[1].name, kind, label: (inline ?? annotation ?? '').trim() };
+	return { from: sp[0].name, to: sp[1].name, kind: linkKindOf(arrow), label: (inline ?? annotation ?? '').trim() };
 }
 
 /**
@@ -1405,6 +1411,121 @@ export function addLink(source: string, from: string, to: string): string {
 	lines.splice(at + 1, 0, `${indent}${formatName(from)} -> ${formatName(to)}`);
 	return lines.join('\n');
 }
+
+/** Two visibilities closer than this count as level: such a link is left as written. */
+const LEVEL = 0.005;
+
+/**
+ * Declared visibility per name; a pipeline component has its parent's (where Mermaid draws it
+ * and `wardley-read` reports it). A name declared more than once has none. One pass, lookups only.
+ */
+function heights(lines: string[]): Map<string, number> {
+	const vis = new Map<string, number>(), parentOf = new Map<string, string>(), twice = new Set<string>();
+	let parent: string | null = null;
+	for (const l of lines) {
+		if (/^[ \t]*pipeline[ \t]/.test(l)) { parent = nameSpans(l)[0]?.name ?? null; continue; }
+		if (/^[ \t]*\}/.test(l)) { parent = null; continue; }
+		for (const s of nameSpans(l)) {
+			if (!s.declaration) continue;
+			if (vis.has(s.name) || parentOf.has(s.name)) twice.add(s.name);
+			if (parent !== null) { parentOf.set(s.name, parent); continue; }
+			const m = position(l.slice(s.end));
+			if (m && m[5] !== undefined) vis.set(s.name, Number(m[2]));
+		}
+	}
+	for (const [child, p] of parentOf) if (!vis.has(child) && vis.has(p)) vis.set(child, vis.get(p)!);
+	for (const n of twice) vis.delete(n);
+	return vis;
+}
+
+/** A flow arrow with one head (`+>`, `+<`, also with an inline label): its direction is a statement. */
+const isDirected = (arrow: string) => { const k = linkKindOf(arrow); return k === 'forward' || k === 'backward'; };
+
+/**
+ * Writes the links without a direction of their own (`->`, `-->`, `-.->`, `+<>`) that `pick`
+ * selects from the upper element to the lower one, so the text reads as the drawing does: a
+ * plain `A -> B` says "A needs B", and a map is read from top to bottom. A link with one flow
+ * head keeps its direction. The two names swap places in the line; arrow, label, indent stay,
+ * and classes and groups name a link by its unordered pair. Left as written: a level link, an
+ * end without a position, a pair linked twice. A pipeline parent and its own component are
+ * level, which matters: Mermaid hides `Child -> Parent`, so swapping them would show the link.
+ */
+function orient(source: string, pick: (a: string, b: string) => boolean): string {
+	const lines = source.split('\n');
+	const vis = heights(lines);
+	const pairs = new Map<string, number>();
+	const key = (a: string, b: string) => (a < b ? `${a}\n${b}` : `${b}\n${a}`);
+	const links = lines.map(l => linkPair(l));
+	for (const sp of links) if (sp) pairs.set(key(sp[0].name, sp[1].name), (pairs.get(key(sp[0].name, sp[1].name)) ?? 0) + 1);
+	links.forEach((sp, i) => {
+		if (!sp) return;
+		const [a, b] = sp, line = lines[i];
+		if (!pick(a.name, b.name) || pairs.get(key(a.name, b.name))! > 1) return;
+		if (isDirected(line.slice(a.end, b.start).trim())) return;
+		const va = vis.get(a.name), vb = vis.get(b.name);
+		if (va === undefined || vb === undefined || va >= vb - LEVEL) return;
+		lines[i] = swapped(line, a, b);
+	});
+	return lines.join('\n');
+}
+
+/** `orient` on every link of the named elements (they were moved, so their links may now run upwards). */
+export function orientLinksOf(source: string, names: string[]): string {
+	const set = new Set(names);
+	return orient(source, (a, b) => set.has(a) || set.has(b));
+}
+
+/** `orient` on the one link between `a` and `b` (just drawn, re-linked or saved in its dialog). */
+export function orientLink(source: string, a: string, b: string): string {
+	return orient(source, (x, y) => (x === a && y === b) || (x === b && y === a));
+}
+
+/** The element the link between `a` and `b` comes from when read top to bottom: the upper one, or the first written when level. */
+export function upperEnd(source: string, a: string, b: string): string {
+	const lines = source.split('\n');
+	const { sp } = findLink(lines, a, b);
+	const vis = heights(lines);
+	const [first, second] = [sp[0].name, sp[1].name];
+	const v1 = vis.get(first), v2 = vis.get(second);
+	return v1 !== undefined && v2 !== undefined && v1 < v2 - LEVEL ? second : first;
+}
+
+/**
+ * How the link dialog shows a link, seen from its upper end `upper`: no head (`line`,
+ * `dashed`), one head pointing `down` (away from the upper end) or `up`, or `both`.
+ */
+export type LinkDirection = 'line' | 'dashed' | 'down' | 'up' | 'both';
+
+export function linkDirection(link: LinkInfo, upper: string): LinkDirection {
+	if (link.kind === 'forward') return link.to === upper ? 'up' : 'down';
+	if (link.kind === 'backward') return link.from === upper ? 'up' : 'down';
+	return link.kind;
+}
+
+/**
+ * Sets a link's direction and label as the dialog chose them. A flow arrow is always written
+ * `source +> target`, so the order of the names is the arrow's direction; any other link is
+ * written from the upper element to the lower one (`orientLink`).
+ */
+export function setLinkDirection(source: string, a: string, b: string, dir: LinkDirection, label: string, upper: string): string {
+	if (dir !== 'down' && dir !== 'up') return orientLink(setLink(source, a, b, dir, label), a, b);
+	const lower = upper === a ? b : a;
+	const from = dir === 'down' ? upper : lower;
+	const s = setLink(source, a, b, 'forward', label);
+	return getLink(s, a, b).from === from ? s : swapLinkEnds(s, a, b);
+}
+
+/** Swaps the two names of the link between `a` and `b` in its line; everything else stays. */
+function swapLinkEnds(source: string, a: string, b: string): string {
+	const lines = source.split('\n');
+	const { i, sp } = findLink(lines, a, b);
+	lines[i] = swapped(lines[i], sp[0], sp[1]);
+	return lines.join('\n');
+}
+
+/** `line` with its two name spans exchanged (quotes included), the arrow and the rest untouched. */
+const swapped = (line: string, x: NameSpan, y: NameSpan) =>
+	line.slice(0, x.start) + line.slice(y.start, y.end) + line.slice(x.end, y.start) + line.slice(x.start, x.end) + line.slice(y.end);
 
 /** Renames an element everywhere in the map: declaration, links, evolve, pipeline, comments it is named in. */
 export function rename(source: string, oldName: string, newName: string): string {

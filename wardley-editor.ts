@@ -3,6 +3,7 @@ import type { Mermaid } from 'mermaid';
 import { CURSOR_ADD, CURSOR_DELETE, CURSOR_REMOVE, DiagramEditor } from './editor';
 import { DBLCLICK_MS } from './geometry';
 import { DeletePress, Gesture, NewLinkDrag, Stub, TapPress } from './gestures';
+import { Glow, GlowRun, GlowTarget } from './wardley-glow';
 import { NameModal } from './modals';
 import { KEY_ATTR, SourceRegistry, isElement } from './render';
 import { STUB_LENGTH, evolutionAt, visibilityAt } from './wardley-geometry';
@@ -15,7 +16,7 @@ import {
 	CLASS_NAME, EditError, ForceKind, addAnnotation, addElement, addEvolve, addForce, addGroupMember, addLink, addNote, addToPipeline, classDefs,
 	defaultEvolveTarget, deleteAnnotation, deleteElement, deleteEvolve, deleteForce, deleteGroup, deletePipeline, freeSpot, getAnnotation,
 	getClasses, getLink, getMethod, groupsOf, hasInertia, type Method, nextGroupName, nextPipelineEvolution, pipelineOf, removeGroupMember,
-	rename, renameForce, renameGroup, setAnnotationText, setClass, setClasses, setGroupLabel, setInertia, setLink, setMethod, unlink,
+	linkDirection, orientLink, rename, renameForce, renameGroup, setAnnotationText, setClass, setClasses, setGroupLabel, setInertia, setLinkDirection, setMethod, unlink, upperEnd,
 } from './wardley-text';
 
 /**
@@ -57,6 +58,30 @@ const memberHit = (hit: Hit | null): MapNode | null =>
 	hit && (hit.kind === 'node' || hit.kind === 'box' || hit.kind === 'plus') ? hit.node : null;
 
 /**
+ * A node's shadow target: its group, the pipeline box that stands for a pipeline parent, and with
+ * `links` every link line at it, so its connections show in a dense map.
+ */
+const nodeGlow = (model: MapModel, node: MapNode, links = true): GlowTarget => ({
+	node: node.node,
+	box: model.pipelineBoxes().find(b => b.parent === node.name)?.box ?? null,
+	links: links ? model.linksAt(node.center).map(l => l.el) : [],
+});
+
+/**
+ * What gets the shadow for a hit: a node (its circle, label, "+" ring or pipeline box) with its
+ * links, or a link (its middle; on hover also its ends). Pressed, a node shows without its links
+ * and a link end not at all: a drag moves those lines away from their shadow.
+ */
+function glowOf(model: MapModel, hit: Hit | null, hover: boolean): GlowTarget | null {
+	const node = memberHit(hit);
+	if (node) return nodeGlow(model, node, hover);
+	if (hit?.kind === 'link-middle' || (hover && hit?.kind === 'link-end')) return { line: hit.line };
+	return null;
+}
+
+const glowElement = (t: GlowTarget | null) => (t ? ('line' in t ? t.line : t.node) : null);
+
+/**
  * Graphical editing of rendered `wardley-beta` maps. The shared `DiagramEditor` wires the DOM
  * events; this class says what a press on a map means (`classify`, one priority order), starts
  * the gestures, runs the legend and the dialogs. Every edit is a validated text change of the
@@ -67,6 +92,13 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 	private armed: { kind: 'evolve' | 'inertia' | 'pipeline'; box: Element; item: Element } | null = null;
 	private group: GroupEdit | null = null;
 	private toldStub = false;
+	/** The shadow (DEV.md 0.26.0): what a press would take, what is pressed, what has its dialog open. */
+	private readonly glow = new Glow(line => this.runOf(line));
+	private hovered: GlowTarget | null = null;
+	private pressed: GlowTarget | null = null;
+	private readonly held = new Set<GlowTarget>();
+	/** The last hover classification, shared by `hoverAt` and `cursorAt` (one per mouse move). */
+	private lastHover: { model: MapModel; target: Element; x: number; y: number; hit: Hit | null } | null = null;
 
 	constructor(app: App, registry: SourceRegistry, mermaid: () => Mermaid | undefined, enabled: () => boolean) {
 		super(app, registry, mermaid, enabled, 'wardley', { title: 'Wardley map', noun: 'map' }, WARDLEY_LEGEND);
@@ -82,6 +114,10 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 		const svg = model.svg;
 		const hit = classify(model, e.target as Element, e.clientX, e.clientY);
 		if (!hit) return;
+		// A link whose end is dragged moves away from its shadow: only the dragged node keeps one.
+		this.hovered = null;
+		this.pressed = glowOf(model, hit, false);
+		this.refreshGlow();
 		switch (hit.kind) {
 			case 'annotation': return this.start(e, new AnnotationDrag(model, e, this, hit), svg);
 			case 'note': return this.start(e, new NoteDrag(model, e, this, hit.el, hit.text), svg);
@@ -101,8 +137,8 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 			}
 			case 'link-end': return this.start(e, new LinkEndDrag(model, e, this, hit.line, hit.end, hit.names), svg);
 			case 'link-middle': {
-				const [a, b] = hit.names;
-				return this.start(e, new TapPress(model, e, () => this.openLinkDialog(model, a, b)), svg);
+				const [a, b] = hit.names, line = hit.line;
+				return this.start(e, new TapPress(model, e, () => this.openLinkDialog(model, a, b, line)), svg);
 			}
 			case 'plus': {
 				const parent = svg.querySelector('g.wardley-links') ?? svg;
@@ -118,15 +154,48 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 		return !!hit && !(touch && hit.kind === 'group');
 	}
 
+	protected hoverAt(model: MapModel | null, target: Element | null, x: number, y: number) {
+		const hit = model && target && !this.armed && !this.group ? this.hitAt(model, target, x, y) : null;
+		// Compared by element first: building a node's target reads the map's pipeline boxes.
+		const el = memberHit(hit)?.node ?? (hit?.kind === 'link-middle' || hit?.kind === 'link-end' ? hit.line : null);
+		if (el === glowElement(this.hovered)) return;
+		this.hovered = model ? glowOf(model, hit, true) : null;
+		this.refreshGlow();
+	}
+
+	protected ended(_g: Gesture) {
+		this.pressed = null;
+		this.refreshGlow();
+	}
+
+	protected dropStub() {
+		super.dropStub();
+		this.refreshGlow();
+	}
+
+	protected stubWaits() {
+		this.refreshGlow();
+		if (this.toldStub) return;
+		this.toldStub = true;
+		this.info('drag the round end onto a component, or click the component to link; drag it into free space for a new component.');
+	}
+
+	destroy(docs: Iterable<Document>) {
+		this.hovered = this.pressed = null;
+		this.held.clear();
+		this.glow.clear();
+		super.destroy(docs);
+	}
+
 	protected cursorAt(model: MapModel, target: Element, x: number, y: number): string {
 		if (this.armed) return componentAt(model, target) ? 'copy' : '';
 		if (this.group && this.inGroupMap(model)) {
-			const hit = classify(model, target, x, y);
+			const hit = this.hitAt(model, target, x, y);
 			const node = memberHit(hit);
 			if (node) return this.members().has(node.name) ? CURSOR_REMOVE : CURSOR_ADD;
 			return hit?.kind === 'group-label' ? '' : hit?.kind === 'group' ? 'pointer' : 'default';
 		}
-		const hit = classify(model, target, x, y);
+		const hit = this.hitAt(model, target, x, y);
 		return hit ? HOVER_CURSOR[hit.kind] : '';
 	}
 
@@ -141,12 +210,13 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 				const n = dropTargetAt(model, ev.clientX, ev.clientY);
 				return n ? { id: n.name, el: n.node } : null;
 			},
-			link: (from, to) => { void this.apply(model, s => addLink(s, from, to)); },
+			link: (from, to) => { void this.apply(model, s => orientLink(addLink(s, from, to), from, to)); },
 			empty: (from, at) => {
 				const v = visibilityAt(model.box, at.y), ev = evolutionAt(model.box, at.x);
+				const node = model.byName(from);
 				this.open(new NameModal(this.app, `New component linked from "${from}"`, 'Name', name => {
-					void this.apply(model, s => addLink(addElement(s, 'component', name, v, ev), from, name.trim()));
-				}));
+					void this.apply(model, s => orientLink(addLink(addElement(s, 'component', name, v, ev), from, name.trim()), from, name.trim()));
+				}), node ? this.hold(nodeGlow(model, node)) : undefined);
 			},
 		});
 	}
@@ -161,14 +231,8 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 		this.swallowAfter(model.svg);
 		stub.remove();
 		const from = stub.from, to = node.name;
-		void this.apply(model, s => addLink(s, from, to));
+		void this.apply(model, s => orientLink(addLink(s, from, to), from, to));
 		return true;
-	}
-
-	protected stubWaits() {
-		if (this.toldStub) return;
-		this.toldStub = true;
-		this.info('drag the round end onto a component, or click the component to link; drag it into free space for a new component.');
 	}
 
 	protected pressOutside(e: PointerEvent) {
@@ -232,7 +296,7 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 				label: 'Remove pipeline',
 				onClick: () => this.applyThen(model, s => deletePipeline(s, name), `pipeline of "${name}" removed.`),
 			} : undefined,
-		}));
+		}), this.hold(nodeGlow(model, node)));
 	}
 
 	/** A click on a group's label or free area starts its group mode; a second one opens its dialog. */
@@ -296,21 +360,69 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 
 	// ---- internals ---------------------------------------------------------------------------
 
-	private openLinkDialog(model: MapModel, a: string, b: string) {
-		let link: ReturnType<typeof getLink>;
-		try { link = getLink(model.src, a, b); } catch (e) { return void this.fail(e instanceof EditError ? e.message : String(e)); }
+	/** `classify` once per mouse move: hover and cursor ask for the same point. */
+	private hitAt(model: MapModel, target: Element, x: number, y: number): Hit | null {
+		const h = this.lastHover;
+		if (h && h.model === model && h.target === target && h.x === x && h.y === y) return h.hit;
+		const hit = classify(model, target, x, y);
+		this.lastHover = { model, target, x, y, hit };
+		return hit;
+	}
+
+	/** Hover, press, open dialogs and a waiting link's node: the elements that show the shadow now. */
+	private refreshGlow() {
+		const stub = this.stub?.line.isConnected ? this.stub : null;
+		const model = stub?.model as MapModel | undefined;
+		const from = model ? model.byName(stub!.from) : null;
+		this.glow.show([this.hovered, this.pressed, ...this.held, model && from ? nodeGlow(model, from) : null]);
+	}
+
+	/** Keeps the shadow on `t` while a dialog is open; the answer, called on close, takes it away. */
+	private hold(t: GlowTarget): () => void {
+		this.held.add(t);
+		this.refreshGlow();
+		return () => { this.held.delete(t); this.refreshGlow(); };
+	}
+
+	/**
+	 * Which way a link's shadow runs. A dependency (`A -> B`: A needs B, also dashed) runs from B to
+	 * A, from what supports to what it supports, the way energy flows up the value chain (maintainer
+	 * 2026-10-17); Mermaid draws `x1` at the text's `from`, so that is towards the first end. A flow
+	 * runs towards its head, `+<>` not at all.
+	 */
+	private runOf(line: SVGLineElement): GlowRun {
+		const svg = line.ownerSVGElement;
+		const model = svg ? this.modelOf(svg) : null;
+		const a = model?.ownerAt(Number(line.getAttribute('x1')), Number(line.getAttribute('y1')));
+		const b = model?.ownerAt(Number(line.getAttribute('x2')), Number(line.getAttribute('y2')));
+		if (!model || !a || !b) return 'backward';
+		try {
+			const kind = getLink(model.src, a.name, b.name).kind;
+			return kind === 'both' ? 'none' : kind === 'forward' ? 'forward' : 'backward';
+		} catch {
+			return 'backward';
+		}
+	}
+
+	private openLinkDialog(model: MapModel, a: string, b: string, line: SVGLineElement) {
+		let link: ReturnType<typeof getLink>, upper: string;
+		try { link = getLink(model.src, a, b); upper = upperEnd(model.src, a, b); } catch (e) { return void this.fail(e instanceof EditError ? e.message : String(e)); }
+		const lower = upper === link.from ? link.to : link.from;
+		const direction = linkDirection(link, upper);
 		const highlight = getClasses(model.src, [a, b]).includes('highlight');
-		this.open(new LinkModal(this.app, { ...link, highlight },
+		const upward = orientLink(model.src, a, b) !== model.src;
+		const held = this.hold({ line });
+		this.open(new LinkModal(this.app, { upper, lower, direction, label: link.label, highlight, upward },
 			// Only what changed: setLink rewrites the line, which would fold an inline flow label.
-			(kind, label, on) => {
+			(dir, label, on) => {
 				void this.apply(model, s => {
-					if (kind !== link.kind || label.trim() !== link.label) s = setLink(s, a, b, kind, label);
+					s = dir !== direction || label.trim() !== link.label ? setLinkDirection(s, a, b, dir, label, upper) : orientLink(s, a, b);
 					if (on !== highlight) s = setClass(s, [link.from, link.to], 'highlight', on);
 					return s;
 				});
 			},
 			() => this.applyThen(model, s => unlink(s, a, b), `link "${link.from}" – "${link.to}" deleted.`),
-		));
+		), held);
 	}
 
 	// ---- the group mode ------------------------------------------------------------------------

@@ -35,6 +35,48 @@ body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-node--pipeline-componen
 body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-node.mp-drop-target {
 	filter: drop-shadow(0 0 4px var(--interactive-accent));
 }
+/* The shadow behind what a press would take, and behind what is pressed or has its dialog open
+   (`wardley-glow.ts`). A node: a soft glow, and its links glow with it. A link: two lines under
+   it, a soft base and running dashes, so the direction shows without an arrow head: a dependency
+   runs from what supports to what needs it (`A -> B`: from B to A), a flow towards its head,
+   `+<>` stands still. Without motion where the system asks for less. */
+body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-node.mde-glow,
+body.mp-wardley-edit .mermaid svg[data-mp-src] rect.wardley-pipeline-box.mde-glow {
+	filter: drop-shadow(0 0 3px var(--interactive-accent)) drop-shadow(0 0 1px var(--interactive-accent));
+}
+.mermaid svg[data-mp-src] g.mde-link-glow line {
+	stroke: var(--interactive-accent);
+	stroke-linecap: round;
+	fill: none;
+}
+.mermaid svg[data-mp-src] g.mde-link-glow line.mde-glow-base {
+	stroke-width: 7px;
+	stroke-opacity: 0.18;
+}
+.mermaid svg[data-mp-src] g.mde-link-glow line.mde-glow-run {
+	stroke-width: 4px;
+	stroke-opacity: 0.45;
+	stroke-dasharray: 6 10;
+	animation: mde-link-run 0.8s linear infinite;
+}
+.mermaid svg[data-mp-src] g.mde-link-glow.mde-run-backward line.mde-glow-run {
+	animation-direction: reverse;
+}
+.mermaid svg[data-mp-src] g.mde-link-glow.mde-run-none line.mde-glow-run {
+	animation: none;
+	stroke-dasharray: none;
+	stroke-opacity: 0.3;
+}
+/* A falling offset moves the dashes from the line's first end (`x1`) towards its second; `mde-run-backward` reverses it. */
+@keyframes mde-link-run {
+	from { stroke-dashoffset: 16; }
+	to { stroke-dashoffset: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+	.mermaid svg[data-mp-src] g.mde-link-glow line.mde-glow-run {
+		animation: none;
+	}
+}
 /* Classes on Wardley maps (`%% class <target> <name>`, see DEV.md): the plugin adds
    `mde-class-<name>` to a node's group or a link's line. `highlight` is drawn in the theme's
    accent colour, a thick outline and a bold label for a node, the colour alone for a link;

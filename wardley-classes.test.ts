@@ -83,6 +83,12 @@ describe('reading class lines', () => {
 		expect(defs[1].style).toEqual({ 'stroke-dasharray': '5 5' });
 		expect(defs[1].rejected).toEqual(['fill:url(https://x.test/a)', 'stroke:expression(1)', 'stroke-width:1e9', 'constructor:x']);
 	});
+
+	it('takes a group radius from 8 to 120 (0.26.0, was 48)', () => {
+		const r = (v: string) => classDefs(`wardley-beta\n%% classDef g r:${v}`)[0].style.r;
+		for (const ok of ['8', '16', '48', '49', '99.5', '119.99', '120', '120px']) expect(r(ok)).toBe(ok);
+		for (const bad of ['7', '7.99', '120.5', '121', '200', '1000', '-10']) expect(r(bad)).toBeUndefined();
+	});
 });
 
 describe('setClass', () => {

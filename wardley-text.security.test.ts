@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { timeLimit } from './test-timing';
-import { EditError, addGroupMember, classDefs, classMarkers, deleteElement, deleteGroup, deleteNote, nextGroupName, removeGroupMember, renameGroup, getAnnotation, getClasses, groupMarkers, groupsOf, setAnnotationsBoxPosition, setGroupLabel, editBlocker, freeSpot, getPosition, inertiaPositions, isWardley, nameSpans, rename, setClass, setMethod, setPosition, setTitle } from './wardley-text';
+import { EditError, addGroupMember, classDefs, classMarkers, deleteElement, deleteGroup, deleteNote, nextGroupName, removeGroupMember, renameGroup, getAnnotation, getClasses, groupMarkers, groupsOf, setAnnotationsBoxPosition, setGroupLabel, editBlocker, freeSpot, getPosition, inertiaPositions, isWardley, nameSpans, orientLink, orientLinksOf, rename, setClass, setMethod, setPosition, setTitle } from './wardley-text';
 import { locateBlock, mermaidBlocks } from './blocks';
 import { SourceRegistry } from './render';
 
@@ -42,6 +42,15 @@ describe('F1/F2: no super-linear parsing of a crafted source', () => {
 		fast(() => deleteNote(`wardley-beta\nnote ${pad(30000)}"${pad(30000)}`, 'x'));
 		fast(() => isWardley(`${pad(60000)}wardley-beta`));
 		fast(() => mermaidBlocks('```mermaid\n' + `${'`'.repeat(3)}x\n`.repeat(5000)));
+	});
+
+	it('orienting links (0.26.0) is linear in the number of links and declarations', () => {
+		const decls = Array.from({ length: 2000 }, (_, i) => `component N${i} [0.${String(i % 90 + 10)}, 0.5]`).join('\n');
+		const many = Array.from({ length: 2000 }, (_, i) => `N${i} -> N${(i + 1) % 2000}`).join('\n');
+		fast(() => orientLinksOf(`wardley-beta\n${decls}\n${many}`, ['N1']));
+		fast(() => orientLinksOf(`wardley-beta\n${decls}\n${many}`, Array.from({ length: 2000 }, (_, i) => `N${i}`)));
+		fast(() => orientLink(`wardley-beta\ncomponent A${pad(30000)}[0.1, 0.1]\nA${pad(30000)}-> B`, 'A', 'B'));
+		fast(() => orientLinksOf(`wardley-beta\n${'pipeline P {\n'.repeat(3000)}`, ['P']));
 	});
 
 	it('parsing still reads the same values', () => {

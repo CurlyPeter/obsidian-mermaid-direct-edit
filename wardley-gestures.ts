@@ -4,7 +4,7 @@ import { Hit, dropTargetAt } from './wardley-hit';
 import { MapModel, MapNode } from './wardley-map';
 import {
 	ForceKind, getPosition, groupsOf, relink, setAnnotationPosition, setAnnotationsBoxPosition, setEvolveTarget, setForcePosition,
-	setGroupLabel, setInertiaPosition, setLabelOffset, setNotePosition, setPosition, shiftPipeline,
+	orientLink, orientLinksOf, pipelineOf, setGroupLabel, setInertiaPosition, setLabelOffset, setNotePosition, setPosition, shiftPipeline,
 } from './wardley-text';
 
 /** What a Wardley gesture may ask the editor to do, beyond writing an edit. */
@@ -66,8 +66,10 @@ export class NodeDrag extends MapDrag {
 		const pipeline = this.pipeline;
 		void this.ctx.apply(this.model, src => {
 			const pos = getPosition(src, name);
-			const moved = setPosition(src, name, (pos.visibility ?? 0) + dVis, pos.evolution + dEvo);
-			return pipeline ? shiftPipeline(moved, name, dEvo) : moved;
+			let moved = setPosition(src, name, (pos.visibility ?? 0) + dVis, pos.evolution + dEvo);
+			if (pipeline) moved = shiftPipeline(moved, name, dEvo);
+			// Its links may run upwards now (its pipeline's components move with a parent).
+			return orientLinksOf(moved, [name, ...(pipeline ? pipelineOf(moved, name) ?? [] : [])]);
 		});
 	}
 
@@ -271,7 +273,8 @@ export class LinkEndDrag extends MapDrag {
 		const oldEnd = this.names[this.end - 1];
 		if (!target || target.name === oldEnd) return this.restore();
 		const [a, b] = this.names, to = target.name;
-		void this.ctx.apply(this.model, src => relink(src, a, b, oldEnd, to));
+		const other = oldEnd === a ? b : a;
+		void this.ctx.apply(this.model, src => orientLink(relink(src, a, b, oldEnd, to), other, to));
 	}
 
 	protected restore() {

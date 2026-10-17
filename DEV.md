@@ -759,7 +759,7 @@ Decisions (maintainer, 2026-10-13), the proposal above:
   `classDef` colour become `var(--color-<name>)`, the theme's colour in light and dark mode
   (measured on 1.14.4: all eight defined). They are valid CSS names, so the map stays portable;
   this applies to nodes and links too.
-- **`r` in `classDef`**, 8 to 48 (`STYLE_VALUE`), read by `applyGroups` only; `wardley-read`
+- **`r` in `classDef`**, 8 to 48 (`STYLE_VALUE`; 120 since 0.26.0), read by `applyGroups` only; `wardley-read`
   says so when a class with `r` is set on an element or a link.
 - **Staggered radii.** Groups sharing members would draw the same arc around them. Greedy levels,
   smaller groups first (a team inside its department): a group gets the lowest level no
@@ -1060,7 +1060,56 @@ sent Cmd) and `Scratch.ready` (on an Obsidian started just before, the first two
 first drawing). Timing limits of the unit tests stretch with `MDE_TIME_SCALE` (`test-timing.ts`);
 a 2-core VM needs 3.
 
+## Link direction and the shadow (0.26.0, 2026-10-17)
+
+Request: a link without an arrow head shows no direction in the drawing, yet its text has one. A
+reader reads a Wardley map from top to bottom (`A -> B`: A needs B), so a link the user dragged
+upwards looked right and said the opposite in the text, which is what an agent reading the map
+through `wardley-read` takes. Second request: a shadow behind components and links on hover and
+while they are active, running along a link in its direction, so the direction shows without
+switching the head on. Maintainer decisions 2026-10-17, each weighed against alternatives:
+
+- **Only touched links are oriented** (drawn, re-linked, saved in the dialog, or an end moved),
+  never the whole map on the first edit: a measurement over 13 maps found 6 of about 230 links
+  without a head written upwards, too few for a legend entry "align all links", and rewriting
+  lines nobody touched would surprise. Save in the link dialog fixes a single one.
+- **`wardley-apply` turns nothing.** What an agent writes is its statement; turning it silently
+  would make "A needs B" say "B needs A". The convention is in `docs/wardley-model.md`.
+- **A reversed arrow swaps the names** (`B +> A`), never `+<`: one way to write one drawing, read
+  correctly by anyone who does not know `+<`. Existing `+<` stay until the dialog changes them.
+- **The shadow covers components, anchors, pipelines and links in Wardley maps**, the scope asked
+  for; notes, annotations, accelerators, evolve arrows and flowcharts can follow on the same
+  mechanism.
+- **The shadow runs the way energy flows, not the way the text reads** (maintainer, after trying
+  it, 2026-10-17): `A -> B` says A needs B, which also means B supports A, so a dependency's dashes
+  run from B up to A. A flow runs towards its head, which is its statement. **A component's links
+  glow with it** on hover and while its dialog is open, so its connections stand out in a dense
+  map; not while it is dragged, because the drag moves those lines away from their shadow.
+- **A group's radius goes up to 120** (was 48; maintainer 2026-10-17, for a wide pale area behind a
+  group). 48 was a range chosen for a boundary hugging its members, with the staggered radii (at
+  most 46) inside it; it was never what kept a crafted map cheap. That is `GROUP_BUDGET` and
+  `MAX_CELLS`, which hold at any radius. Measured (20 groups, `outline`): 17 to 27 ms at r 96 to
+  200. The price is coverage: groups spanning the whole map share the budget, and fewer of them
+  get a boundary as the radius grows (6 of 20 at 48, 3 of 20 at 120, the rest skipped as before).
+
+How it works: `orient` in `wardley-text.ts` (one pass, lookups only; timing case in the security
+test) and `wardley-glow.ts`, see CLAUDE.md → "Editing Wardley maps". "Upper" is the declared
+visibility, the value `wardley-read` reports, rather than the drawn height, so the text and the
+model agree; they differ only for a pipeline parent, whose square is drawn above its box, and a
+parent with its own component is level either way. Swapping a labelled link moves its label to
+the other side of the line (Mermaid offsets it to the left of the direction), by 8 px.
+
 ## Changelog
+
+- **0.26.0 (2026-10-17)** Links read top to bottom, and a shadow shows what a press takes. A link
+  without a head of its own is written from the upper element to the lower one whenever the editor
+  draws it, re-links it, saves it in its dialog or moves one of its elements, so the
+  text says what the drawing shows (agents read the text). Flow arrows keep their direction; the
+  dialog names the upper end first and writes a reversed arrow with the names swapped instead of
+  `+<`. Components and links get a soft shadow on hover, while pressed and while their dialog is
+  open, a component's links with it; a link's runs from what supports to what needs it (a flow
+  towards its head), standing still where the system asks for reduced motion. A group's `r` goes
+  up to 120 (was 48). See "Link direction and the shadow (0.26.0)".
 
 - **0.25.1 (2026-10-16)** Documentation only, no code change. The README opens with the features
   at a glance (rendering, both editors, zoom, share and export, the CLI); the Wardley table lists

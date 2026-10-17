@@ -232,7 +232,7 @@ def case_link_dialog():
     p = locate(m=['link-mid', 'Alpha', 'Beta'])
     click(*p['m']); wait(0.6)
     title = modal_title()
-    js('(()=>{const s=document.querySelector(".modal select"); s.value="forward"; s.dispatchEvent(new Event("change"));'
+    js('(()=>{const s=document.querySelector(".modal select"); s.value="down"; s.dispatchEvent(new Event("change"));'
        ' const i=document.querySelector(".modal input"); i.value="feeds"; i.dispatchEvent(new Event("input"));'
        ' [...document.querySelectorAll(".modal button")].find(b=>b.textContent==="Save").click(); return "x"})()')
     wait()
@@ -251,8 +251,9 @@ def case_new_link_stub():
     sx, sy = map(int, stub.split())
     d = locate(d=['node', 'Delta'])['d']
     drag(sx, sy, d[0] - sx, d[1] - sy); wait()
-    got = line(r'^Gamma -> Delta$')
-    return got is not None, got
+    # Drawn from Gamma up to Delta, written top to bottom (0.26.0).
+    got = line(r'^(Gamma -> Delta|Delta -> Gamma)$')
+    return got == 'Delta -> Gamma', got
 
 
 def case_new_component_drop():
@@ -264,7 +265,7 @@ def case_new_component_drop():
     title = modal_title()
     cdp('Input.insertText', {'text': 'Fresh'})
     key('Enter', 'Enter', 13); wait()
-    comp, link = line(r'^component Fresh .*$'), line(r'^Gamma -> Fresh$')
+    comp, link = line(r'^component Fresh .*$'), line(r'^Fresh -> Gamma$')  # created above Gamma: top to bottom
     m = re.match(r'component Fresh \[(\d\.\d+), (\d\.\d+)\]$', comp or '')
     above = bool(m) and float(m.group(1)) > 0.6 and abs(float(m.group(2)) - 0.15) < 0.05
     return title == 'New component linked from "Gamma"' and link is not None and above, f'{title!r}; {comp}; {link}'
@@ -278,6 +279,134 @@ def case_click_click_link():
     click(*t); wait()
     got = line(r'^Gamma -> Epsilon$')
     return got is not None, got
+
+
+def add_lines(text):
+    """Puts `text` into the map before its first `%% group` line; answers the note as it was (for `restore`)."""
+    keep = js('app.workspace.activeLeaf.view.editor.getValue()')
+    js('(()=>{const e=app.workspace.activeLeaf.view.editor; const t=e.getValue(); const at=t.indexOf("```mermaid"); const b=t.indexOf("\\n%% group", at);'
+       ' e.replaceRange(' + json.dumps(text) + ', e.offsetToPos(b + 1)); return "x"})()'); wait(1.2)
+    park()
+    SCRATCH.ready(20)
+    return keep
+
+
+def restore(keep):
+    js('(()=>{app.workspace.activeLeaf.view.editor.setValue(' + json.dumps(keep) + '); return "x"})()'); wait(1.5)
+    park()
+
+
+def case_move_turns_links():
+    """Moving a component below its partner turns its links without an arrow in the text, so they
+    still read top to bottom; a flow link keeps its direction (0.26.0)."""
+    keep = add_lines('Zeta -> Epsilon\nZeta +> Gamma\n')
+    try:
+        p = locate(z=['node', 'Zeta'], e=['node', 'Epsilon'])
+        if not (p.get('z') and p.get('e')):
+            return False, f'locate {p}'
+        drag(*p['z'], 0, p['e'][1] - p['z'][1] + 25); wait()
+        plain, flow = line(r'^(Zeta -> Epsilon|Epsilon -> Zeta)$'), line(r'^(Zeta|Gamma) \+> (Zeta|Gamma)$')
+        moved = line(r'^component Zeta .*$')
+    finally:
+        restore(keep)
+    return plain == 'Epsilon -> Zeta' and flow == 'Zeta +> Gamma', f'{moved}; {plain}; {flow}'
+
+
+def link_dialog(at, value=None):
+    """Opens the link dialog at `at`, picks `value` in Direction (when given), saves; answers its title."""
+    click(*at); wait(0.6)
+    title = modal_title()
+    pick = ('const s=document.querySelector(".modal select"); s.value=' + json.dumps(value) + '; s.dispatchEvent(new Event("change"));') if value else ''
+    js('(()=>{' + pick + ' [...document.querySelectorAll(".modal button")].find(b=>b.textContent==="Save").click(); return "x"})()')
+    wait()
+    return title
+
+
+def case_link_dialog_direction():
+    """The link dialog names the upper end first; Save puts a link written upwards in order; an
+    arrow reversed is written with the names swapped, never `+<` (0.26.0)."""
+    keep = add_lines('Zeta -> Alpha\n')
+    try:
+        at = locate(m=['link-mid', 'Zeta', 'Alpha'])
+        if not at.get('m'):
+            return False, f'locate {at}'
+        t1 = link_dialog(at['m'])
+        saved = line(r'^(Zeta -> Alpha|Alpha -> Zeta)$')
+        t2 = link_dialog(locate(m=['link-mid', 'Zeta', 'Alpha'])['m'], 'up')
+        up = line(r'^.*(Zeta|Alpha) \+[<>] (Zeta|Alpha).*$')
+        link_dialog(locate(m=['link-mid', 'Zeta', 'Alpha'])['m'], 'line')
+        off = line(r'^(Zeta|Alpha) -> (Zeta|Alpha)$')
+    finally:
+        restore(keep)
+    ok = t1 == t2 == 'Link "Alpha" – "Zeta"' and saved == 'Alpha -> Zeta' and up == 'Zeta +> Alpha' and off == 'Alpha -> Zeta'
+    return ok, f'{t1!r}; save {saved}; up {up}; off {off}'
+
+
+GLOW_PROBE = r"""
+(()=>{
+const svg = app.workspace.activeLeaf.view.contentEl.querySelector('.markdown-source-view .mermaid svg[aria-roledescription="wardley"]');
+const g = svg && svg.querySelector('g.mde-link-glow'), run = g && g.querySelector('line.mde-glow-run'), cs = run && getComputedStyle(run);
+return JSON.stringify({nodes: svg ? [...svg.querySelectorAll('g.wardley-node.mde-glow')].map(n => n.querySelector('text.wardley-node-label')?.textContent.trim()) : null,
+  links: svg ? svg.querySelectorAll('g.mde-link-glow').length : null, cls: g && g.getAttribute('class'),
+  runs: svg ? [...svg.querySelectorAll('g.mde-link-glow')].map(x => x.getAttribute('class').replace('mde-link-glow ', '')).sort() : null, events: g && getComputedStyle(g).pointerEvents,
+  animation: cs && cs.animationName, still: matchMedia('(prefers-reduced-motion: reduce)').matches, filter: svg && getComputedStyle(svg.querySelector('g.wardley-node.mde-glow') || svg).filter});
+})()
+"""
+
+
+def glow():
+    return json.loads(js(GLOW_PROBE))
+
+
+def links_of(name):
+    """How many link lines of the map name `name` as an end."""
+    arrow = re.compile(r'(-\.->|-->|->|\+)')
+    end = re.compile(r'(^|\s|")' + re.escape(name) + r'("|\s|;|$)')
+    return sum(1 for l in source().splitlines() if arrow.search(l) and end.search(l) and not re.match(r'\s*(%%|evolve|component|anchor|pipeline|note|annotation)', l))
+
+
+def case_hover_glow():
+    """Hovering a component shows its shadow and runs one on each of its links; hovering a link
+    shows its own, a dependency's running from the supporting end up to the dependent one;
+    leaving takes it away, and an open dialog keeps it (0.26.0)."""
+    p = locate(n=['node', 'Gamma'], m=['link-mid', 'User', 'Alpha'], c=['corner', 'left'])
+    mouse('mouseMoved', *p['n']); wait(0.3)
+    on_node = glow()
+    mouse('mouseMoved', *p['m']); wait(0.3)
+    on_link = glow()
+    mouse('mouseMoved', *p['c']); wait(0.3)
+    away = glow()
+    click(*p['m']); wait(0.6)
+    in_dialog = glow()
+    close_dialog()
+    closed = glow()
+    gamma = links_of('Gamma')
+    ok = (on_node['nodes'] == ['Gamma'] and gamma > 0 and on_node['links'] == gamma and 'drop-shadow' in (on_node['filter'] or '')
+          and on_link['nodes'] == [] and on_link['links'] == 1 and 'mde-run-backward' in (on_link['cls'] or '')
+          and on_link['events'] == 'none' and on_link['animation'] == ('none' if on_link['still'] else 'mde-link-run')
+          and away['nodes'] == [] and away['links'] == 0 and in_dialog['links'] == 1 and closed['links'] == 0)
+    return ok, f'node {on_node} (Gamma has {gamma} links); link {on_link}; away {away}; dialog {in_dialog}; closed {closed}'
+
+
+def case_glow_direction():
+    """A flow's shadow runs towards its head (`+<` to the first end, `+>` to the second), `+<>`
+    stands still; hovering Zeta runs both of its flows (0.26.0)."""
+    keep = add_lines('Zeta +< Epsilon\nZeta +> Alpha\nGamma +<> Pipe\n')
+    try:
+        p = locate(b=['link-mid', 'Zeta', 'Epsilon'], n=['link-mid', 'Gamma', 'Pipe'], z=['node', 'Zeta'], c=['corner', 'left'])
+        if not (p.get('b') and p.get('n') and p.get('z')):
+            return False, f'locate {p}'
+        mouse('mouseMoved', *p['b']); wait(0.3)
+        back = glow()
+        mouse('mouseMoved', *p['z']); wait(0.3)
+        zeta = glow()
+        mouse('mouseMoved', *p['n']); wait(0.3)
+        none = glow()
+        mouse('mouseMoved', *p['c']); wait(0.3)
+    finally:
+        restore(keep)
+    ok = 'mde-run-backward' in (back['cls'] or '') and 'mde-run-none' in (none['cls'] or '') and zeta['runs'] == ['mde-run-backward', 'mde-run-forward']
+    return ok, f'+< {back["cls"]}; +<> {none["cls"]}; Zeta {zeta["runs"]}'
 
 
 def case_note_drag():
@@ -1295,6 +1424,7 @@ CASES = [
     ('evolve_tip', case_evolve_tip), ('inertia_drag', case_inertia_drag), ('evolve_delete', case_evolve_delete),
     ('relink', case_relink), ('link_dialog', case_link_dialog), ('new_link_stub', case_new_link_stub),
     ('new_component_drop', case_new_component_drop), ('click_click_link', case_click_click_link),
+    ('move_turns_links', case_move_turns_links), ('link_dialog_direction', case_link_dialog_direction), ('hover_glow', case_hover_glow), ('glow_direction', case_glow_direction),
     # Before the annotation cases: the dragged annotations box later lies over Delta.
     ('dialog_saves_all', case_dialog_saves_all),
     ('note_drag', case_note_drag), ('force_drag', case_force_drag), ('pipeline_box_drag', case_pipeline_box_drag),

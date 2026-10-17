@@ -1,6 +1,6 @@
 import { App, Modal, Setting } from 'obsidian';
 import { addDeleteButton } from './modals';
-import type { LinkKind, Method } from './wardley-text';
+import type { LinkDirection, Method } from './wardley-text';
 
 /** What changed in the element dialog; absent fields stay as they are. */
 export interface EditChanges {
@@ -101,42 +101,49 @@ export class EditModal extends Modal {
 
 const HIGHLIGHT_DESC = 'Marks it for the text around the map: written as "%% class … highlight", drawn in the accent colour (or as the map\'s "%% classDef highlight" says).';
 
-/** A link: its label (empty = none), its kind (line, dashed, arrow either way, both), highlight, delete. */
+/** A link: its label (empty = none), its direction (line, dashed, arrow either way, both), highlight, delete. */
 export class LinkModal extends Modal {
 	constructor(
 		app: App,
-		private link: { from: string; to: string; kind: LinkKind; label: string; highlight: boolean },
-		private onSave: (kind: LinkKind, label: string, highlight: boolean) => void,
+		/**
+		 * `upper`/`lower`: the ends read top to bottom; `direction` seen from `upper`; `upward`: a
+		 * link without a head that is written from the lower end, which Save puts in order.
+		 */
+		private link: { upper: string; lower: string; direction: LinkDirection; label: string; highlight: boolean; upward: boolean },
+		private onSave: (direction: LinkDirection, label: string, highlight: boolean) => void,
 		private onDelete: () => void,
 	) {
 		super(app);
 	}
 
 	onOpen() {
-		const { from, to } = this.link;
-		this.setTitle(`Link "${from}" – "${to}"`);
+		const { upper, lower } = this.link;
+		this.setTitle(`Link "${upper}" – "${lower}"`);
 		let label = this.link.label;
-		let kind = this.link.kind;
+		let direction = this.link.direction;
 		let highlight = this.link.highlight;
 		const save = () => {
 			this.close();
-			if (label.trim() !== this.link.label || kind !== this.link.kind || highlight !== this.link.highlight) this.onSave(kind, label, highlight);
+			if (this.link.upward || label.trim() !== this.link.label || direction !== this.link.direction || highlight !== this.link.highlight) this.onSave(direction, label, highlight);
 		};
 		new Setting(this.contentEl).setName('Label').setDesc('Shown along the line. Leave empty for none.').addText(t => {
 			t.setValue(label).onChange(v => { label = v; });
 			t.inputEl.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); save(); } });
 			window.setTimeout(() => t.inputEl.focus(), 0);
 		});
-		new Setting(this.contentEl).setName('Direction').addDropdown(d => d
-			.addOptions({
-				line: 'None (line)',
-				dashed: 'None (dashed line)',
-				forward: `${from} → ${to}`,
-				backward: `${to} → ${from}`,
-				both: `${from} ↔ ${to}`,
-			})
-			.setValue(kind)
-			.onChange(v => { kind = v as LinkKind; }));
+		new Setting(this.contentEl)
+			.setName('Direction')
+			.setDesc(`Without an arrow: "${upper}" needs "${lower}". The text then always runs from the upper element to the lower one; an arrow is written in its own direction.`)
+			.addDropdown(d => d
+				.addOptions({
+					line: 'None (line)',
+					dashed: 'None (dashed line)',
+					down: `${upper} → ${lower}`,
+					up: `${lower} → ${upper}`,
+					both: `${upper} ↔ ${lower}`,
+				})
+				.setValue(direction)
+				.onChange(v => { direction = v as LinkDirection; }));
 		new Setting(this.contentEl)
 			.setName('Highlight')
 			.setDesc(HIGHLIGHT_DESC)

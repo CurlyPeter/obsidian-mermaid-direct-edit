@@ -49,7 +49,7 @@ with its kind (`data-mp-kind`), so the editors never see each other's diagrams.
 | File | Role | Tested by |
 |---|---|---|
 | `render.ts` | `wrapRender` with one `RenderHook` per diagram type (which `aria-roledescription`, when it stays untagged, SVG transforms), `SourceRegistry`, `diagramOf`/`diagramIn`, `isElement` | E2E |
-| `editor.ts` | `DiagramEditor`: the DOM handlers (registered by `main.ts` on every window, incl. `contextmenu`), one active gesture, the waiting stub, legend, double tap, swallowing the clicks a gesture leaves, dialogs closed on unload, `apply` (edit → `mermaid.parse` → write) and `applyThen` (the same with a notice that has an Undo button). A subclass implements `modelOf`, `press`, `claims`, `cursorAt`, `legendAction`, `stubDrag`, and may add `stubPress` (click, then click links), `hoverAt`, `contextMenu`, `stubWaits` and refuse a diagram (`blockedReason`) | E2E (both suites) |
+| `editor.ts` | `DiagramEditor`: the DOM handlers (registered by `main.ts` on every window, incl. `contextmenu`), one active gesture (`ended` when it ends), the waiting stub, legend, double tap, swallowing the clicks a gesture leaves, dialogs closed on unload (`open(modal, onClosed)`), `apply` (edit → `mermaid.parse` → write) and `applyThen` (the same with a notice that has an Undo button). A subclass implements `modelOf`, `press`, `claims`, `cursorAt`, `legendAction`, `stubDrag`, and may add `stubPress` (click, then click links), `hoverAt`, `contextMenu`, `stubWaits` and refuse a diagram (`blockedReason`) | E2E (both suites) |
 | `gestures.ts` | `DragGesture` (tap vs drag threshold), `Stub` (with a round handle at its free end) and `NewLinkDrag` (the "+" link, its end under the pointer: onto an element links, into free space creates one, back on its own element waits), `TapPress`, `DeletePress`, `DropHighlight` | E2E |
 | `legend.ts`, `modals.ts`, `write.ts`, `blocks.ts`, `geometry.ts` | the legend of the menu button (opens below it on hover or a tap, rows as the diagram's height allows, on the popover layer, closed once an entry is chosen or a moment after the mouse left), `NameModal` and the two-click Delete, writing into the note (`viewOf` also answers for a zoomed diagram), `locateBlock`/`mermaidBlocks`/`blockAt`/`followBlock`/limits/`EditError`, thresholds, `fitInside` and `TapDetector` | vitest (`blocks`, `geometry`), E2E |
 | `actions.ts`, `zoom.ts` | the buttons of a drawing (share and Zoom in top right, the menu top left) and the zoom (see "Buttons and the zoom") | vitest (`render`: the zoom key), E2E |
@@ -192,6 +192,7 @@ Any diagram as a standalone PNG or SVG file. Contract of the CLI commands: `docs
 | `wardley-hit.ts` | `classify()`: what a press means, the one priority order | E2E |
 | `wardley-gestures.ts` | one class per gesture (drag, tap, long press), started by the editor | E2E |
 | `wardley-legend.ts`, `wardley-modals.ts` | legend items, dialogs | E2E |
+| `wardley-glow.ts` | the shadow behind hovered, pressed and open elements | E2E |
 | `wardley-editor.ts` | `WardleyEditor extends DiagramEditor`: classify → gesture / dialog → `apply` | E2E |
 | `wardley-model.ts` | the map as data: `readModel` (Mermaid's parser AST → model with lines and errors), `applyModel` (target model → in-place edits) | vitest against the real parser (`wardley-model.test.ts`) |
 | `wardley-cli.ts` | CLI commands `wardley-read`, `wardley-apply`: block lookup in a note, Mermaid check, write | real `obsidian` call |
@@ -282,10 +283,38 @@ delete).
   written). Dragging its free end onto another node writes `from -> to` (`addLink`, after the
   last link); a press in the ring can also drag straight to the target. Escape, a press
   elsewhere, a redraw or unload drop the stub.
+- **Links read top to bottom (0.26.0).** A link without a head of its own (`->`, `-->`, `-.->`,
+  `+<>`) is written from the upper element to the lower one, so the text says what the drawing
+  shows to a reader (`A -> B`: A needs B); agents read the text. `orientLink` (one link: drawn,
+  re-linked, saved in its dialog) and `orientLinksOf` (every link of the moved elements, a
+  pipeline's components with their parent) swap the two names in place; arrow, label and class
+  lines stay (a class names a link by its unordered pair). "Upper" is the declared visibility, a
+  pipeline component's is its parent's (what `wardley-read` reports); level (within 0.005), an end
+  without a position or a pair linked twice stay as written. A parent and its own component are
+  always level, which matters: Mermaid hides `Child -> Parent`, a swap would show it. A one-headed
+  flow (`+>`, `+<`, inline-label flows) keeps its direction. Links nobody touches are never
+  rewritten, and `wardley-apply` turns nothing (what an agent writes is its statement).
 - **Link dialog** (middle of a link, between the two end bands): label (`; label`, omitted
-  when empty; an inline flow label `+'x'>` is read and folded into that form) and direction:
-  line `->`, dashed `-.->`, `+>` towards the second name, `+<` towards the first, `+<>` both
-  (marker-end/-start measured on 12.1). Delete with a confirming second click.
+  when empty; an inline flow label `+'x'>` is read and folded into that form) and direction,
+  named from the upper end (`upperEnd`; `linkDirection`/`setLinkDirection`): line `->`, dashed
+  `-.->`, an arrow down or up, `+<>` both (marker-end/-start measured on 12.1). An arrow is always
+  written `source +> target`, a reversed one with the names swapped, never `+<`; an existing `+<`
+  is rewritten only when the dialog changes the link. Save on a link written upwards orients it
+  even when nothing else changed. Delete with a confirming second click.
+- **The shadow (0.26.0, `wardley-glow.ts`):** what a press would take gets a shadow on hover
+  (the same `classify` as cursor and press, once per mouse move: `hitAt`), and keeps it while
+  pressed, while its dialog is open (`open(modal, onClosed)` in the core) or while a waiting stub
+  starts from it. A node (circle, label, "+" ring, pipeline box): class `mde-glow`, a
+  `drop-shadow` in `--interactive-accent`, and every link at it (`linksAt`) glows with it, so its
+  connections show in a dense map; pressed (a drag) it shows alone, since the drag moves those
+  lines. A link: a `g.mde-link-glow` with two lines inserted right before its line (drawn under
+  it, `pointer-events="none"`, never in the text or an export) and running dashes (`runOf`): a
+  dependency runs from what supports to what needs it (`A -> B`: from B to A; Mermaid draws `x1`
+  at the text's `from`), a flow towards its head, `+<>` still; no motion under
+  `prefers-reduced-motion`. A link whose end is dragged loses its shadow (the line moves away from
+  it). The group mode and an armed legend action keep their own cues and show no shadow; touch has
+  no hover, so there the shadow shows while pressed, with a dialog open and for a waiting stub.
+  Flowcharts have none.
 - **Cursors** are set inline on the svg during hover (custom SVG data-URI cursors: red ✕ for
   delete, "+" for add; `crosshair` on a link end, `ew-resize` on an evolve tip); nodes and
   labels get theirs from `styles.css`. Every mermaid svg shows the arrow, not the I-beam.
@@ -337,7 +366,7 @@ delete).
   way: the string is inserted after DOMPurify). Without a class the look comes from attributes
   (dashed, the map's own line colour read from Mermaid's links, `PLAIN_COLOR`); `styles.css`
   draws `highlight` in `--color-accent`, a `classDef` overrides inline (`stylesOf`, shared with
-  `applyClasses`), and its `r` (8 to 48) sets the radius. Groups sharing members are staggered by
+  `applyClasses`), and its `r` (8 to 120) sets the radius. Groups sharing members are staggered by
   `GROUP_STAGGER` (smaller groups inside) unless a class sets `r`. The label sits centred above the
   boundary (below it without room, kept inside the viewBox), plus the line's offset; overlapping
   automatic labels are moved apart (`separateLabels`, outer group up); dragging it

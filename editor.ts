@@ -107,6 +107,8 @@ export abstract class DiagramEditor<M extends Surface> implements EditCtx<M> {
 	protected isArmed(): boolean {
 		return false;
 	}
+	/** The active gesture ended (released or cancelled), before its result is handled. */
+	protected ended(_g: Gesture): void {}
 
 	// ---- event handlers (registered by main.ts in the capture phase) ----------------------
 
@@ -116,7 +118,7 @@ export abstract class DiagramEditor<M extends Surface> implements EditCtx<M> {
 		const stub = this.stub;
 		if (stub && this.onStubEnd(stub, e)) return this.start(e, this.stubDrag(e, stub), stub.model.svg);
 		if (stub && stub.line.isConnected && this.stubPress(e, stub)) {
-			this.stub = null;
+			this.dropStub();
 			return;
 		}
 		if (stub) this.dropStub();
@@ -186,7 +188,7 @@ export abstract class DiagramEditor<M extends Surface> implements EditCtx<M> {
 		try {
 			const waiting = g.up(e);
 			if (waiting) { this.stub = waiting; this.stubWaits(); }
-			else if (this.stub && g instanceof NewLinkDrag) this.stub = null;
+			else if (this.stub && g instanceof NewLinkDrag) this.dropStub();
 		} catch (err) {
 			this.report(err);
 		}
@@ -197,7 +199,7 @@ export abstract class DiagramEditor<M extends Surface> implements EditCtx<M> {
 		if (!g || e.pointerId !== g.pointerId) return;
 		this.end(g, e);
 		g.cancel();
-		if (g instanceof NewLinkDrag) this.stub = null;
+		if (g instanceof NewLinkDrag) this.dropStub();
 	};
 
 	/** Swallows the mouse events that would otherwise open the block's source in Live Preview. */
@@ -274,8 +276,8 @@ export abstract class DiagramEditor<M extends Surface> implements EditCtx<M> {
 		for (const m of Array.from(this.modals)) m.close();
 		for (const doc of docs) {
 			doc.querySelectorAll<SVGSVGElement>(`svg[${KEY_ATTR}][${KIND_ATTR}="${this.kind}"]`).forEach(svg => { svg.style.cursor = ''; });
-			doc.querySelectorAll('.mp-drop-target, .mp-dragging, .mp-leaving, .mp-flash, .mp-group-editing').forEach(el => el.classList.remove('mp-drop-target', 'mp-dragging', 'mp-leaving', 'mp-flash', 'mp-group-editing'));
-			doc.querySelectorAll('.mp-drag-hint, .mp-plus-handle').forEach(el => el.remove());
+			doc.querySelectorAll('.mp-drop-target, .mp-dragging, .mp-leaving, .mp-flash, .mp-group-editing, .mde-glow').forEach(el => el.classList.remove('mp-drop-target', 'mp-dragging', 'mp-leaving', 'mp-flash', 'mp-group-editing', 'mde-glow'));
+			doc.querySelectorAll('.mp-drag-hint, .mp-plus-handle, .mde-link-glow').forEach(el => el.remove());
 		}
 	}
 
@@ -329,11 +331,11 @@ export abstract class DiagramEditor<M extends Surface> implements EditCtx<M> {
 
 	// ---- for subclasses ----------------------------------------------------------------------
 
-	/** Opens a dialog and keeps track of it, so unload can close it. */
-	protected open(modal: Modal) {
+	/** Opens a dialog and keeps track of it, so unload can close it; `onClosed` runs once it is closed. */
+	protected open(modal: Modal, onClosed?: () => void) {
 		this.modals.add(modal);
 		const onClose = modal.onClose.bind(modal);
-		modal.onClose = () => { this.modals.delete(modal); onClose(); };
+		modal.onClose = () => { this.modals.delete(modal); onClose(); onClosed?.(); };
 		modal.open();
 	}
 
@@ -418,6 +420,7 @@ export abstract class DiagramEditor<M extends Surface> implements EditCtx<M> {
 
 	private end(g: Gesture, e: PointerEvent) {
 		this.active = null;
+		this.ended(g);
 		this.swallowAfter(g.model.svg);
 		try { if (g.model.svg.hasPointerCapture(e.pointerId)) g.model.svg.releasePointerCapture(e.pointerId); } catch { /* detached */ }
 	}
