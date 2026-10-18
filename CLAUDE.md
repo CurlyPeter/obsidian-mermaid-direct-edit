@@ -106,7 +106,7 @@ in reading view (no toolbar there) in a toolbar of the plugin's own at the same 
   scanner block can be another block's drawing (security review 0.24.0, O78).
 - **Edits from the zoom** go to the note it came from: `viewOf` answers from `zoomViews` (zoom
   element → view and file; null once that tab shows another file, the guard Undo has). Anything that looks for "the redrawn drawing" looks in the zoom when the edit
-  started there (flowchart flash: the zoom is taken before the write; group mode: root
+  started there (flowchart flash: the zoom is taken before the write; group and pipeline mode: root
   `.mde-zoom, .workspace-leaf-content`).
 - **It follows its block** on `editor-change` (Live Preview: the buffer) and `vault.modify`
   (reading view: the file): the same index while the number of blocks is unchanged, else the
@@ -114,7 +114,7 @@ in reading view (no toolbar there) in a toolbar of the plugin's own at the same 
   same element and only the SVG is swapped, so an armed legend action survives the redraw.
 - **Keys** (capture phase on the zoom's document, ignored while a modal or menu is open, and taken
   only from inside the zoom or the body): Escape closes unless an editor is `busy()` (gesture,
-  stub, open legend, armed action, group mode), then that editor's own Escape runs first. While
+  stub, open legend, armed action, group or pipeline mode), then that editor's own Escape runs first. While
   the zoom is open the window's `.app-container` is `inert`, so Tab cannot lead into the hidden
   note (dialogs, menus and notices are outside it; review 0.24.0, I-2). Cmd/Ctrl+Z, +Shift+Z, +Y undo and redo in the note's
   editor (Live Preview; it has no focus meanwhile). **Obsidian's hotkeys run before it**: a
@@ -228,13 +228,14 @@ confirming second click). Name, inertia and type are written together with Save,
 name typed just before); the rename goes last, so the other edits find the old name. A **legend**
 (the menu of the menu button at the top left of the map, since 0.24.0; before, a 32 px zone in
 the bottom corners) adds a component, anchor, note, annotation, accelerator or deaccelerator
-(name/text asked, placed on a free spot by `freeSpot`), or, armed, an evolve arrow, inertia or a
-pipeline component on the next component pressed.
+(name/text asked, placed on a free spot by `freeSpot`), or, armed, an evolve arrow or inertia on
+the next component pressed; "Group" and "Pipeline" open a menu and start their mode.
 **Accelerators/deaccelerators** (`accelerator Name [v, e]`) drag as a whole and have a dialog
 (rename, delete). **Pipelines** (`pipeline Parent { component Child [evo] }`): drag the box
 or the parent square to move the whole pipeline (parent position plus every child's
 evolution), drag a child along its evolution, its label like a component's; the parent's
-dialog has "Remove pipeline"; deleting the last child removes the block.
+dialog has "Remove pipeline"; deleting the last child removes the block. Membership is edited in
+the **pipeline mode** (0.27.0), see the Pipelines bullet below.
 **Annotations** (`annotation N,[v, e] "text"`, listed in the box `annotations [v, e]`): drag the
 numbered circle or the box; double-click a circle or a line in the box for its dialog (text,
 delete).
@@ -318,7 +319,7 @@ delete).
   dependency runs from what supports to what needs it (`A -> B`: from B to A; Mermaid draws `x1`
   at the text's `from`), a flow towards its head, `+<>` still; no motion under
   `prefers-reduced-motion`. A link whose end is dragged loses its shadow (the line moves away from
-  it). The group mode and an armed legend action keep their own cues and show no shadow; touch has
+  it). The group and pipeline modes and an armed legend action keep their own cues and show no shadow; touch has
   no hover, so there the shadow shows while pressed, with a dialog open and for a waiting stub.
   Flowcharts have none.
 - **Cursors** are set inline on the svg during hover (custom SVG data-URI cursors: red ✕ for
@@ -380,7 +381,7 @@ delete).
   `classDef` become `var(--color-<name>)` (`THEME_COLORS`, nodes and links too). **Editing
   (0.22.0, `wardley-editor.ts`):** the legend's "Group" opens a menu (New group and the map's
   groups; a native macOS menu when that setting is on, so the E2E suite turns it off) and starts
-  the **group mode** (`GroupEdit`): a tap on a component (circle, label, pipeline box or "+" ring)
+  the **group mode** (`MemberMode` with kind `group`): a tap on a component (circle, label, pipeline box or "+" ring)
   puts it in or takes it out (`NodeDrag` with `onTap`, drags still move), anything else, Escape,
   the legend or "Done" in the mode's notice ends it; the first component makes the new group
   ("Group N"), the last one out deletes it (Undo). Clicks are queued and each is written from the
@@ -397,6 +398,30 @@ delete).
   of paths; contour tracing uses integer edge keys and typed arrays (string keys dominated a crafted
   render, review 0.20.0). `wardley-read` reports `groups` with `label` and `classes`, and a group
   named like an element as an error.
+- **Pipelines in the mode (0.27.0, `wardley-editor.ts`, text in `wardley-text.ts`):** the group
+  mode is one of two membership modes (`MemberMode`, `kind` `group` | `pipeline`) sharing the
+  queue of clicks, the source tracking, the redraw observer and the notice. The legend's
+  "Pipeline" opens a menu (New pipeline and the map's pipelines by parent); a click on a pipeline
+  box (hit kind `box`, `pipelineTap`) starts that pipeline's mode, a second one ends it and opens
+  the parent's dialog, a drag still moves the pipeline. With "New pipeline" the first click picks
+  the parent and writes nothing (`pickParent`: no anchor, no pipeline component; a parent of
+  one edits that one); then a click puts a component in (`moveIntoPipeline`: the declaration
+  moves into the block as `component Name [e] label […]`, created after the parent when needed,
+  so it is drawn on the parent's line; from another pipeline it changes over, a block left empty
+  goes) or takes it out (`takeOutOfPipeline`: declared right after the block at the parent's
+  visibility, where it was drawn; the last one out removes the block, with Undo, and ends the
+  mode). `movable` refuses a declaration with anything it does not know after the label, so
+  nothing is dropped unseen. **A pipeline component has no decorator and no inertia in the
+  grammar, and Mermaid draws no evolve arrow for it**, so `pipelineBlockers` names those and the
+  click shows a notice whose "Remove and add" does `clearPipelineBlockers` plus the move as one
+  edit with Undo (the plugin removes nothing unasked). "New component…" in the mode's notice
+  adds a new one (`addToPipeline`, right of the last); a press in its dialog does not end the
+  mode (`pressOutside` skips `.modal-container` while a mode is on). The mark is
+  `mp-group-editing` on the box and the parent. Moves re-orient the moved component's links
+  (`orientLinksOf`). **Mermaid draws no link from a pipeline component to its own parent**
+  (`Child -> Parent`), so a move in writes a headless one as `Parent -> Child` (`parentFirst`)
+  and a link that was drawn stays drawn; a flow arrow keeps its direction, and is then hidden.
+  `wardley-apply` uses the same two functions for a changed `pipeline` field.
 - **`wardley-read` blanks comment lines before Mermaid's parser** (`withoutComments`, line numbers
   kept, multi-line `accDescr` untouched): the parser is super-linear in them. The plugin's own
   comments are read from the source. It lists at most `MAX_ERRORS` (200) errors plus a count.
@@ -418,7 +443,7 @@ delete).
   link end there needs a hit within 3 px.
 - **Gesture priority** (`classify()` in `wardley-hit.ts`, shared by press, touch start and
   hover): before it, the waiting stub's free end, the menu (button and legend), an armed legend
-  action and the group mode (`groupPress`). Then
+  action and a membership mode, group or pipeline (`modePress`). Then
   **elements under the pointer win over zones**: annotation circle or box, note, a group's label,
   accelerator/deaccelerator, inertia bar, node or label (a group label lies behind nodes and links,
   so it is hit only where nothing covers it); then evolve tip, evolve shaft, link end, link middle; the "+" ring; a pipeline
@@ -435,7 +460,7 @@ delete).
 - **Parsers on note text must stay linear.** Notes come from sync, shared vaults and pastes; a regex
   with overlapping quantifiers (`(.+?)([ \t]+)…`, `[^\]]+?[ \t]*`) froze Obsidian on a crafted
   line (security review 0.13.0), and so did a trailing `(.*)$` after a backtick run on a line holding
-  `\r`, U+2028 or U+2029, which `.` does not match (O77, 0.24.0: match the prefix only). Use index scans and `trimTail`, and add a timing case to
+  `\r`, U+2028 or U+2029, which `.` does not match (O77, 0.24.0: match the prefix only), and an unanchored `[ \t]+\(inertia\)` over a run of blanks (5 s on 30,000, found in 0.27.0: `inertiaSpan` matches one blank and walks back). Use index scans and `trimTail`, and add a timing case to
   `wardley-text.security.test.ts` for any new per-line parser.
 - **`placeInertia` never re-serializes the SVG**: it reads with `DOMParser` and only swaps the
   numbers of `<line class="wardley-inertia" x1=… y1=… x2=…>`, so the sanitized output stays as

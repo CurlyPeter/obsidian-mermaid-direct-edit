@@ -25,7 +25,7 @@ abstract class MapDrag extends DragGesture<MapModel, GestureCtx> {
 
 /**
  * Moves an anchor or component (with its links, or a whole pipeline), or only its label. A tap
- * opens its dialog on the second one, or does `onTap` (the group mode: in or out of the group).
+ * opens its dialog on the second one, or does `onTap` (a membership mode: in or out of the group or pipeline; a pipeline box: its mode).
  */
 export class NodeDrag extends MapDrag {
 	private readonly links: ReturnType<MapModel['linksAt']>;

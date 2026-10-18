@@ -318,7 +318,21 @@ export function addEvolve(source: string, name: string, target: number): string 
 	return lines.join('\n');
 }
 
-const INERTIA = /[ \t]+\(inertia\)|[ \t]+inertia\b/;
+/** One blank, then the flag: tried at each index in constant time. */
+const INERTIA_FLAG = /[ \t](?:\(inertia\)|inertia\b)/;
+
+/**
+ * Where the inertia flag sits in the text after a declared name, with all the blanks before it,
+ * or null. `[ \t]+\(inertia\)` unanchored backtracked quadratically over a long run of blanks
+ * (5 s on 30,000, 0.27.0 review); this finds the flag first and then walks back.
+ */
+function inertiaSpan(rest: string): { start: number; end: number } | null {
+	const m = INERTIA_FLAG.exec(rest);
+	if (!m) return null;
+	let start = m.index;
+	while (start > 0 && isBlank(rest[start - 1])) start--;
+	return { start, end: m.index + m[0].length };
+}
 
 /**
  * Plugin extension, not part of wardley-beta: `%% mp-inertia <name> <evolution>` places a
@@ -360,7 +374,7 @@ export function inertiaMarkers(source: string): { name: string; evolution: numbe
 export function setInertiaPosition(source: string, name: string, evolution: number): string {
 	const lines = source.split('\n');
 	const { line, span } = findDeclaration(lines, name);
-	if (!INERTIA.test(lines[line].slice(span.end))) throw new EditError(`"${name}" has no inertia.`);
+	if (!inertiaSpan(lines[line].slice(span.end))) throw new EditError(`"${name}" has no inertia.`);
 	const text = `%% mp-inertia ${formatName(name)} ${fmt(evolution)}`;
 	const existing = lines.findIndex(l => { const m = inertiaComment(l); return m !== null && unquote(m[2].trim()) === name; });
 	if (existing >= 0) lines[existing] = (/^[ \t]*/.exec(lines[existing])?.[0] ?? '') + text;
@@ -377,7 +391,7 @@ function withoutInertiaPosition(lines: string[], name: string): string[] {
 export function hasInertia(source: string, name: string): boolean {
 	const lines = source.split('\n');
 	const { line, span } = findDeclaration(lines, name);
-	return INERTIA.test(lines[line].slice(span.end));
+	return inertiaSpan(lines[line].slice(span.end)) !== null;
 }
 
 /** Adds or removes `(inertia)`; it must come last, after a build/buy/outsource decorator. */
@@ -387,9 +401,10 @@ export function setInertia(source: string, name: string, on: boolean): string {
 	if (span.kind === 'anchor') throw new EditError('Anchors cannot have inertia, pick a component.');
 	const head = lines[line].slice(0, span.end);
 	const rest = lines[line].slice(span.end);
-	const has = INERTIA.test(rest);
+	const at = inertiaSpan(rest);
+	const has = at !== null;
 	if (has === on) throw new EditError(on ? `"${name}" already has inertia.` : `"${name}" has no inertia.`);
-	lines[line] = on ? head + trimTail(rest) + ' (inertia)' : head + rest.replace(INERTIA, '');
+	lines[line] = on ? head + trimTail(rest) + ' (inertia)' : head + rest.slice(0, at!.start) + rest.slice(at!.end);
 	return (on ? lines : withoutInertiaPosition(lines, name)).join('\n');
 }
 
@@ -1254,22 +1269,180 @@ export function pipelineOf(source: string, parent: string): string[] | null {
  */
 export function addToPipeline(source: string, parent: string, child: string, evolution: number): string {
 	const lines = source.split('\n');
-	const { line, span } = findDeclaration(lines, parent);
+	const { span } = findDeclaration(lines, parent);
 	if (span.kind === 'anchor') throw new EditError('Anchors cannot have a pipeline, pick a component.');
 	const c = child.trim();
 	if (!c) throw new EditError('The name must not be empty.');
 	if (lines.some(l => nameSpans(l).some(s => s.declaration && s.name === c))) throw new EditError(`"${c}" already exists in this map.`);
+	insertIntoPipeline(lines, parent, `component ${formatName(c)} [${fmt(evolution)}]`);
+	return lines.join('\n');
+}
+
+/**
+ * Writes `entry` (a pipeline component's declaration) as the last line of the pipeline of
+ * `parent`, creating the block after the parent's declaration (and its inertia comment) when
+ * it has none.
+ */
+function insertIntoPipeline(lines: string[], parent: string, entry: string): void {
+	const { line } = findDeclaration(lines, parent);
 	const indent = /^[ \t]*/.exec(lines[line])?.[0] ?? '';
-	const entry = `${indent}  component ${formatName(c)} [${fmt(evolution)}]`;
+	const row = `${indent}  ${entry}`;
 	const b = findPipeline(lines, parent);
 	if (b) {
-		lines.splice(b.close, 0, entry);
-	} else {
-		let at = line;
-		while (at + 1 < lines.length && inertiaComment(lines[at + 1]) !== null) at++;
-		lines.splice(at + 1, 0, `${indent}pipeline ${formatName(parent)} {`, entry, `${indent}}`);
+		lines.splice(b.close, 0, row);
+		return;
 	}
+	let at = line;
+	while (at + 1 < lines.length && inertiaComment(lines[at + 1]) !== null) at++;
+	lines.splice(at + 1, 0, `${indent}pipeline ${formatName(parent)} {`, row, `${indent}}`);
+}
+
+/** The pipeline whose block holds line `line`: its parent and opening line, or null at the top level. */
+function enclosingPipeline(lines: string[], line: number): { parent: string; open: number } | null {
+	for (let i = line - 1; i >= 0; i--) {
+		if (/^[ \t]*\}/.test(lines[i])) return null;
+		if (/^[ \t]*pipeline[ \t]/.test(lines[i])) {
+			const parent = nameSpans(lines[i])[0]?.name;
+			return parent ? { parent, open: i } : null;
+		}
+	}
+	return null;
+}
+
+/** Whether `name` is declared as an anchor or a component (throws when undeclared or declared twice). */
+export function kindOf(source: string, name: string): 'anchor' | 'component' {
+	return findDeclaration(source.split('\n'), name).span.kind!;
+}
+
+/** The parent of a pipeline component, null for an element at the top level. */
+export function pipelineParentOf(source: string, name: string): string | null {
+	const lines = source.split('\n');
+	return enclosingPipeline(lines, findDeclaration(lines, name).line)?.parent ?? null;
+}
+
+/** What a top-level component carries that a pipeline component cannot (wardley-beta 12.1). */
+export type PipelineBlocker = 'evolve' | 'method' | 'inertia';
+
+/**
+ * Why `name` cannot go into a pipeline as written: an evolve arrow (Mermaid draws none for a
+ * pipeline component), a sourcing decorator or inertia (the grammar of a pipeline component has
+ * neither). Empty for a pipeline component and an anchor (refused for other reasons).
+ */
+export function pipelineBlockers(source: string, name: string): PipelineBlocker[] {
+	const lines = source.split('\n');
+	const { line, span } = findDeclaration(lines, name);
+	if (span.kind === 'anchor' || enclosingPipeline(lines, line)) return [];
+	const out: PipelineBlocker[] = [];
+	if (findEvolve(lines, name) >= 0) out.push('evolve');
+	if (getMethod(source, name)) out.push('method');
+	if (inertiaSpan(lines[line].slice(span.end))) out.push('inertia');
+	return out;
+}
+
+const BLOCKER_TEXT: Record<PipelineBlocker, string> = { evolve: 'an evolve arrow', method: 'a type', inertia: 'inertia' };
+
+/** "an evolve arrow, a type and inertia", for messages. */
+export function describeBlockers(blockers: PipelineBlocker[]): string {
+	const t = blockers.map(b => BLOCKER_TEXT[b]);
+	return t.length < 2 ? (t[0] ?? '') : `${t.slice(0, -1).join(', ')} and ${t[t.length - 1]}`;
+}
+
+/** Removes what `pipelineBlockers` names: the evolve arrow, the decorator, inertia with its position comment. */
+export function clearPipelineBlockers(source: string, name: string): string {
+	let s = source;
+	for (const b of pipelineBlockers(source, name)) {
+		s = b === 'evolve' ? deleteEvolve(s, name) : b === 'method' ? setMethod(s, name, null) : setInertia(s, name, false);
+	}
+	return s;
+}
+
+/**
+ * The parts of a component's declaration that a move between the top level and a pipeline
+ * carries along: the name as written (quotes kept), its evolution and its label offset. Throws
+ * when anything else follows, so nothing is dropped unseen.
+ */
+function movable(lines: string[], line: number, span: NameSpan): { name: string; evolution: string; label: string } {
+	const text = lines[line];
+	const pos = position(text.slice(span.end));
+	if (!pos) throw new EditError(`"${span.name}" has no position.`);
+	const at = span.end + pos[0].length;
+	const label = LABEL_AFTER.exec(text.slice(at))?.[0] ?? '';
+	if (text.slice(at + label.length).trim()) throw new EditError(`"${span.name}" is written in a form the editor cannot move, edit it in the source.`);
+	return { name: text.slice(span.start, span.end), evolution: pos[5] ?? pos[2], label: label ? ` ${label.trim()}` : '' };
+}
+
+/** Removes the pipeline block of `parent` when no declaration is left in it. */
+function dropEmptyPipeline(lines: string[], parent: string): { open: number; dropped: boolean } {
+	const b = findPipeline(lines, parent)!;
+	if (lines.slice(b.open + 1, b.close).some(l => nameSpans(l).some(s => s.declaration))) return { open: b.open, dropped: false };
+	lines.splice(b.open, b.close - b.open + 1);
+	return { open: b.open, dropped: true };
+}
+
+/**
+ * Puts an existing component into the pipeline of `parent`: its declaration moves into the
+ * block (created when needed) as `component Name [e] label [dx, dy]`, so it is drawn on the
+ * parent's line at its own evolution. From another pipeline it changes over, and a block left
+ * empty goes. Links, classes and groups name it and stay as they are. Refuses anchors, a
+ * component with a pipeline of its own, a parent that is itself a pipeline component, and what
+ * `pipelineBlockers` names (`clearPipelineBlockers` first).
+ */
+export function moveIntoPipeline(source: string, parent: string, name: string): string {
+	const lines = source.split('\n');
+	const p = findDeclaration(lines, parent);
+	if (p.span.kind === 'anchor') throw new EditError('Anchors cannot have a pipeline, pick a component.');
+	if (enclosingPipeline(lines, p.line)) throw new EditError(`"${parent}" is in a pipeline itself, so it cannot have one.`);
+	if (name === parent) throw new EditError(`"${name}" cannot be in its own pipeline.`);
+	const { line, span } = findDeclaration(lines, name);
+	if (span.kind === 'anchor') throw new EditError('An anchor cannot be in a pipeline, pick a component.');
+	if (findPipeline(lines, name)) throw new EditError(`"${name}" has a pipeline of its own, and a component is in one pipeline at most.`);
+	const from = enclosingPipeline(lines, line);
+	if (from?.parent === parent) throw new EditError(`"${name}" is already in the pipeline of "${parent}".`);
+	const blocked = pipelineBlockers(source, name);
+	if (blocked.length) throw new EditError(`"${name}" has ${describeBlockers(blocked)}, which a pipeline component cannot have.`);
+	const m = movable(lines, line, span);
+	lines.splice(line, 1);
+	if (from) dropEmptyPipeline(lines, from.parent);
+	insertIntoPipeline(lines, parent, `component ${m.name} [${m.evolution}]${m.label}`);
+	// It now sits on the parent's line: links to elements in between may run upwards.
+	return parentFirst(orientLinksOf(lines.join('\n'), [name]), parent, name);
+}
+
+/**
+ * Mermaid does not draw a link from a pipeline component to its own parent (`Child -> Parent`).
+ * A link without a head of its own between the two is written `Parent -> Child`, so a link that
+ * was drawn before the move still is (0.27.0); a flow arrow keeps its direction.
+ */
+function parentFirst(source: string, parent: string, child: string): string {
+	const lines = source.split('\n');
+	lines.forEach((l, i) => {
+		const sp = linkPair(l);
+		if (!sp || sp[0].name !== child || sp[1].name !== parent || isDirected(l.slice(sp[0].end, sp[1].start).trim())) return;
+		lines[i] = swapped(l, sp[0], sp[1]);
+	});
 	return lines.join('\n');
+}
+
+/**
+ * Takes a pipeline component out of its pipeline: declared at the top level right after the
+ * block, at the parent's visibility (where it was drawn) and its own evolution, label offset
+ * kept. The last one out takes the block with it; the parent stays.
+ */
+export function takeOutOfPipeline(source: string, name: string): string {
+	const lines = source.split('\n');
+	const { line, span } = findDeclaration(lines, name);
+	const from = enclosingPipeline(lines, line);
+	if (!from) throw new EditError(`"${name}" is not in a pipeline.`);
+	const p = findDeclaration(lines, from.parent);
+	const pp = position(lines[p.line].slice(p.span.end));
+	if (!pp || pp[5] === undefined) throw new EditError(`"${from.parent}" has no position.`);
+	const m = movable(lines, line, span);
+	const indent = /^[ \t]*/.exec(lines[p.line])?.[0] ?? '';
+	const decl = `${indent}component ${m.name} [${pp[2]}, ${m.evolution}]${m.label}`;
+	lines.splice(line, 1);
+	const b = dropEmptyPipeline(lines, from.parent);
+	lines.splice(b.dropped ? b.open : findPipeline(lines, from.parent)!.close + 1, 0, decl);
+	return orientLinksOf(lines.join('\n'), [name]);
 }
 
 /** Removes the pipeline of `parent` with its components; the parent itself stays. */
@@ -1323,11 +1496,8 @@ export function deleteElement(source: string, name: string): string {
 	}
 	const evolve = findEvolve(lines, name);
 	// The last component of a pipeline takes the (then empty, invalid) pipeline block with it.
-	const parentLine = lines.slice(0, line).map((l, i) => ({ l, i })).reverse().find(({ l }) => /^[ \t]*pipeline[ \t]/.test(l) || /^[ \t]*\}/.test(l));
-	if (parentLine && /^[ \t]*pipeline[ \t]/.test(parentLine.l)) {
-		const parent = nameSpans(parentLine.l)[0]?.name;
-		if (parent && pipelineOf(lines.join('\n'), parent)?.length === 1) return deletePipeline(source, parent);
-	}
+	const from = enclosingPipeline(lines, line);
+	if (from && pipelineOf(source, from.parent)?.length === 1) return deletePipeline(source, from.parent);
 	lines = lines.filter((l, i) => i !== line && i !== evolve && !(linkPair(l)?.some(s => s.name === name)));
 	lines = editClassTargets(withoutInertiaPosition(lines, name), t => (touches(t, name) ? null : undefined));
 	return withoutVanishedGroups(lines, editGroupMembers(lines, m => (m === name ? null : undefined))).join('\n');

@@ -188,9 +188,49 @@ describe('wardley-apply', () => {
 		expect(r.changes).toEqual([]);
 		const board = { elements: m.elements.map(({ name, visibility, evolution }) => ({ name, visibility, evolution })) };
 		expect(await apply(TEA, board)).toMatchObject({ changes: [], conflicts: [] });
-		const explicit = { elements: m.elements.map(e => (e.name === 'Campfire Kettle' ? { ...e, pipeline: null } : e)) };
-		expect((await apply(TEA, explicit)).conflicts.map(c => c.what)).toEqual(['component Campfire Kettle']);
 		expect((await apply(TEA, { elements: [...m.elements, { name: 'New', evolution: 0.5 }] })).conflicts[0].message).toContain('needs a visibility');
+	});
+	/** The model read from `src`, with one element's entry changed. */
+	const changed = async (src: string, name: string, patch: Record<string, unknown>) => {
+		const m = await read(src);
+		return { elements: m.elements.map(e => (e.name === name ? { ...e, ...patch } : e)) };
+	};
+	it('a changed pipeline key moves the element out, in or over (0.27.0)', async () => {
+		const out = await apply(TEA, await changed(TEA, 'Campfire Kettle', { pipeline: null }));
+		expect(out.conflicts).toEqual([]);
+		expect(out.changes).toEqual([{ op: 'update', what: 'component Campfire Kettle pipeline', from: 'Kettle', to: null, line: 11 }]);
+		expect(el(await read(out.source), 'Campfire Kettle')).toMatchObject({ visibility: 0.38, evolution: 0.37, label: [-40, 22] });
+		expect(el(await read(out.source), 'Campfire Kettle')).not.toHaveProperty('pipeline');
+		// Out at another visibility and evolution: one move on top of the membership change.
+		const moved = await apply(TEA, await changed(TEA, 'Campfire Kettle', { pipeline: null, visibility: 0.2, evolution: 0.3 }));
+		expect(moved.changes.map(c => c.op)).toEqual(['update', 'move']);
+		expect(el(await read(moved.source), 'Campfire Kettle')).toMatchObject({ visibility: 0.2, evolution: 0.3 });
+		// In: onto the parent's line, a new block where there is none.
+		const into = await apply(TEA, await changed(TEA, 'Tea', { pipeline: 'Cup of Tea', visibility: undefined }));
+		expect(into.conflicts).toEqual([]);
+		expect(el(await read(into.source), 'Tea')).toMatchObject({ pipeline: 'Cup of Tea', visibility: 0.81, evolution: 0.81 });
+		// Over: from the Kettle's pipeline to the new one; a visibility of its own is reported.
+		const over = await apply(into.source, await changed(into.source, 'Electric Kettle', { pipeline: 'Cup of Tea', visibility: 0.5, evolution: 0.7 }));
+		expect(over.conflicts.map(c => c.message)).toEqual([expect.stringContaining("parent's visibility (0.81)")]);
+		expect(el(await read(over.source), 'Electric Kettle')).toMatchObject({ pipeline: 'Cup of Tea', evolution: 0.7 });
+		expect((await read(over.source)).pipelines.map(p => p.children)).toEqual([['Tea', 'Electric Kettle'], ['Campfire Kettle']]);
+	});
+	it('a move into a pipeline is refused for what a pipeline component cannot have, unless the entry removes it', async () => {
+		const blocked = await apply(TEA, await changed(TEA, 'Power', { pipeline: 'Kettle' }));
+		expect(blocked.changes).toEqual([]);
+		expect(blocked.conflicts.map(c => c.message)).toEqual(['"Power" has an evolve arrow and inertia, which a pipeline component cannot have.']);
+		expect(blocked.source).toBe(TEA);
+		const noEvolve = TEA.replace('evolve Power 0.92\n', '');
+		const ok = await apply(noEvolve, await changed(noEvolve, 'Power', { pipeline: 'Kettle', inertia: false, visibility: undefined }));
+		expect(ok.conflicts).toEqual([]);
+		expect(ok.changes.map(c => c.what)).toEqual(['component Power inertia', 'component Power pipeline']);
+		expect(ok.source).not.toContain('mp-inertia');
+		expect(el(await read(ok.source), 'Power')).toMatchObject({ pipeline: 'Kettle', visibility: 0.38 });
+		const anchor = await apply(TEA, await changed(TEA, 'Business', { pipeline: 'Kettle' }));
+		expect(anchor.conflicts.map(c => c.message)).toEqual([expect.stringMatching(/kind|anchor cannot be in a pipeline/)]);
+		const inertia = await apply(TEA, await changed(TEA, 'Electric Kettle', { inertia: true }));
+		expect(inertia.conflicts.map(c => c.message)).toEqual([expect.stringMatching(/no inertia in wardley-beta/)]);
+		expect(inertia.source).toBe(TEA);
 	});
 	it('inertiaAt: always read, default flagged; written only when the bar moves', async () => {
 		const src = 'wardley-beta\ncomponent A [0.5, 0.40] (inertia)\ncomponent B [0.5, 0.60] (build) (inertia)\ncomponent K [0.3, 0.50] (inertia)\npipeline K {\n  component K1 [0.20]\n  component K2 [0.60]\n}';

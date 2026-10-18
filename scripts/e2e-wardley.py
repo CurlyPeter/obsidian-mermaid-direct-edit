@@ -281,10 +281,10 @@ def case_click_click_link():
     return got is not None, got
 
 
-def add_lines(text):
-    """Puts `text` into the map before its first `%% group` line; answers the note as it was (for `restore`)."""
+def add_lines(text, before='%% group'):
+    """Puts `text` into the map before its first line starting with `before`; answers the note as it was (for `restore`)."""
     keep = js('app.workspace.activeLeaf.view.editor.getValue()')
-    js('(()=>{const e=app.workspace.activeLeaf.view.editor; const t=e.getValue(); const at=t.indexOf("```mermaid"); const b=t.indexOf("\\n%% group", at);'
+    js('(()=>{const e=app.workspace.activeLeaf.view.editor; const t=e.getValue(); const at=t.indexOf("```mermaid"); const b=t.indexOf(' + json.dumps('\n' + before) + ', at);'
        ' e.replaceRange(' + json.dumps(text) + ', e.offsetToPos(b + 1)); return "x"})()'); wait(1.2)
     park()
     SCRATCH.ready(20)
@@ -1300,9 +1300,14 @@ def group_line(name):
 
 def open_group_menu(title, where='source'):
     """The legend's "Group", then `title` in its menu; an error text, or None."""
+    return open_legend_menu('group', title, where)
+
+
+def open_legend_menu(kind, title, where='source'):
+    """The legend's item `kind` ("group", "pipeline"), then `title` in its menu; an error text, or None."""
     p = locate(where, c=['menu'])
     mouse('mouseMoved', *p['c']); wait(0.3)
-    item = locate(where, i=['legend-item', 'group'])['i']
+    item = locate(where, i=['legend-item', kind])['i']
     if not item:
         return 'legend not shown'
     click(*item); wait(0.6)
@@ -1455,6 +1460,186 @@ def case_unload_cleanup():
     return json.loads(before)['stub'] == 1 and a == {'stub': 0, 'legend': 0, 'host': 0, 'buttons': 0, 'zoom': 0}, f'before {before}; after unload {after}'
 
 
+# ---- pipelines (0.27.0) -----------------------------------------------------------------------
+
+# The pipeline mode as the page shows it: what is marked (box, parent), the mode's notice.
+PIPELINE_STATE = r"""
+(()=>{
+const root = app.workspace.activeLeaf.view.contentEl.querySelector('.markdown-source-view');
+const svg = root && root.querySelector('.mermaid svg[aria-roledescription="wardley"]');
+const boxes = svg ? svg.querySelectorAll('rect.wardley-pipeline-box.mp-group-editing').length : 0;
+const nodes = svg ? [...svg.querySelectorAll('g.wardley-node.mp-group-editing')].map(g => g.querySelector('text.wardley-node-label')?.textContent.trim()) : [];
+const notice = [...document.querySelectorAll('.notice .mp-group-notice')].map(n => n.textContent).find(t => / pipeline/i.test(t)) ?? null;
+return JSON.stringify({boxes, nodes, notice});
+})()
+"""
+
+# Components only the pipeline cases use, left of Pipe where no earlier case moves anything (the
+# note dragged by note_drag ends up on the lower right); each case puts them in and restores the
+# note afterwards, so the cases after it see the map they expect.
+PIPELINE_EXTRA = 'component Kappa [0.40, 0.05]\ncomponent Lambda [0.20, 0.12]\ncomponent Mu [0.25, 0.22]\nevolve Lambda 0.30\n'
+
+
+def pipeline_state():
+    return json.loads(js(PIPELINE_STATE))
+
+
+def restore_pipeline(keep):
+    """`restore`, after ending a pipeline mode a failed case left on."""
+    if pipeline_state()['notice'] is not None:
+        escape()
+    restore(keep)
+
+
+def under(p):
+    """What lies under a screen point: the topmost element's tag and classes, and the node label it belongs to."""
+    return js('(()=>{const e=document.elementFromPoint(' + str(p[0]) + ',' + str(p[1]) + '); if(!e) return "nothing";'
+              ' const g=e.closest("g.wardley-node, g.mde-group, g.wardley-annotations-box, g.wardley-annotation, g.wardley-notes");'
+              ' return e.tagName + "." + (e.getAttribute("class")||"") + " in " + (g ? (g.getAttribute("class")||"") + " " + (g.querySelector("text")?.textContent||"").trim().slice(0,30) : "-")})()')
+
+
+def open_pipeline_menu(title):
+    return open_legend_menu('pipeline', title)
+
+
+def case_pipeline_new_from_legend():
+    """The legend's Pipeline, then New pipeline: the first click picks the parent and writes
+    nothing; the next ones put components in (onto the parent's line, evolution kept), a second
+    click takes one out (it stays where it was drawn), the last one out removes the block and ends
+    the mode."""
+    keep = add_lines(PIPELINE_EXTRA.replace('evolve Lambda 0.30\n', ''), 'component Pipe ')
+    try:
+        err = open_pipeline_menu('New pipeline')
+        if err:
+            return False, err
+        s0 = pipeline_state()
+        before = source()
+        click(*locate(n=['node', 'Kappa'])['n']); wait()
+        picked, s1 = source() == before, pipeline_state()
+        click(*locate(n=['node', 'Lambda'])['n']); wait()
+        first = line(r'^pipeline Kappa \{\n  component Lambda \[0\.12\]\n\}$')
+        click(*locate(n=['node', 'Mu'])['n']); wait()
+        both = line(r'^pipeline Kappa \{\n  component Lambda \[0\.12\]\n  component Mu \[0\.22\]\n\}$')
+        s2 = pipeline_state()
+        click(*locate(n=['node', 'Lambda'])['n']); wait()
+        out = line(r'^\}\ncomponent Lambda \[0\.40, 0\.12\]$')
+        mu = locate(n=['node', 'Mu'])['n']
+        at_mu = under(mu)
+        click(*mu); wait()
+        src, s3 = source(), pipeline_state()
+        gone = 'pipeline Kappa' not in src and 'component Mu [0.40, 0.22]' in src and 'component Kappa [0.40, 0.05]' in src
+        ok = (s0['notice'] and 'New pipeline:' in s0['notice'] and picked and s1['nodes'] == ['Kappa'] and 'New pipeline of "Kappa"' in (s1['notice'] or '')
+              and first and both and s2['boxes'] == 1 and 'Pipeline of "Kappa"' in (s2['notice'] or '') and out and gone and s3['notice'] is None)
+        return bool(ok), f'{s0}; picked without a write: {picked} {s1}; first {bool(first)}; both {bool(both)} {s2}; out {bool(out)}; last out {gone} {s3}' + ('' if ok else f'; under Mu at {mu}: {at_mu}; source: {[l for l in src.splitlines() if "Kappa" in l or "Mu" in l or "Lambda" in l or l.strip() == "}"]}')
+    finally:
+        restore_pipeline(keep)
+
+
+def case_pipeline_box_click():
+    """A click on a pipeline box starts its mode (box marked), a click on a component of it takes
+    it out and back in; a double click on the box opens the parent's dialog. (Pa and Pb sit
+    wherever pipeline_box_drag left them.)"""
+    keep = js('app.workspace.activeLeaf.view.editor.getValue()')
+    try:
+        click(*locate(b=['box'])['b']); wait(0.8)
+        s = pipeline_state()
+        click(*locate(n=['node', 'Pa'])['n']); wait()
+        out = line(r'^component Pa \[0\.30, [\d.]+\]$')
+        click(*locate(n=['node', 'Pa'])['n']); wait()
+        back = line(r'^  component Pa \[[\d.]+\]$')
+        escape()
+        s2 = pipeline_state()
+        dblclick(*locate(b=['box'])['b']); wait(0.6)
+        title = modal_title()
+        escape()
+        ok = s['boxes'] == 1 and 'Pipeline of "Pipe"' in (s['notice'] or '') and out and back and s2['notice'] is None and title == 'Edit "Pipe"'
+        return bool(ok), f'{s}; out {out}; back {back}; after Escape {s2}; double click {title!r}'
+    finally:
+        restore_pipeline(keep)
+
+
+def case_pipeline_refuse_and_switch():
+    """A component with an evolve arrow is refused with a notice whose button removes the arrow and
+    puts it in; an anchor is refused; a component of another pipeline changes over, and the block
+    it leaves empty goes."""
+    keep = add_lines(PIPELINE_EXTRA, 'component Pipe ')
+    try:
+        err = open_pipeline_menu('Pipe')
+        if err:
+            return False, err
+        before = source()
+        click(*locate(n=['node', 'Lambda'])['n']); wait()
+        refused = source() == before
+        b = locate(b=['notice-button', 'Remove and add'])['b']
+        if b:
+            click(*b); wait()
+        src = source()
+        added = 'evolve Lambda' not in src and re.search(r'^  component Lambda \[0\.12\]$', src, re.M) is not None
+        before = source()
+        click(*locate(n=['node', 'User'])['n']); wait()
+        anchor = source() == before
+        escape()
+        err = open_pipeline_menu('New pipeline')
+        if err:
+            return False, err
+        click(*locate(n=['node', 'Kappa'])['n']); wait()
+        click(*locate(n=['node', 'Lambda'])['n']); wait()
+        click(*locate(n=['node', 'Mu'])['n']); wait()
+        err = open_pipeline_menu('Pipe')
+        if err:
+            return False, err
+        click(*locate(n=['node', 'Lambda'])['n']); wait()
+        mu = locate(n=['node', 'Mu'])['n']
+        at_mu, mode = under(mu), pipeline_state()
+        click(*mu); wait()
+        src = source()
+        switched = 'pipeline Kappa' not in src and re.search(r'^  component Mu \[0\.22\]\n\}$', src, re.M) is not None
+        ok = refused and bool(b) and added and anchor and switched
+        return ok, f'refused {refused}; button {b}; added {added}; anchor refused {anchor}; switched, Kappa block gone {switched}' + ('' if ok else f'; before the Mu click {mode}, under Mu at {mu}: {at_mu}; source: {[l for l in src.splitlines() if "Kappa" in l or "Mu" in l or "Lambda" in l or "pipeline" in l]}')
+    finally:
+        restore_pipeline(keep)
+
+
+def case_pipeline_new_component():
+    """"New component…" in the pipeline mode's notice asks for a name and adds it right of the last
+    component; the mode stays on."""
+    keep = js('app.workspace.activeLeaf.view.editor.getValue()')
+    try:
+        err = open_pipeline_menu('Pipe')
+        if err:
+            return False, err
+        b = locate(b=['notice-button', 'New component…'])['b']
+        if not b:
+            return False, 'no New component button'
+        click(*b); wait(0.6)
+        title = modal_title()
+        cdp('Input.insertText', {'text': 'Pc'})
+        key('Enter', 'Enter', 13); wait()
+        got = line(r'^  component Pc \[[\d.]+\]$')
+        s = pipeline_state()
+        return title == 'Add to the pipeline of "Pipe"' and got is not None and s['notice'] is not None, f'{title!r}; {got}; {s}'
+    finally:
+        restore_pipeline(keep)
+
+
+def case_pipeline_touch_tap():
+    """In the pipeline mode a finger's tap takes a component out, as a click does; Done ends the mode."""
+    keep = js('app.workspace.activeLeaf.view.editor.getValue()')
+    try:
+        err = open_pipeline_menu('Pipe')
+        if err:
+            return False, err
+        tap(*locate(n=['node', 'Pb'])['n']); wait()
+        got = line(r'^component Pb \[0\.30, [\d.]+\]$')
+        done = locate(b=['notice-button', 'Done'])['b']
+        if done:
+            click(*done); wait(1)
+        s = pipeline_state()
+        return got is not None and bool(done) and s['notice'] is None and s['boxes'] == 0, f'{got}; Done {done}; {s}'
+    finally:
+        restore_pipeline(keep)
+
+
 CASES = [
     ('node_drag', case_node_drag), ('undo', case_undo), ('label_drag', case_label_drag),
     ('evolve_tip', case_evolve_tip), ('inertia_drag', case_inertia_drag), ('evolve_delete', case_evolve_delete),
@@ -1473,6 +1658,9 @@ CASES = [
     ('group_new_from_legend', case_group_new_from_legend), ('group_members', case_group_members), ('group_touch_tap', case_group_touch_tap),
     ('group_properties_delete', case_group_properties_delete), ('group_label_dialog', case_group_label_dialog),
     ('group_area_click', case_group_area_click),
+    ('pipeline_new_from_legend', case_pipeline_new_from_legend), ('pipeline_box_click', case_pipeline_box_click),
+    ('pipeline_refuse_and_switch', case_pipeline_refuse_and_switch), ('pipeline_new_component', case_pipeline_new_component),
+    ('pipeline_touch_tap', case_pipeline_touch_tap),
     ('export_cli', case_export_cli), ('export_limits', case_export_limits), ('export_faithful', case_export_faithful), ('export_menu', case_export_menu), ('share_button', case_share_button),
     ('component_on_shaft', case_component_on_shaft), ('swallow_scope', case_swallow_scope),
     ('zoom_fit', case_zoom_fit), ('zoom_edit_source', case_zoom_edit_source), ('zoom_drag', case_zoom_drag), ('zoom_touch_drag', case_zoom_touch_drag),

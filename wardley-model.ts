@@ -14,7 +14,7 @@ import { CliError } from './cli';
 import {
 	CLASS_NAME, EditError, MAX_CLASSES, Method, STYLE_PROPERTIES, addElement, addEvolve, addForce, addLink, addNote, addToPipeline,
 	classDefs, classMarkers, deleteElement, groupMarkers, groupsOf, deleteEvolve, deleteForce, deleteNote, editBlocker, inertiaMarkers,
-	setClasses, setEvolveTarget, setInertiaPosition, setForcePosition, setInertia, setLabelOffset, setLink, setMethod,
+	moveIntoPipeline, setClasses, takeOutOfPipeline, setEvolveTarget, setInertiaPosition, setForcePosition, setInertia, setLabelOffset, setLink, setMethod,
 	setNotePosition, setPosition, setTitle, unlink, LinkKind, linkKindOf,
 } from './wardley-text';
 
@@ -517,11 +517,11 @@ export async function applyModel(source: string, targetIn: unknown, parse: Parse
 	const ordered = [...(tEls ?? [])].sort((a, b) => Number(!!a.pipeline) - Number(!!b.pipeline));
 	for (const t of ordered) {
 		const name = t.name.trim();
-		const c = curEl.get(name);
-		const kind = t.kind ?? c?.kind ?? 'component';
+		const found = curEl.get(name);
+		const kind = t.kind ?? found?.kind ?? 'component';
 		const what = `${kind} ${name}`;
 		const parentVis = (p: string) => tByName.get(p)?.visibility ?? curEl.get(p)?.visibility;
-		if (!c) {
+		if (!found) {
 			if (!t.pipeline && t.visibility === undefined) {
 				conflicts.push({ what, message: 'A new element needs a visibility; not added.' });
 				continue;
@@ -542,18 +542,41 @@ export async function applyModel(source: string, targetIn: unknown, parse: Parse
 			if (t.classes?.length) edit(what, undefined, src => setClasses(src, name, t.classes!));
 			continue;
 		}
+		let c: ModelElement = found;
 		if (kind !== c.kind) {
 			conflicts.push({ what, message: `Written as ${c.kind}, the model has ${kind}; the kind is not changed.`, line: c.line });
 			continue;
 		}
-		// No `pipeline` key keeps the text's membership; only a present key that differs is a conflict.
-		if (t.pipeline !== undefined && (t.pipeline ?? undefined) !== c.pipeline) {
-			conflicts.push({ what, message: c.pipeline
-				? `In the pipeline of "${c.pipeline}" in the text, ${t.pipeline ? `of "${t.pipeline}"` : 'top level'} in the model; not moved between pipelines.`
-				: `Top level in the text, in the pipeline of "${t.pipeline}" in the model; not moved into a pipeline.`, line: c.line });
-			continue;
-		}
-		if (c.pipeline) {
+		// No `pipeline` key keeps the text's membership; a present key that differs moves the
+		// element into, out of or between pipelines, with its evolution (0.27.0).
+		const into = t.pipeline === undefined || (t.pipeline ?? undefined) === c.pipeline ? undefined : t.pipeline;
+		if (into !== undefined) {
+			if (into) {
+				// What the entry itself takes away goes first: a pipeline component has neither.
+				if (t.inertia === false && c.inertia && edit(what, c.line, src => setInertia(src, name, false))) {
+					changes.push({ op: 'update', what: `${what} inertia`, from: true, to: false, line: c.line });
+					c = { ...c, inertia: undefined };
+				}
+				if (t.method === null && c.method && edit(what, c.line, src => setMethod(src, name, null))) {
+					changes.push({ op: 'update', what: `${what} method`, from: c.method, to: null, line: c.line });
+					c = { ...c, method: undefined };
+				}
+			}
+			const was = c;
+			if (!edit(what, c.line, src => (into ? moveIntoPipeline(src, into, name) : takeOutOfPipeline(src, name)))) continue;
+			changes.push({ op: 'update', what: `${what} pipeline`, from: was.pipeline ?? null, to: into, line: was.line });
+			const v = into ? parentVis(into) : differs(t.visibility, was.visibility) ? t.visibility! : was.visibility;
+			const e = differs(t.evolution, was.evolution) ? t.evolution : was.evolution;
+			if (e !== was.evolution || (!into && v !== was.visibility)) {
+				if (edit(what, was.line, src => setPosition(src, name, v ?? 0, e))) {
+					changes.push({ op: 'move', what, from: [was.visibility, was.evolution], to: [v === undefined ? null : at2(v), at2(e)], line: was.line });
+				}
+			}
+			if (into && differs(t.visibility, v)) {
+				conflicts.push({ what, message: `A pipeline component sits at its parent's visibility (${v}), not ${t.visibility}; move the parent instead.`, line: was.line });
+			}
+			c = { ...c, pipeline: into ?? undefined, visibility: v ?? c.visibility };
+		} else if (c.pipeline) {
 			if (differs(t.evolution, c.evolution) && edit(what, c.line, src => setPosition(src, name, 0, t.evolution))) {
 				changes.push({ op: 'move', what, from: [c.visibility, c.evolution], to: [c.visibility, at2(t.evolution)], line: c.line });
 			}
@@ -582,7 +605,10 @@ export async function applyModel(source: string, targetIn: unknown, parse: Parse
 				conflicts.push({ what, message: 'Removing a label offset is not supported; it stays.', line: c.line });
 			}
 		}
-		if (t.inertia !== undefined && t.inertia !== !!c.inertia) {
+		// setMethod refuses a pipeline component itself; setInertia would write what does not parse.
+		if (c.pipeline && t.inertia) {
+			conflicts.push({ what, message: `"${name}" is a pipeline component, which has no inertia in wardley-beta.`, line: c.line });
+		} else if (t.inertia !== undefined && t.inertia !== !!c.inertia) {
 			if (edit(what, c.line, src => setInertia(src, name, t.inertia!))) {
 				changes.push({ op: 'update', what: `${what} inertia`, from: !!c.inertia, to: t.inertia, line: c.line });
 			}

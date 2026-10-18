@@ -29,6 +29,7 @@ Editing covers Wardley maps and flowcharts; zoom and export work for every diagr
 | Drag the tip of a red evolve arrow | `evolve Name 0.62` |
 | Drag the inertia bar along the evolve arrow | a plugin comment `%% mp-inertia Name 0.66` (see below) |
 | Drag a pipeline box | the pipeline and its components move together |
+| Pick *Pipeline* in the menu (or click a pipeline box), then click components | they go into the pipeline or out of it: `pipeline Kettle { component Electric Kettle [0.62] }`. With *New pipeline* the first click picks the parent. A component that goes in moves onto its parent's line and keeps its evolution; one taken out stays where it was drawn; the last one out removes the box. *New component…* in the notice adds one that does not exist yet. Double-click the box for the parent's dialog |
 | Drag an annotation's numbered circle, or the box listing the annotations | `annotation 1,[v, e] "…"`, or `annotations [v, e]` |
 | Grab a link's end and drop it on another element | `A -> B` becomes `A -> C` |
 | Click next to an element (a "+" appears), drag to another one | a new link `A -> B`, written from the upper element to the lower one |

@@ -118,6 +118,14 @@ body.mp-wardley-edit .mermaid svg[data-mp-src] g.mde-group.mp-group-editing > pa
 body.mp-wardley-edit .mermaid svg[data-mp-src] g.mde-group.mp-group-editing > text.mde-group-label {
 	filter: drop-shadow(0 0 3px var(--interactive-accent));
 }
+/* The pipeline mode marks its box and its parent the same way. */
+body.mp-wardley-edit .mermaid svg[data-mp-src] rect.wardley-pipeline-box.mp-group-editing {
+	stroke-width: 2.5px;
+	filter: drop-shadow(0 0 3px var(--interactive-accent)) drop-shadow(0 0 2px var(--interactive-accent));
+}
+body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-node.mp-group-editing {
+	filter: drop-shadow(0 0 3px var(--interactive-accent)) drop-shadow(0 0 2px var(--interactive-accent));
+}
 /* A flow arrow's head takes its line's colour. Mermaid draws heads and lines in the same colour,
    so only a link with a class looks different; without context-stroke the rule is dropped and
    the heads keep Mermaid's colour. */

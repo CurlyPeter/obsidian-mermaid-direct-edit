@@ -13,18 +13,24 @@ import { LegendKind, WARDLEY_LEGEND } from './wardley-legend';
 import { MapModel, MapNode } from './wardley-map';
 import { EditModal, GroupModal, LabelChoice, LinkModal } from './wardley-modals';
 import {
-	CLASS_NAME, EditError, ForceKind, addAnnotation, addElement, addEvolve, addForce, addGroupMember, addLink, addNote, addToPipeline, classDefs,
-	defaultEvolveTarget, deleteAnnotation, deleteElement, deleteEvolve, deleteForce, deleteGroup, deletePipeline, freeSpot, getAnnotation,
-	getClasses, getLink, getMethod, groupsOf, hasInertia, type Method, nextGroupName, nextPipelineEvolution, pipelineOf, removeGroupMember,
+	CLASS_NAME, EditError, ForceKind, type PipelineBlocker, addAnnotation, addElement, addEvolve, addForce, addGroupMember, addLink, addNote, addToPipeline,
+	classDefs, clearPipelineBlockers, defaultEvolveTarget, deleteAnnotation, deleteElement, deleteEvolve, deleteForce, deleteGroup,
+	deletePipeline, describeBlockers, freeSpot, getAnnotation, getClasses, getLink, getMethod, groupsOf, hasInertia, kindOf, type Method, moveIntoPipeline,
+	nextGroupName, nextPipelineEvolution, pipelineBlockers, pipelineOf, pipelineParentOf, pipelineParents, removeGroupMember, takeOutOfPipeline,
 	linkDirection, orientLink, rename, renameForce, renameGroup, setAnnotationText, setClass, setClasses, setGroupLabel, setInertia, setLinkDirection, setMethod, unlink, upperEnd,
 } from './wardley-text';
 
 /**
- * The group mode (DEV.md → "Editing groups (0.22.0)"): a click on a component puts it into the
- * group or takes it out, anything else ends it. One per editor.
+ * The membership modes (DEV.md → "Editing groups (0.22.0)", "Editing pipelines (0.27.0)"): a
+ * click on a component puts it into the group or pipeline or takes it out, anything else ends
+ * the mode. One per editor.
  */
-interface GroupEdit {
-	/** Null until the first component clicked makes the new group. */
+interface MemberMode {
+	kind: 'group' | 'pipeline';
+	/**
+	 * The group, or the pipeline's parent. Null until the first click: it makes the new group, or
+	 * picks the new pipeline's parent.
+	 */
 	name: string | null;
 	/**
 	 * The block as the note holds it now. A click is written before the map is redrawn, so the
@@ -34,11 +40,13 @@ interface GroupEdit {
 	replaced: Set<string>;
 	/** The map's container; a redraw may replace it, then the map is found again by `src`. */
 	box: Element;
-	/** Where redraws are watched, to put the mark back on the redrawn group (once per frame). */
+	/** Where redraws are watched, to put the mark back on the redrawn map (once per frame). */
 	root: Element;
 	observer: MutationObserver;
 	scheduled: boolean;
 	notice: Notice;
+	/** The pipeline mode's offer to remove what blocks a component ("Remove and add"); goes with the mode. */
+	offer: Notice | null;
 	/** The notice's text: gone when the notice was dismissed, which ends the mode too. */
 	text: HTMLElement | null;
 	/** Clicks are written one after the other. */
@@ -53,7 +61,7 @@ const HOVER_CURSOR: Record<Hit['kind'], string> = {
 	'trend-tip': 'ew-resize', 'trend-shaft': CURSOR_DELETE, 'link-end': 'crosshair', 'link-middle': 'pointer', plus: CURSOR_ADD,
 };
 
-/** The component a press in the group mode means: its circle or label, its pipeline box, its "+" ring. */
+/** The component a press in a mode means: its circle or label, its pipeline box, its "+" ring. */
 const memberHit = (hit: Hit | null): MapNode | null =>
 	hit && (hit.kind === 'node' || hit.kind === 'box' || hit.kind === 'plus') ? hit.node : null;
 
@@ -79,6 +87,11 @@ function glowOf(model: MapModel, hit: Hit | null, hover: boolean): GlowTarget | 
 	return null;
 }
 
+/** The components of the pipeline of `parent`, null when there is none (or its block is not closed). */
+function componentsOf(src: string, parent: string | null): string[] | null {
+	try { return parent ? pipelineOf(src, parent) : null; } catch { return null; }
+}
+
 const glowElement = (t: GlowTarget | null) => (t ? ('line' in t ? t.line : t.node) : null);
 
 /**
@@ -88,9 +101,9 @@ const glowElement = (t: GlowTarget | null) => (t ? ('line' in t ? t.line : t.nod
  * block. See CLAUDE.md → "Editing Wardley maps".
  */
 export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx {
-	/** Evolve, inertia or pipeline: the legend item waiting for a component to be pressed. */
-	private armed: { kind: 'evolve' | 'inertia' | 'pipeline'; box: Element; item: Element } | null = null;
-	private group: GroupEdit | null = null;
+	/** Evolve or inertia: the legend item waiting for a component to be pressed. */
+	private armed: { kind: 'evolve' | 'inertia'; box: Element; item: Element } | null = null;
+	private mode: MemberMode | null = null;
 	private toldStub = false;
 	/** The shadow (DEV.md 0.26.0): what a press would take, what is pressed, what has its dialog open. */
 	private readonly glow = new Glow(line => this.runOf(line));
@@ -110,7 +123,7 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 
 	protected press(e: PointerEvent, model: MapModel) {
 		if (this.armed) return this.armedPress(e, model);
-		if (this.group && this.groupPress(e, model)) return;
+		if (this.mode && this.modePress(e, model)) return;
 		const svg = model.svg;
 		const hit = classify(model, e.target as Element, e.clientX, e.clientY);
 		if (!hit) return;
@@ -129,7 +142,11 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 			case 'force': return this.start(e, new ForceDrag(model, e, this, hit.force, hit.name, hit.parts, hit.origin), svg);
 			case 'inertia': return this.start(e, new InertiaDrag(model, e, this, hit.bar, hit.name), svg);
 			case 'node': return this.start(e, new NodeDrag(model, e, this, hit.node, hit.label), svg);
-			case 'box': return this.start(e, new NodeDrag(model, e, this, hit.node, null), svg);
+			case 'box': {
+				// A click starts the pipeline mode, a second one opens the parent's dialog; a drag moves the pipeline.
+				const parent = hit.node;
+				return this.start(e, new NodeDrag(model, e, this, parent, null, () => this.pipelineTap(model, parent)), svg);
+			}
 			case 'trend-tip': return this.start(e, new TrendTipDrag(model, e, this, hit.line, hit.name), svg);
 			case 'trend-shaft': {
 				const name = hit.name;
@@ -155,7 +172,7 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 	}
 
 	protected hoverAt(model: MapModel | null, target: Element | null, x: number, y: number) {
-		const hit = model && target && !this.armed && !this.group ? this.hitAt(model, target, x, y) : null;
+		const hit = model && target && !this.armed && !this.mode ? this.hitAt(model, target, x, y) : null;
 		// Compared by element first: building a node's target reads the map's pipeline boxes.
 		const el = memberHit(hit)?.node ?? (hit?.kind === 'link-middle' || hit?.kind === 'link-end' ? hit.line : null);
 		if (el === glowElement(this.hovered)) return;
@@ -189,11 +206,14 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 
 	protected cursorAt(model: MapModel, target: Element, x: number, y: number): string {
 		if (this.armed) return componentAt(model, target) ? 'copy' : '';
-		if (this.group && this.inGroupMap(model)) {
+		const g = this.mode;
+		if (g && this.inModeMap(model)) {
 			const hit = this.hitAt(model, target, x, y);
+			if (g.kind === 'pipeline' && hit?.kind === 'box') return 'pointer';
 			const node = memberHit(hit);
+			if (node && g.kind === 'pipeline' && node.name === g.name) return 'default';
 			if (node) return this.members().has(node.name) ? CURSOR_REMOVE : CURSOR_ADD;
-			return hit?.kind === 'group-label' ? '' : hit?.kind === 'group' ? 'pointer' : 'default';
+			return g.kind === 'pipeline' ? 'default' : hit?.kind === 'group-label' ? '' : hit?.kind === 'group' ? 'pointer' : 'default';
 		}
 		const hit = this.hitAt(model, target, x, y);
 		return hit ? HOVER_CURSOR[hit.kind] : '';
@@ -236,25 +256,26 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 	}
 
 	protected pressOutside(e: PointerEvent) {
-		// The group mode's own notice (its buttons) is not "elsewhere".
+		// A mode's own notices (their buttons) are not "elsewhere", nor the dialog "New component…" opens.
 		if (isElement(e.target) && e.target.closest('.notice')?.querySelector('.mp-group-notice')) return;
+		if (this.mode && isElement(e.target) && e.target.closest('.modal-container')) return;
 		this.disarm();
 	}
 
 	protected disarm() {
 		this.armed?.item.removeClass('is-armed');
 		this.armed = null;
-		this.endGroup();
+		this.endMode();
 	}
 
 	protected isArmed(): boolean {
-		return !!this.armed || !!this.group;
+		return !!this.armed || !!this.mode;
 	}
 
-	/** `write` keeps the group mode's source current: its next click starts from what was written. */
+	/** `write` keeps a mode's source current: its next click starts from what was written. */
 	protected async write(model: MapModel, edit: (src: string) => string, src = model.src) {
 		const done = await super.write(model, edit, src);
-		const g = this.group;
+		const g = this.mode;
 		if (done && g && src === g.src) {
 			g.replaced.add(src);
 			g.src = done.next;
@@ -301,14 +322,14 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 
 	/** A click on a group's label or free area starts its group mode; a second one opens its dialog. */
 	groupTap(model: MapModel, name: string) {
-		if (this.group?.name !== name) this.startGroup(model, name);
+		if (this.mode?.kind !== 'group' || this.mode.name !== name) this.startMode(model, 'group', name);
 		this.tap(`group:${name}`, model, () => {
-			this.endGroup();
+			this.endMode();
 			this.openGroupDialog(model, name);
 		});
 	}
 
-	/** Name, look (one class), label and delete of a group; its members change in the group mode. */
+	/** Name, look (one class), label and delete of a group; its members change in its mode. */
 	openGroupDialog(model: MapModel, name: string) {
 		const src = model.src;
 		const g = groupsOf(src).find(x => x.name === name);
@@ -425,16 +446,17 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 		), held);
 	}
 
-	// ---- the group mode ------------------------------------------------------------------------
+	// ---- the membership modes: groups and pipelines ----------------------------------------------
 
-	/** The legend's "Group": a new group, or one of the map's groups, to edit in the group mode. */
-	private chooseGroup(model: MapModel, item: Element) {
-		const groups = groupsOf(model.src);
-		if (!groups.length) return this.startGroup(model, null);
+	/** The legend's "Group" or "Pipeline": a new one, or one of the map's, to edit in its mode. */
+	private chooseMode(model: MapModel, item: Element, kind: MemberMode['kind']) {
+		const names = kind === 'group' ? groupsOf(model.src).map(g => g.name) : pipelineParents(model.src).filter(Boolean);
+		if (!names.length) return this.startMode(model, kind, null);
 		const menu = new Menu();
-		menu.addItem(i => i.setTitle('New group').setIcon('plus').onClick(() => this.startGroup(model, null)));
+		menu.addItem(i => i.setTitle(kind === 'group' ? 'New group' : 'New pipeline').setIcon('plus').onClick(() => this.startMode(model, kind, null)));
 		menu.addSeparator();
-		for (const g of groups) menu.addItem(i => i.setTitle(g.name).setIcon('circle-dashed').onClick(() => this.startGroup(model, g.name)));
+		const icon = kind === 'group' ? 'circle-dashed' : 'rectangle-horizontal';
+		for (const n of names) menu.addItem(i => i.setTitle(n).setIcon(icon).onClick(() => this.startMode(model, kind, n)));
 		const r = item.getBoundingClientRect();
 		// Obsidian closes a menu on a mousedown outside it, and this press's own mousedown comes
 		// after the pointerdown that got here: open it once the press is over.
@@ -449,162 +471,298 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 		win.setTimeout(show, 1500);
 	}
 
-	private startGroup(model: MapModel, name: string | null) {
+	private startMode(model: MapModel, kind: MemberMode['kind'], name: string | null) {
 		this.disarm();
 		// The note's tab, or the zoom when the map is edited there.
 		const root = model.svg.closest('.mde-zoom, .workspace-leaf-content') ?? model.svg.ownerDocument.body;
-		const g: GroupEdit = {
-			name, src: model.src, replaced: new Set(), box: model.svg.closest('.mermaid') ?? model.svg, root,
+		const g: MemberMode = {
+			kind, name, src: model.src, replaced: new Set(), box: model.svg.closest('.mermaid') ?? model.svg, root,
 			observer: new MutationObserver(() => {
 				if (g.scheduled) return;
 				g.scheduled = true;
 				window.requestAnimationFrame(() => { g.scheduled = false; this.mark(); });
 			}),
-			scheduled: false, notice: new Notice('', 0), text: null, queue: Promise.resolve(), last: null,
+			scheduled: false, notice: new Notice('', 0), offer: null, text: null, queue: Promise.resolve(), last: null,
 		};
 		g.observer.observe(root, { childList: true, subtree: true });
-		this.group = g;
+		this.mode = g;
 		this.tell();
 		this.mark();
 	}
 
-	private endGroup() {
-		const g = this.group;
+	private endMode() {
+		const g = this.mode;
 		if (!g) return;
-		this.group = null;
+		this.mode = null;
 		g.observer.disconnect();
 		g.notice.hide();
+		g.offer?.hide();
 		g.box.ownerDocument.querySelectorAll('.mp-group-editing').forEach(el => el.classList.remove('mp-group-editing'));
 	}
 
-	/** The mode's notice: what a click does, "Properties…" for a group that exists, "Done". */
+	/** Runs `step` after the clicks before it, each from the source the one before left. */
+	private enqueue(g: MemberMode, step: () => Promise<void>) {
+		g.queue = g.queue.then(step).catch(e => this.report(e));
+	}
+
+	/** The pipeline of the mode's parent as the note holds it now; null when it has none (yet). */
+	private pipelineNow(g: MemberMode): string[] | null {
+		return componentsOf(g.src, g.name);
+	}
+
+	/**
+	 * The mode's notice: what a click does, "Properties…" for a group that exists, "New component…"
+	 * for a pipeline whose parent is chosen, "Done". Written again only when its text changes.
+	 */
 	private tell() {
-		const g = this.group;
+		const g = this.mode;
 		if (!g) return;
 		const verb = this.touchSeen ? 'tap' : 'click';
+		const what = g.kind === 'group'
+			? (g.name ? `Group "${g.name}": ${verb} components to put them in or take them out.` : `New group: ${verb} components to put them into it.`)
+			: !g.name ? `New pipeline: ${verb} its parent component first, then the components to put into it.`
+			: this.pipelineNow(g) ? `Pipeline of "${g.name}": ${verb} components to put them in or take them out.`
+			: `New pipeline of "${g.name}": ${verb} components to put them into it.`;
+		const text = `Wardley map: ${what} `;
+		if (g.text?.isConnected && g.text.textContent === text) return;
 		g.notice.setMessage(createFragment(f => {
-			g.text = f.createSpan({
-				cls: 'mp-group-notice',
-				text: g.name ? `Wardley map: Group "${g.name}": ${verb} components to put them in or take them out. ` : `Wardley map: New group: ${verb} components to put them into it. `,
-			});
+			g.text = f.createSpan({ cls: 'mp-group-notice', text });
 			// A click on the text dismisses an Obsidian notice: that ends the mode as well.
-			g.text.addEventListener('click', () => this.endGroup());
-			const button = (text: string, run: () => void) => f.createEl('button', { text, cls: 'mp-undo' }).addEventListener('click', ev => {
+			g.text.addEventListener('click', () => this.endMode());
+			const button = (label: string, run: () => void) => f.createEl('button', { text: label, cls: 'mp-undo' }).addEventListener('click', ev => {
 				ev.stopPropagation();
 				run();
 			});
-			if (g.name) {
-				const name = g.name;
+			const name = g.name;
+			if (name && g.kind === 'group') {
 				button('Properties…', () => {
-					const model = this.groupModel(g);
-					this.endGroup();
+					const model = this.modeModel(g);
+					this.endMode();
 					if (model) this.openGroupDialog(model, name);
 				});
 			}
-			button('Done', () => this.endGroup());
+			if (name && g.kind === 'pipeline') button('New component…', () => this.newPipelineComponent(g, name));
+			button('Done', () => this.endMode());
 		}));
 	}
 
 	/** Whether `model` is the map being edited (its drawing may still be the one before the last click). */
-	private inGroupMap(model: MapModel): boolean {
-		const g = this.group;
+	private inModeMap(model: MapModel): boolean {
+		const g = this.mode;
 		return !!g && (model.src === g.src || g.replaced.has(model.src) || (g.box.isConnected && g.box.contains(model.svg)));
 	}
 
 	/** The drawing of the map being edited now, the redrawn one once it is there. */
-	private groupModel(g: GroupEdit): MapModel | null {
+	private modeModel(g: MemberMode): MapModel | null {
 		const svgs = Array.from(g.root.querySelectorAll<SVGSVGElement>(`svg[${KEY_ATTR}]`));
 		const svg = svgs.find(s => this.registry.sourceOf(s) === g.src) ?? (g.box.isConnected ? svgs.find(s => g.box.contains(s)) : undefined);
 		return svg ? MapModel.of(svg, this.registry) : null;
 	}
 
-	/** Marks the group being edited (a glow behind its boundary), again after every redraw. */
+	/**
+	 * Marks what is being edited, again after every redraw: a group's boundary, or a pipeline's box
+	 * and its parent (the parent alone while its pipeline has no component yet).
+	 */
 	private mark() {
-		const g = this.group;
+		const g = this.mode;
 		if (!g) return;
-		const model = this.groupModel(g);
+		const model = this.modeModel(g);
 		g.root.querySelectorAll('.mp-group-editing').forEach(el => el.classList.remove('mp-group-editing'));
 		if (!model || !g.name) return;
 		g.box = model.svg.closest('.mermaid') ?? model.svg;
-		const i = groupsOf(model.src).findIndex(x => x.name === g.name);
-		model.svg.querySelector(`g.mde-group[data-mde-group="${i}"]`)?.classList.add('mp-group-editing');
+		if (g.kind === 'group') {
+			const i = groupsOf(model.src).findIndex(x => x.name === g.name);
+			model.svg.querySelector(`g.mde-group[data-mde-group="${i}"]`)?.classList.add('mp-group-editing');
+			return;
+		}
+		model.pipelineBoxes().find(b => b.parent === g.name)?.box.classList.add('mp-group-editing');
+		model.byName(g.name)?.node.classList.add('mp-group-editing');
 	}
 
-	/** The members of the group being edited, as the note holds it now. */
+	/** The members of the group or pipeline being edited, as the note holds it now. */
 	private members(): Set<string> {
-		const g = this.group;
-		return new Set(g?.name ? groupsOf(g.src).find(x => x.name === g.name)?.members ?? [] : []);
+		const g = this.mode;
+		if (!g?.name) return new Set();
+		return new Set(g.kind === 'group' ? groupsOf(g.src).find(x => x.name === g.name)?.members ?? [] : this.pipelineNow(g) ?? []);
 	}
 
 	/**
-	 * A press in the group mode: on a component (its circle, label, pipeline box or "+" ring) a
-	 * click puts it in or takes it out and a drag still moves it; a group's label or area keeps or
-	 * switches the mode; anything else ends the mode and does nothing more. False when the press is on
-	 * another map: the mode ends and the press is handled as usual.
+	 * A press in a mode: on a component (its circle, label, "+" ring; in the group mode also a
+	 * pipeline box) a click puts it in or takes it out and a drag still moves it; a group's label or
+	 * area keeps or switches the group mode, a pipeline box the pipeline mode; anything else ends
+	 * the mode and does nothing more. False when the press is on another map: the mode ends and the
+	 * press is handled as usual.
 	 */
-	private groupPress(e: PointerEvent, model: MapModel): boolean {
-		const g = this.group!;
-		if (!g.text?.isConnected || !this.inGroupMap(model)) {
-			this.endGroup();
+	private modePress(e: PointerEvent, model: MapModel): boolean {
+		const g = this.mode!;
+		if (!g.text?.isConnected || !this.inModeMap(model)) {
+			this.endMode();
 			return false;
 		}
 		// Someone else changed the map (not a drawing older than our last click): start from that.
 		if (model.src !== g.src && !g.replaced.has(model.src)) g.src = model.src;
 		const svg = model.svg;
 		const hit = classify(model, e.target as Element, e.clientX, e.clientY);
-		if (hit?.kind === 'group-label') {
+		if (g.kind === 'group' && hit?.kind === 'group-label') {
 			this.start(e, new GroupLabelDrag(model, e, this, hit.el, hit.name), svg);
 			return true;
 		}
-		if (hit?.kind === 'group') {
+		if (g.kind === 'group' && hit?.kind === 'group') {
 			// Its own area keeps the mode (a second click opens the dialog), another group's switches.
 			const name = hit.name;
 			this.start(e, new TapPress(model, e, () => this.groupTap(model, name)), svg);
 			return true;
 		}
 		const node = memberHit(hit);
-		if (node && hit?.kind === 'plus') {
+		if (g.kind === 'pipeline' && hit?.kind === 'box') {
+			const parent = hit.node;
+			this.start(e, new NodeDrag(model, e, this, parent, null, () => this.pipelineTap(model, parent)), svg);
+		} else if (node && hit?.kind === 'plus') {
 			this.start(e, new TapPress(model, e, () => this.toggleMember(model, node.name)), svg);
 		} else if (node) {
 			this.start(e, new NodeDrag(model, e, this, node, hit?.kind === 'node' ? hit.label : null, () => this.toggleMember(model, node.name)), svg);
 		} else {
 			this.claim(e);
 			this.swallowAfter(svg);
-			this.endGroup();
+			this.endMode();
 		}
 		return true;
 	}
 
-	/**
-	 * Puts a component into the group being edited or takes it out. Written one after the other,
-	 * each from the source the one before left; the first makes a new group, taking the last one
-	 * out deletes the group (with Undo) and ends the mode.
-	 */
+	/** A click on a component in a mode. A second click on the same one within the double-click time is ignored. */
 	private toggleMember(model: MapModel, member: string) {
-		const g = this.group;
+		const g = this.mode;
 		if (!g) return;
 		const now = Date.now();
 		if (g.last?.member === member && now - g.last.at < DBLCLICK_MS) return;
 		g.last = { member, at: now };
-		g.queue = g.queue.then(async () => {
-			if (this.group !== g) return;
+		if (g.kind === 'group') this.toggleGroupMember(g, model, member);
+		else this.togglePipelineMember(g, model, member);
+	}
+
+	/** Puts a component into the group or takes it out; the first makes a new group, the last one out deletes it (with Undo) and ends the mode. */
+	private toggleGroupMember(g: MemberMode, model: MapModel, member: string) {
+		this.enqueue(g, async () => {
+			if (this.mode !== g) return;
 			const src = g.src;
 			const name = g.name ?? nextGroupName(src);
 			const members = groupsOf(src).find(x => x.name === name)?.members ?? [];
-			const target = this.groupModel(g) ?? model;
+			const target = this.modeModel(g) ?? model;
 			if (members.length === 1 && members[0] === member) {
-				if (await this.applyThen(target, s => removeGroupMember(s, name, member), `group "${name}" deleted with its last component.`, src)) this.endGroup();
+				if (await this.applyThen(target, s => removeGroupMember(s, name, member), `group "${name}" deleted with its last component.`, src)) this.endMode();
 				return;
 			}
 			const inside = members.includes(member);
 			const done = await this.write(target, s => (inside ? removeGroupMember(s, name, member) : addGroupMember(s, name, member)), src);
-			if (!done || this.group !== g) return;
+			if (!done || this.mode !== g) return;
 			if (g.name === null) {
 				g.name = name;
 				this.tell();
 			}
 			// No cursor on a phone: say what the tap did.
 			if (this.touchSeen) this.info(inside ? `"${member}" taken out of "${name}".` : `"${member}" put into "${name}".`);
+		});
+	}
+
+	/**
+	 * The pipeline mode's click (DEV.md → "Editing pipelines (0.27.0)"): without a parent yet it
+	 * picks the parent (nothing written until the first component goes in); then a component of
+	 * this pipeline goes out (the last one takes the block with it, with Undo, and ends the mode),
+	 * any other comes in, from another pipeline too. What a pipeline component cannot carry is
+	 * offered for removal instead of being dropped unasked.
+	 */
+	private togglePipelineMember(g: MemberMode, model: MapModel, member: string) {
+		this.enqueue(g, async () => {
+			if (this.mode !== g) return;
+			const src = g.src;
+			const target = this.modeModel(g) ?? model;
+			let from: string | null;
+			try { from = pipelineParentOf(src, member); } catch (e) { return void this.fail(e instanceof EditError ? e.message : String(e)); }
+			if (g.name === null) return this.pickParent(g, member, from);
+			const parent = g.name;
+			if (member === parent) return void this.info(`"${parent}" is the parent of this pipeline, ${this.touchSeen ? 'tap' : 'click'} other components to put them into it.`);
+			const kids = componentsOf(src, from) ?? [];
+			if (from === parent) {
+				if (kids.length === 1) {
+					if (await this.applyThen(target, s => takeOutOfPipeline(s, member), `pipeline of "${parent}" removed with its last component, "${parent}" stays.`, src)) this.endMode();
+					return;
+				}
+				const done = await this.write(target, s => takeOutOfPipeline(s, member), src);
+				if (done && this.touchSeen) this.info(`"${member}" taken out of the pipeline of "${parent}".`);
+				return;
+			}
+			if (pipelineParents(src).includes(member)) return void this.fail(`"${member}" has a pipeline of its own, and a component is in one pipeline at most.`);
+			let blocked: PipelineBlocker[] = [];
+			try { blocked = pipelineBlockers(src, member); } catch { /* moveIntoPipeline reports it */ }
+			if (blocked.length) return this.offerClear(g, model, parent, member, blocked);
+			const move = (s: string) => moveIntoPipeline(s, parent, member);
+			const emptied = from && kids.length === 1 ? from : null;
+			const done = emptied
+				? await this.applyThen(target, move, `"${member}" moved over from the pipeline of "${emptied}", which is gone now.`, src)
+				: await this.write(target, move, src);
+			if (!done || this.mode !== g) return;
+			this.tell();
+			if (this.touchSeen && !emptied) this.info(`"${member}" put into the pipeline of "${parent}".`);
+		});
+	}
+
+	/** The first click of "New pipeline": a component, at the top level, becomes the parent (one with a pipeline: that one is edited). */
+	private pickParent(g: MemberMode, member: string, from: string | null) {
+		let kind: 'anchor' | 'component';
+		try { kind = kindOf(g.src, member); } catch (e) { return void this.fail(e instanceof EditError ? e.message : String(e)); }
+		if (kind === 'anchor') return void this.fail('Anchors cannot have a pipeline, pick a component.');
+		if (from) return void this.fail(`"${member}" is in the pipeline of "${from}", so it cannot have one.`);
+		g.name = member;
+		this.tell();
+		this.mark();
+	}
+
+	/**
+	 * A component with an evolve arrow, a type or inertia: the notice names them, and its button
+	 * removes them and puts the component in, as one edit with Undo (decision 2026-10-17).
+	 */
+	private offerClear(g: MemberMode, model: MapModel, parent: string, member: string, blocked: PipelineBlocker[]) {
+		const what = describeBlockers(blocked);
+		const frag = createFragment(f => {
+			// Marked like the mode's notice, so a press on it does not end the mode.
+			f.createSpan({ cls: 'mp-group-notice', text: `Wardley map: "${member}" has ${what}, which a pipeline component cannot have. ` });
+			f.createEl('button', { text: 'Remove and add', cls: 'mp-undo' }).addEventListener('click', ev => {
+				ev.stopPropagation();
+				notice.hide();
+				this.enqueue(g, async () => {
+					if (this.mode !== g) return;
+					const done = await this.applyThen(this.modeModel(g) ?? model, s => moveIntoPipeline(clearPipelineBlockers(s, member), parent, member),
+						`"${member}" put into the pipeline of "${parent}", removed: ${what}.`, g.src);
+					if (done && this.mode === g) this.tell();
+				});
+			});
+		});
+		g.offer?.hide();
+		const notice = g.offer = new Notice(frag, 10000);
+	}
+
+	/** "New component…" in the pipeline mode: a component that does not exist yet, right of the last one. */
+	private newPipelineComponent(g: MemberMode, parent: string) {
+		this.open(new NameModal(this.app, `Add to the pipeline of "${parent}"`, 'Component', child => {
+			this.enqueue(g, async () => {
+				// Looked up now: the map may have been redrawn while the dialog was open.
+				const model = this.modeModel(g);
+				if (!model) return void this.fail('The map is being redrawn, please try again.');
+				const src = g.src;
+				let evo = 0.5;
+				try { evo = nextPipelineEvolution(src, parent); } catch { /* addToPipeline reports it */ }
+				const done = await this.write(model, s => addToPipeline(s, parent, child, evo), src);
+				if (done && this.mode === g) this.tell();
+			});
+		}));
+	}
+
+	/** A click on a pipeline box starts its pipeline mode; a second one opens the parent's dialog. */
+	pipelineTap(model: MapModel, parent: MapNode) {
+		if (this.mode?.kind !== 'pipeline' || this.mode.name !== parent.name) this.startMode(model, 'pipeline', parent.name);
+		this.tap(`pipeline:${parent.name}`, model, () => {
+			this.endMode();
+			this.openNodeDialog(model, parent);
 		});
 	}
 
@@ -620,26 +778,20 @@ export class WardleyEditor extends DiagramEditor<MapModel> implements GestureCtx
 		const name = node.name;
 		if (armed.kind === 'evolve') {
 			void this.apply(model, s => addEvolve(s, name, defaultEvolveTarget(s, name)));
-		} else if (armed.kind === 'inertia') {
-			void this.apply(model, s => setInertia(s, name, true));
 		} else {
-			let evo = 0.5;
-			try { evo = nextPipelineEvolution(model.src, name); } catch { /* addToPipeline reports it */ }
-			this.open(new NameModal(this.app, `Add to the pipeline of "${name}"`, 'Component', child => {
-				void this.apply(model, s => addToPipeline(s, name, child, evo));
-			}));
+			void this.apply(model, s => setInertia(s, name, true));
 		}
 	}
 
 	protected legendAction(model: MapModel, item: string, el: Element) {
 		const kind = item as LegendKind;
-		this.endGroup();
-		if (kind === 'group') return this.chooseGroup(model, el);
-		if (kind === 'evolve' || kind === 'inertia' || kind === 'pipeline') {
+		this.endMode();
+		if (kind === 'group' || kind === 'pipeline') return this.chooseMode(model, el, kind);
+		if (kind === 'evolve' || kind === 'inertia') {
 			this.disarm();
 			this.armed = { kind, box: model.svg.closest('.mermaid') ?? model.svg, item: el };
 			el.addClass('is-armed');
-			const what = kind === 'evolve' ? 'an evolve arrow' : kind === 'inertia' ? 'inertia' : 'a pipeline (or a component to its pipeline)';
+			const what = kind === 'evolve' ? 'an evolve arrow' : 'inertia';
 			this.info(`click a component to add ${what} (Escape cancels).`);
 			return;
 		}

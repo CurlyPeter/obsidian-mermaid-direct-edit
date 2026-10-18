@@ -179,7 +179,15 @@ ask to change stays byte-identical, comments included.
 - **A field absent from an entry keeps the text's value**: no `kind` keeps the arrow, no
   `label` keeps the link label, no `pipeline` keeps the element in (or out of) its pipeline.
   `label: ""` removes a link label; `method: null` removes the decorator; `pipeline: null`
-  means top level. `classes` given is the full set of the entry's classes, at most 8 (`[]`
+  means top level. A `pipeline` that differs from the text moves the element (since plugin
+  0.27.0; before, a conflict): into a pipeline its declaration goes into the parent's block
+  (created when needed) and it takes the parent's visibility; out of one it is declared at the
+  top level, at the parent's visibility unless the entry gives another; between two it changes
+  over, and a block left empty goes. Evolution and label offset come along. Moving in is refused
+  (a conflict) for an anchor, a component with a pipeline of its own, and one with an `evolve`
+  arrow, a decorator or inertia, which a pipeline component cannot have; `inertia: false` and
+  `method: null` in the same entry are applied first, an `evolve` has to go in an earlier
+  apply. `classes` given is the full set of the entry's classes, at most 8 (`[]`
   removes every class): a class taken away is removed from its `%% class` line (the line goes when it names
   nothing else), a new one is added as a line of its own after the last `%% class` line.
   `classDefs` are not applied.
@@ -222,8 +230,8 @@ ask to change stays byte-identical, comments included.
 - **Conflicts** are differences that are not applied; the other changes still are:
   - a pipeline component whose visibility differs from its parent's (move the parent);
   - an anchor that the model calls a component or the other way round;
-  - an element moved into, out of, or between pipelines (only when the entry has a
-    `pipeline` key);
+  - a move into a pipeline that is refused (see `pipeline` above), or `inertia: true` on a
+    pipeline component;
   - a link written in the other direction (`B -> A` in the text, `A -> B` in the model);
   - a label offset on an anchor, or `label: null` on a component that has one (removing a
     label offset is not supported);

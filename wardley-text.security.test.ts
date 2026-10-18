@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { timeLimit } from './test-timing';
-import { EditError, addGroupMember, classDefs, classMarkers, deleteElement, deleteGroup, deleteNote, nextGroupName, removeGroupMember, renameGroup, getAnnotation, getClasses, groupMarkers, groupsOf, setAnnotationsBoxPosition, setGroupLabel, editBlocker, freeSpot, getPosition, inertiaPositions, isWardley, nameSpans, orientLink, orientLinksOf, rename, setClass, setMethod, setPosition, setTitle } from './wardley-text';
+import { EditError, addGroupMember, moveIntoPipeline, pipelineBlockers, pipelineParentOf, takeOutOfPipeline, classDefs, classMarkers, deleteElement, deleteGroup, deleteNote, nextGroupName, removeGroupMember, renameGroup, getAnnotation, getClasses, groupMarkers, groupsOf, setAnnotationsBoxPosition, setGroupLabel, editBlocker, freeSpot, getPosition, inertiaPositions, isWardley, nameSpans, orientLink, orientLinksOf, rename, setClass, setMethod, setPosition, setTitle } from './wardley-text';
 import { locateBlock, mermaidBlocks } from './blocks';
 import { SourceRegistry } from './render';
 
@@ -51,6 +51,18 @@ describe('F1/F2: no super-linear parsing of a crafted source', () => {
 		fast(() => orientLinksOf(`wardley-beta\n${decls}\n${many}`, Array.from({ length: 2000 }, (_, i) => `N${i}`)));
 		fast(() => orientLink(`wardley-beta\ncomponent A${pad(30000)}[0.1, 0.1]\nA${pad(30000)}-> B`, 'A', 'B'));
 		fast(() => orientLinksOf(`wardley-beta\n${'pipeline P {\n'.repeat(3000)}`, ['P']));
+	});
+
+	it('moving into and out of pipelines (0.27.0) reads crafted lines in linear time', () => {
+		const long = `wardley-beta\ncomponent P [0.5, 0.5]\ncomponent X${pad(30000)}[0.1, 0.1] label [${pad(30000)}`;
+		fast(() => moveIntoPipeline(long, 'P', 'X'));
+		fast(() => pipelineBlockers(long, 'X'));
+		const tail = `wardley-beta\ncomponent P [0.5, 0.5]\ncomponent X [0.1, 0.1] label [1, 1]${pad(30000)}(${pad(30000)}`;
+		fast(() => moveIntoPipeline(tail, 'P', 'X'));
+		// Many blocks above: the backward search stops at the first brace or pipeline line.
+		const deep = `wardley-beta\ncomponent P [0.5, 0.5]\n${'pipeline P {\n'.repeat(3000)}  component C [0.5]\n}`;
+		fast(() => pipelineParentOf(deep, 'C'));
+		fast(() => takeOutOfPipeline(deep, 'C'));
 	});
 
 	it('parsing still reads the same values', () => {

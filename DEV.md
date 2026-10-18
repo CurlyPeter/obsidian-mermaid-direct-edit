@@ -1099,7 +1099,98 @@ model agree; they differ only for a pipeline parent, whose square is drawn above
 parent with its own component is level either way. Swapping a labelled link moves its label to
 the other side of the line (Mermaid offsets it to the left of the direction), by 8 px.
 
+## Editing pipelines (0.27.0, 2026-10-17)
+
+Request (maintainer): pipelines edited in the drawing the way groups are, and by agents through
+`wardley-apply`.
+
+Decisions (maintainer, 2026-10-17):
+
+- **The same handles as groups.** The legend's "Pipeline" opens a menu with "New pipeline" and the
+  map's pipelines (by parent); a click on a pipeline box starts that pipeline's mode, a second one
+  opens the parent's dialog (with "Remove pipeline"), a drag still moves the pipeline. The armed
+  legend action that asked for a new component's name on the next press is gone; "New component…"
+  in the mode's notice does that now.
+- **A pipeline needs its parent first.** "New pipeline" writes nothing on its first click, which
+  picks the parent (a component at the top level; a parent that has a pipeline edits that one).
+  An empty block does not parse, so the block appears with its first component.
+- **Membership moves the component.** In, it sits on its parent's line at its own evolution (the
+  grammar gives a pipeline component only its evolution). Out, it stays where it was drawn: the
+  parent's visibility. A component is in one pipeline at most; a click on one from another
+  pipeline changes it over, and the block it leaves empty goes. A parent cannot be a pipeline
+  component.
+- **Nothing is dropped unasked.** A pipeline component has no sourcing decorator and no inertia in
+  the 12.1 grammar (`PipelineComponent`: name, evolution, label), and Mermaid draws no evolve
+  arrow for it. A click on a component carrying any of them is refused with a notice naming them,
+  and its button "Remove and add" removes them and puts the component in, as one edit with Undo.
+  (Considered: refusing only, which costs five steps through the dialog; removing silently with
+  Undo, which loses information on a click that did not ask for it.)
+- **`wardley-apply` follows** (it reported a changed `pipeline` field as a conflict): the same two
+  text functions, the same refusals as conflicts. `SCHEMA` stays 1: no field changes meaning, a
+  request that was refused is now carried out.
+
+How it works:
+
+- **One membership mode for both** (`MemberMode` in `wardley-editor.ts`, `kind` group or
+  pipeline): the queue of clicks written each from the source the one before left, the drawing
+  found again after every redraw, the mark put back by a `MutationObserver`, the notice with its
+  buttons. Group and pipeline differ only in what a click does, the notice's text and what is
+  marked (a group's boundary; a pipeline's box and its parent). The queue now catches a failed
+  step (`enqueue`), which before would have stopped every later click of the mode.
+- **Text** (`wardley-text.ts`): `moveIntoPipeline` removes the declaration and writes it as
+  `component Name [e] label [dx, dy]` before the block's closing brace (`insertIntoPipeline`,
+  shared with `addToPipeline`), creating the block after the parent and its inertia comment when
+  needed; `takeOutOfPipeline` declares it right after the block at the parent's visibility, or
+  where the block was when it was the last. `movable` carries the name as written (quotes),
+  evolution and label offset, and refuses anything else after them, so a form it does not know is
+  never shortened. Both re-orient the moved component's links (0.26.0): moving onto the parent's
+  line can turn a link to an element in between. Links, classes and groups name the component
+  and need no change.
+- **A link between a parent and its own component stays drawn.** Mermaid draws no link from a
+  pipeline component to its own parent (`validLinks` drops `Child -> Parent`), and after a move
+  the two are level, so the link orientation of 0.26.0 would leave it as written. A move in
+  therefore writes a headless one as `Parent -> Child` (`parentFirst`); a flow arrow keeps its
+  direction, which is its statement, and is then hidden as before.
+- A press inside a dialog does not end a mode (`pressOutside` skips `.modal-container`), so
+  "New component…" keeps the mode on.
+
+Code review (fresh context): no must-fix; seven should-fix, all taken. "Remove and add" stayed
+usable after the mode ended (the offer notice now goes with the mode and its step checks it);
+"New component…" looks the drawing up when the name is given; picking a parent read the kind
+through `declaredPositions` (quadratic, 0.7 s on a 63 KB map), now `kindOf`; the E2E suite had
+a second `restore` shadowing the first and a copy of `add_lines` (now one helper with an anchor);
+`deleteElement` reuses `enclosingPipeline`; the parent link decided as above; missing tests
+added (quoted names in an indented map, unknown text after a label, crafted long lines). The
+timing case found a quadratic regex that predates this change: the inertia flag
+(`[ \t]+\(inertia\)` unanchored, 5.4 s on a line with 30,000 blanks, in every inertia read and
+write). Lines over `MAX_LINE` never reach it in the editor or the CLI, but the fix is cheap:
+`inertiaSpan` matches one blank before the flag and walks back.
+
+Verification: 450 unit tests (14 in `wardley-pipelines.test.ts`, every output parsed by the real
+parser and read back through the model; two new `wardley-apply` cases; a timing case on crafted
+lines), 10 mutations of the new code (move, switch, last out, blockers, label, link orientation and
+parent link, the apply branch and its guards) each fail a test. E2E on the separate test instance
+(Linux, Mermaid 12.1.0): Wardley 66/66 with five new cases (New pipeline from the legend: parent
+picked without a write, two in, one out, last out removes the block; a box click starts the mode
+and a double click opens the parent's dialog; refusal with "Remove and add" and an anchor refused,
+then a component changing pipelines and the emptied block going; "New component…"; a finger tap
+and "Done"), flowchart 31/31. A first full run failed two of the new cases because the note
+dragged by `note_drag` lay over a component they had placed; the cases now use a part of the map
+no earlier case touches, and print what lies under a clicked point when they fail. Real call on the
+desktop build: `wardley-apply` with `pipeline` changed moved the component and wrote its link to
+the parent `P -> C`.
+
 ## Changelog
+
+- **0.27.0 (2026-10-17)** Pipelines edited in the drawing, the way groups are. The menu's
+  *Pipeline* offers *New pipeline* and the map's pipelines, and a click on a pipeline box starts
+  its mode; a click on a component puts it in (onto the parent's line, its evolution kept) or
+  takes it out (where it was drawn), from another pipeline too, and the last one out removes the
+  box. A component with an evolve arrow, a type or inertia is refused with a button that removes
+  them and puts it in, with Undo; *New component…* adds a new one. A double click on the box opens
+  the parent's dialog, a drag still moves the pipeline. `wardley-apply` moves an element whose
+  `pipeline` field changed, where it reported a conflict. Inertia flags are read in linear time.
+  See "Editing pipelines (0.27.0)".
 
 - **0.26.1 (2026-10-17)** Export paints what the note shows where a style takes a mark away. A
   Wardley group with `classDef … stroke:none` was exported with a dashed boundary, a component with
