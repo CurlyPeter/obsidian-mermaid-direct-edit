@@ -5,6 +5,13 @@
 	cursor: default;
 }
 
+/* Dark mode for what Mermaid draws: Obsidian's own rule up to 1.14.5, verbatim. Obsidian 1.15
+   dropped it (its renderer Pele draws in the theme's colours, `svg.pele`), so the plugin brings
+   it along for its drawings; on 1.14 it is the same rule twice. */
+.theme-dark .mermaid > svg:not(.pele) {
+	filter: invert(100%) hue-rotate(180deg) saturate(1.25);
+}
+
 /* Setting "Full-width diagrams without readable line length": a view without
    is-readable-line-width (Obsidian sets it per view) shows every diagram at the full note
    width. CSS width beats the fixed width attribute of flowchart/sequence SVGs, and the height

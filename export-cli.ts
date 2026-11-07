@@ -15,12 +15,14 @@ const DEFAULT_WIDTH = 1000;
 type Draw = (src: string, format: ExportFormat, opts: ExportOptions) => Promise<Exported>;
 
 /**
- * Refuses when Obsidian (1.13+) holds back Mermaid in this vault: the vault's permission, which the
- * user grants on the first diagram, is kept in local storage. The note view shows its guard then,
- * so the export must not draw either (security review 0.25.0, I-2).
+ * Refuses when Obsidian (1.13 and 1.14) holds back Mermaid in this vault: the vault's permission,
+ * which the user grants on the first diagram, is kept in local storage. The note view shows its
+ * guard then, so the export must not draw either (security review 0.25.0, I-2). Obsidian 1.15
+ * dropped the guard with Mermaid itself: nobody can grant the permission any more, and the
+ * installed plugin is the consent to Mermaid, as before 1.13.
  */
 function requireMermaidPermission(app: App) {
-	if (!requireApiVersion('1.13.0')) return;
+	if (!requireApiVersion('1.13.0') || requireApiVersion('1.15.0')) return;
 	const appId = (app as unknown as { appId?: string }).appId;
 	if (appId && window.localStorage.getItem(`${appId}-mermaid-vault-trust`) !== 'true') {
 		throw new CliError('not-permitted', 'Mermaid is not enabled for this vault: open a note with a diagram in Obsidian and allow it once.');

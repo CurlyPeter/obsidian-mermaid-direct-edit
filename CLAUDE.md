@@ -17,7 +17,9 @@ Runs on desktop and mobile.
 
 ## How it works
 
-Obsidian (measured in `app.js` of 1.14.4) loads `/lib/mermaid.min.js` lazily on the first
+Two Obsidian generations, one hook each (Obsidian 1.15 and later: next section).
+
+Obsidian up to 1.14 (measured in `app.js` of 1.14.4) loads `/lib/mermaid.min.js` lazily on the first
 diagram. The script ends with `globalThis.mermaid = …`; Obsidian then calls
 `mermaid.initialize(config)` and renders every block through the global `mermaid.render()`.
 
@@ -37,8 +39,52 @@ The plugin turns `window.mermaid` into an accessor:
   `failed`, error logged.
 
 Redraw = `workspace.trigger('post-processor-change')`, the same event Obsidian fires when
-the vault's Mermaid permission is toggled. That permission (since 1.13) is untouched: an
+the vault's Mermaid permission is toggled. That permission (1.13 and 1.14) is untouched: an
 unpermitted vault keeps showing Obsidian's guard instead of the diagram.
+
+### Obsidian 1.15 and later: Pele (`pele.ts`, since 0.28.0)
+
+Obsidian 1.15 (measured in `app.js` of 1.15.0) ships no Mermaid. Its own renderer **Pele**
+(`/lib/pele.min.js`, loaded on the first diagram, a global `var pele`) draws every block through
+`pele.mount(box, source, options)` into a `.mermaid` box Obsidian created, and Obsidian keeps the
+handle (`source`, `update(src)`, `refresh()`): Live Preview calls `update` in place when a block's
+text changes, reading view when it reuses a box. `window.mermaid` is only a shim for plugins
+(`loadMermaid()`), never called by Obsidian. The vault permission and the dark-mode rule went with
+Mermaid.
+
+- **`PeleHook`** replaces the global with a `Proxy` whose `mount` returns a `Drawing`; every other
+  member passes through. `pele.mount` itself cannot be replaced (a non-configurable getter of
+  Pele's namespace object), the global can: loaded before the plugin it is a writable data
+  property (assigned), not loaded yet the hook defines an accessor whose setter catches Pele's
+  `var pele = …`. Unload restores the original.
+- **A `Drawing`** is Obsidian 1.14.5's block render in the box Obsidian 1.15 gives: a hidden
+  measuring box as wide as the block, `mermaid.render` (ids `mde-draw-…`, which the after-render
+  step skips), the SVG string into the box (the plugin's buttons stay), the 1.14.5 fix-ups (labels
+  of `internal-link` nodes become links, SVG link hrefs, marker ids unique per drawing:
+  `namespaceMarkers`; Mermaid 12 namespaces most itself, those stay), `decorate`, and Obsidian's
+  `onRender`. One render at a time, the newest source wins (as in the zoom). A parse error replaces
+  the drawing with `pre.mde-render-error`, the text 1.14 showed. **An `internal-link` label goes
+  into `data-href` only, never `href`:** it is written after Mermaid's sanitizer, and as `href`
+  (1.14.5's way) a label `javascript:…` ran when clicked (security review 0.28.0); Obsidian's
+  link handling reads `data-href` first.
+- **PDF export waits for the drawings:** Obsidian 1.15 expects `mount` to draw at once, so its
+  post-processor returns nothing; the plugin's own post-processor (sort order 1000, after
+  Obsidian's) returns the drawings' promise (`settled`), as 1.14's render promise was. Before
+  Pele is loaded it first waits (bounded, 5 s) for Obsidian to mount the blocks.
+- **After unload** a drawing never decorates again (Obsidian calls `refresh()` on every handle on
+  each theme change), and a render that finishes after the unload hands its block to Pele.
+- **Pele draws** when the hook is not live: unloaded (a drawing hands its block to Pele's real
+  `mount` on its next update) or the pinned bundle failed to load. Every block goes through the
+  pinned Mermaid otherwise, any diagram type (decision 0.28.0: notes look like the book, site and
+  slides, which use Mermaid).
+- Both hooks stay installed; the running Obsidian picks one. `status` reports `obsidianRenderer`
+  (`pele` | `mermaid` | `none yet`), `peleHook` (`live` | `refused` | `off`) and `peleRenders`. The
+  hook never takes a proxy of its own (or an earlier load's) for Pele, should one be assigned back.
+- **Dark mode:** 1.14's rule `.theme-dark .mermaid > svg { filter: invert(100%) hue-rotate(180deg)
+  saturate(1.25) }` is in `styles.css`, for every SVG that is not Pele's (`svg.pele`).
+- **Permission:** 1.15 has no guard, so the installed plugin is the consent to Mermaid, as before
+  1.13 (`securityLevel: strict`, Mermaid's DOMPurify). The CLI export checks the old permission only
+  on 1.13 and 1.14.
 
 ## The editor core (shared by every diagram type)
 
@@ -48,6 +94,7 @@ with its kind (`data-mp-kind`), so the editors never see each other's diagrams.
 
 | File | Role | Tested by |
 |---|---|---|
+| `pele.ts` | Obsidian 1.15+: `PeleHook` (the `window.pele` proxy) and `Drawing` (one block drawn with the pinned Mermaid in Pele's place, see "Obsidian 1.15 and later") | vitest (`pele`: the hook in every start state, marker ids), E2E on both generations (Obsidian up to 1.14 and from 1.15) |
 | `render.ts` | `wrapRender` with one `RenderHook` per diagram type (which `aria-roledescription`, when it stays untagged, SVG transforms), `SourceRegistry`, `diagramOf`/`diagramIn`, `isElement` | E2E |
 | `editor.ts` | `DiagramEditor`: the DOM handlers (registered by `main.ts` on every window, incl. `contextmenu`), one active gesture (`ended` when it ends), the waiting stub, legend, double tap, swallowing the clicks a gesture leaves, dialogs closed on unload (`open(modal, onClosed)`), `apply` (edit → `mermaid.parse` → write) and `applyThen` (the same with a notice that has an Undo button). A subclass implements `modelOf`, `press`, `claims`, `cursorAt`, `legendAction`, `stubDrag`, and may add `stubPress` (click, then click links), `hoverAt`, `contextMenu`, `stubWaits` and refuse a diagram (`blockedReason`) | E2E (both suites) |
 | `gestures.ts` | `DragGesture` (tap vs drag threshold), `Stub` (with a round handle at its free end) and `NewLinkDrag` (the "+" link, its end under the pointer: onto an element links, into free space creates one, back on its own element waits), `TapPress`, `DeletePress`, `DropHighlight` | E2E |
@@ -169,7 +216,7 @@ Any diagram as a standalone PNG or SVG file. Contract of the CLI commands: `docs
 - **`out=` is the only write path of the CLI** (`checkOutPath`): vault-relative, no `..`/`.`, no
   hidden folder or file (the config folder: a write there could plant plugin code), none of
   `* " < > : | ?` (a `:` never syncs to iOS), `.png`/`.svg` only; `writeExport` creates folders and
-  replaces a file. The CLI export also respects the vault's Mermaid permission (Obsidian 1.13+,
+  replaces a file. The CLI export also respects the vault's Mermaid permission (Obsidian 1.13 and 1.14,
   `<appId>-mermaid-vault-trust` in local storage): `not-permitted` where the note shows its guard. The dialog's Save writes
   `<note> <n>.png/.svg` next to the note through the same function.
 - **The share button** (`export-ui.ts`, beside Zoom in and in the zoom, handled with the zoom
@@ -626,9 +673,11 @@ bundled version is read from `node_modules/mermaid/package.json` at build time
 
 1. `npm install --save-exact mermaid@<version>`, then read that release's notes for
    changed defaults (layout, look, theme) and adjust `CLASSIC`.
-2. If Obsidian itself was updated, re-check its `initialize` call in the running asar
-   (`~/Library/Application Support/obsidian/obsidian-<ver>.asar`, `app.js`, search
-   `/lib/mermaid.min.js`) and update `OBSIDIAN_CONFIG`.
+2. If Obsidian itself was updated, re-check how it draws in the running asar
+   (`~/Library/Application Support/obsidian/obsidian-<ver>.asar`, `app.js`): up to 1.14 its
+   `initialize` call (search `/lib/mermaid.min.js`, update `OBSIDIAN_CONFIG`); from 1.15 on the
+   `pele.mount` call and which handle members Obsidian uses (search `pele.mount`, `.update(`),
+   against `Drawing` in `pele.ts`. Run the E2E suites on both generations.
 3. `npm test && npm run build && npm run e2e`, then check several mermaid notes and drag /
    rename once in a wardley map and a flowchart (DEV.md → Verification). If the wardley SVG
    classes changed, `wardley-editor.ts` stops finding nodes silently: check that first. For
@@ -638,6 +687,7 @@ bundled version is read from `node_modules/mermaid/package.json` at build time
 ## Rules
 
 - **Node-free**: it runs on the phone. No `fs`, `path`, `electron`.
-- **Never patch Obsidian's files.** The accessor is the whole mechanism.
+- **Never patch Obsidian's files.** The two hooks (the `window.mermaid` accessor, the `window.pele`
+  proxy) are the whole mechanism.
 - `cli.ts` is a shared helper (one JSON answer format for plugin CLI commands), kept
   identical below its header to the maintainer's other plugins.

@@ -1,4 +1,4 @@
-import { App, Plugin, PluginSettingTab, Setting } from 'obsidian';
+import { App, Plugin, PluginSettingTab, Setting, requireApiVersion } from 'obsidian';
 import type { Mermaid, MermaidConfig } from 'mermaid';
 import { boxAt, boxOfButton, decorate, undecorate } from './actions';
 import { registerCliCommands } from './cli';
@@ -8,6 +8,7 @@ import { exportCliSpecs } from './export-cli';
 import { ExportFormat } from './export-format';
 import { ExportUi } from './export-ui';
 import { FlowchartEditor, flowchartRender } from './flowchart-editor';
+import { DRAWING_ID_PREFIX, PeleHook } from './pele';
 import { SourceRegistry, isElement, wrapRender } from './render';
 import { WardleyEditor } from './wardley-editor';
 import { wardleyCliSpecs } from './wardley-cli';
@@ -64,14 +65,19 @@ interface Settings {
 const DEFAULT_SETTINGS: Settings = { editWardley: true, editFlowchart: true, fullWidth: false, shareFormat: 'png' };
 
 /**
- * Swaps the Mermaid that Obsidian renders with, without patching Obsidian.
+ * Draws Obsidian's mermaid blocks with the pinned Mermaid, without patching Obsidian.
  *
- * Obsidian loads `/lib/mermaid.min.js` lazily on the first diagram; the script ends with
- * `globalThis.mermaid = …`, after which Obsidian calls `mermaid.initialize(config)` and
- * renders every block through the global `mermaid.render()`. This plugin turns
- * `window.mermaid` into an accessor: Obsidian's assignment lands in the setter and is
- * kept, the getter hands out the pinned instance. Obsidian's own initialize therefore
+ * Up to Obsidian 1.14, Obsidian loads `/lib/mermaid.min.js` lazily on the first diagram; the
+ * script ends with `globalThis.mermaid = …`, after which Obsidian calls
+ * `mermaid.initialize(config)` and renders every block through the global `mermaid.render()`.
+ * This plugin turns `window.mermaid` into an accessor: Obsidian's assignment lands in the setter
+ * and is kept, the getter hands out the pinned instance. Obsidian's own initialize therefore
  * configures the pinned instance, plus `CLASSIC`.
+ *
+ * From Obsidian 1.15 on, Obsidian draws with its own renderer Pele and never calls
+ * `window.mermaid`; `PeleHook` (`pele.ts`) takes the blocks over from `pele.mount` instead. Both
+ * hooks are always installed: whichever the running Obsidian uses takes effect (a phone may still
+ * run 1.14).
  */
 export default class MermaidDirectEditPlugin extends Plugin {
 	/** Obsidian's own instance, once its loader has assigned it. */
@@ -96,6 +102,10 @@ export default class MermaidDirectEditPlugin extends Plugin {
 	/** The share button and the export dialog. */
 	private readonly exporter = new ExportUi(this.app, this.registry, (src, format, opts, doc) => this.draw(src, format, opts, doc), () => this.settings.shareFormat);
 	private readonly zoom = new DiagramZoom(this.app, this.registry, () => this.current(), () => this.editors.some(ed => ed.busy()), () => this.editors.forEach(ed => ed.release()));
+	/** Obsidian 1.15+: the blocks Pele would draw, drawn with the pinned Mermaid. */
+	private readonly pele = new PeleHook(() => this.configured());
+	/** `window.pele` could not be replaced: Obsidian's renderer draws every block. */
+	private peleRefused = false;
 
 	async onload() {
 		registerCliCommands(this, [{
@@ -116,10 +126,21 @@ export default class MermaidDirectEditPlugin extends Plugin {
 			set: (m: Mermaid) => { this.obsidianMermaid = m; },
 		});
 
+		const peleFirst = !!w.pele;
+		this.peleRefused = !this.pele.install();
+		if (this.peleRefused) {
+			console.error('[mermaid-direct-edit] window.pele cannot be replaced: Obsidian\'s renderer keeps drawing every diagram.');
+		}
+		// Obsidian 1.15+, after its own mermaid post-processor (sort order 0): a PDF export waits for the drawings.
+		if (requireApiVersion('1.15.0')) this.registerMarkdownPostProcessor(el => this.pele.settled(el) ?? undefined, 1000);
+
 		// Obsidian loaded its Mermaid before this plugin: its initialize() already ran on
 		// its own instance, so configure the pinned one here and redraw what is open.
 		if (loadedFirst) {
 			this.current()?.initialize(OBSIDIAN_CONFIG);
+			this.rerender();
+		} else if (peleFirst) {
+			// Obsidian 1.15+ drew with Pele before this plugin loaded: redraw, now through the hook.
 			this.rerender();
 		}
 
@@ -214,10 +235,21 @@ export default class MermaidDirectEditPlugin extends Plugin {
 
 	/** A drawing as a file (`export.ts`), with the pinned Mermaid configured even before any diagram was drawn. */
 	private async draw(src: string, format: ExportFormat, opts: ExportOptions, doc: Document) {
-		const m = this.current();
+		const m = this.configured() ?? this.current();
 		if (!m) throw new Error('Mermaid is not loaded.');
-		if (m === this.pinned && !this.initialized) m.initialize(OBSIDIAN_CONFIG);
 		return exportDrawing(m, src, format, doc, opts);
+	}
+
+	/**
+	 * The pinned instance with a configuration, or undefined when it failed to load. Obsidian 1.14
+	 * configures it itself once it loaded its Mermaid; an export before that, and every drawing under
+	 * Obsidian 1.15+ (which never calls `initialize`), get `OBSIDIAN_CONFIG` here.
+	 */
+	private configured(): Mermaid | undefined {
+		const m = this.current();
+		if (!m || m !== this.pinned) return undefined;
+		if (!this.initialized) m.initialize(OBSIDIAN_CONFIG);
+		return m;
 	}
 
 	/** Idempotent and a few lookups only, so it runs on every hover: Live Preview may rebuild a block's toolbar around the same drawing. */
@@ -231,7 +263,7 @@ export default class MermaidDirectEditPlugin extends Plugin {
 	 * render resolves), it gets its buttons. The zoom decorates its own drawings.
 	 */
 	private rendered(id: string) {
-		if (id.startsWith(ZOOM_ID_PREFIX) || id.startsWith(EXPORT_ID_PREFIX)) return;
+		if (id.startsWith(ZOOM_ID_PREFIX) || id.startsWith(EXPORT_ID_PREFIX) || id.startsWith(DRAWING_ID_PREFIX)) return;
 		let tries = 0;
 		const look = () => {
 			for (const doc of this.docs) {
@@ -250,6 +282,7 @@ export default class MermaidDirectEditPlugin extends Plugin {
 		this.exporter.destroy();
 		for (const ed of this.editors) ed.destroy(this.docs);
 		undecorate(this.docs);
+		this.pele.uninstall();
 		const w = window as any;
 		delete w.mermaid;
 		if (this.obsidianMermaid) {
@@ -264,10 +297,11 @@ export default class MermaidDirectEditPlugin extends Plugin {
 			doc.body.removeClass('mde-full-width');
 		}
 		this.docs.clear();
-		// No redraw here: Obsidian's bundled Mermaid cannot draw wardley-beta, so a redraw on
-		// every plugin reload or update flashed "Error parsing Mermaid diagram!" until the new
-		// instance redrew (measured 2026-10-10, UnknownDiagramError in the console). Diagrams
-		// already on screen stay as drawn; the next render uses Obsidian's own Mermaid.
+		// No redraw here: Obsidian's bundled Mermaid (up to 1.14) cannot draw wardley-beta, so a
+		// redraw on every plugin reload or update flashed "Error parsing Mermaid diagram!" until the
+		// new instance redrew (measured 2026-10-10, UnknownDiagramError in the console). Diagrams
+		// already on screen stay as drawn; the next render uses Obsidian's own renderer (on 1.15+ a
+		// drawing of the plugin hands its block to Pele on its next update).
 	}
 
 	/** The instance Obsidian renders with: the pinned one, or Obsidian's own as fallback. */
@@ -310,11 +344,14 @@ export default class MermaidDirectEditPlugin extends Plugin {
 			state: this.state,
 			obsidianMermaidLoaded: !!this.obsidianMermaid,
 			obsidianLoadedFirst: this.obsidianLoadedFirst,
+			obsidianRenderer: this.pele.original ? 'pele' : this.obsidianMermaid ? 'mermaid' : 'none yet',
+			peleHook: this.peleRefused ? 'refused' : this.pele.live ? 'live' : 'off',
+			peleRenders: this.pele.renders,
 			editWardley: this.settings.editWardley,
 			editFlowchart: this.settings.editFlowchart,
 			fullWidth: this.settings.fullWidth,
 			shareFormat: this.settings.shareFormat,
-			rendering: this.state === 'active' ? `pinned ${PINNED_VERSION}` : this.obsidianMermaid ? 'obsidian' : 'none yet',
+			rendering: this.state === 'active' && !(this.peleRefused && this.pele.original) ? `pinned ${PINNED_VERSION}` : this.obsidianMermaid || this.pele.original ? 'obsidian' : 'none yet',
 			error: this.error,
 		};
 	}
@@ -332,11 +369,11 @@ class MermaidDirectEditSettingTab extends PluginSettingTab {
 		const state = s.state === 'active'
 			? 'Rendering all mermaid blocks.'
 			: s.state === 'failed'
-				? `Failed to load, Obsidian's own Mermaid is in use: ${s.error}`
+				? `Failed to load, Obsidian's own renderer is in use: ${s.error}`
 				: 'Loads on the first mermaid diagram.';
 		new Setting(containerEl)
 			.setName(`Mermaid ${s.pinnedVersion}`)
-			.setDesc(`Pinned in this build. ${state} Disable the plugin to return to Obsidian's bundled Mermaid.`);
+			.setDesc(`Pinned in this build. ${state} Disable the plugin to return to Obsidian's own renderer.`);
 		new Setting(containerEl)
 			.setName('Edit Wardley maps')
 			.setDesc('Drag elements, labels, arrow tips and link ends; double-click (double-tap) an element for its dialog; the menu button at the top left of a map adds elements. Changes go into the code block and can be undone.')

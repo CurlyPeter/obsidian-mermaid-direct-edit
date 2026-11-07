@@ -796,15 +796,25 @@ def case_zoom_group():
     if err:
         close_zoom()
         return False, err
-    click(*locate('zoom', n=['node', 'Delta two'])['n']); wait(1.4)
+    # The map is as the earlier cases' drags left it, and where those land differs with Obsidian's
+    # layout (1.15 shows the note higher than 1.14): an annotation box ended up over the circle.
+    # A press on the label is a press on the component too, so take whichever nothing covers.
+    parts = locate('zoom', n=['node', 'Delta two'], l=['label', 'Delta two'])
+    top = lambda p: p and js(f'String(document.elementFromPoint({p[0]},{p[1]})?.closest("g.wardley-node")?.querySelector("text.wardley-node-label")?.textContent?.trim() === "Delta two")') == 'true'
+    part = 'n' if top(parts['n']) else 'l' if top(parts['l']) else 'n'
+    at = parts[part]
+    under = js(f'(()=>{{const e=document.elementFromPoint({at[0]},{at[1]}); return (e?.tagName||"")+"."+(e?.getAttribute("class")||"")+" in "+(e?.closest("g.wardley-node, g.mde-group, g.wardley-pipelines")?.getAttribute("class")||"-")}})()')
+    click(*at); wait(1.4)
     made = group_line('Group 2') or group_line('Group 1')
     glow = js('String(document.querySelectorAll(".mde-zoom g.mde-group.mp-group-editing").length)')
+    notice = js('String([...document.querySelectorAll(".notice")].map(n=>n.textContent.slice(0,80)).join(" | "))')
     key('Escape', 'Escape', 27); wait(0.4)
     key('Escape', 'Escape', 27); wait(0.4)
     closed = not zoom_state()['open']
     if made:
         js('(app.workspace.activeLeaf.view.editor.undo(), "u")'); wait(1)
-    return bool(made and 'Delta two' in made) and glow == '1' and closed, f'{made}; glow {glow}; closed {closed}'
+    ok = bool(made and 'Delta two' in made) and glow == '1' and closed
+    return ok, f'{made} (clicked its {"circle" if part == "n" else "label"}); glow {glow}; closed {closed}' + ('' if ok else f'; under the click {under}; notice {notice!r}; {line(r"^ *component Delta two .*$")}')
 
 
 def case_zoom_follows():
@@ -930,7 +940,9 @@ def case_export_menu():
 def case_export_limits():
     """The limits of the CLI export (security review 0.25.0): a map too large for a PNG is refused
     with `too-large` but exports as SVG; `out=` with a character Obsidian refuses in names is
-    refused; without the vault's Mermaid permission nothing is drawn (`not-permitted`)."""
+    refused; without the vault's Mermaid permission nothing is drawn (`not-permitted`) where
+    Obsidian has that permission (1.13, 1.14). Obsidian 1.15 dropped it, so there the export draws
+    (0.28.0: the installed plugin is the consent)."""
     d = f'E2E limits {time.strftime("%H%M%S")}'
     huge = 'wardley-beta\\nsize [160000, 160000]\\ncomponent A [0.50, 0.50]'
     key_js = 'app.appId+"-mermaid-vault-trust"'
@@ -944,8 +956,10 @@ def case_export_limits():
         finally:
             js(f'(()=>{{localStorage.setItem({key_js},"true"); return "x"}})()')
         code = lambda r: (r.get('error') or {}).get('code')
-        ok = code(png) == 'too-large' and svg.get('ok') and code(colon) == 'bad-flag' and code(refused) == 'not-permitted'
-        return ok, f'png {code(png)}; svg ok {svg.get("ok")} {svg.get("data", {}).get("width")}; colon {code(colon)}; no permission {code(refused)}'
+        guarded = E.cli('status').get('data', {}).get('obsidianRenderer') != 'pele'  # Obsidian up to 1.14
+        no_permission = code(refused) == 'not-permitted' if guarded else bool(refused.get('ok'))
+        ok = code(png) == 'too-large' and svg.get('ok') and code(colon) == 'bad-flag' and no_permission
+        return ok, f'png {code(png)}; svg ok {svg.get("ok")} {svg.get("data", {}).get("width")}; colon {code(colon)}; no permission {code(refused) or "drawn"} ({"guarded" if guarded else "1.15+, no guard"})'
     finally:
         E.trash_path(d)
 

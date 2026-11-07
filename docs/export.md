@@ -19,9 +19,10 @@ takes a moment).
 A typical build: run `export-check` for every figure, and `export` again for each one that is not
 `current`.
 
-**Mermaid permission.** Obsidian 1.13 and later draw Mermaid in a vault only after the user allowed
+**Mermaid permission.** Obsidian 1.13 and 1.14 draw Mermaid in a vault only after the user allowed
 it once; until then `export` answers `not-permitted`, as the note shows its guard instead of the
-diagram.
+diagram. Obsidian 1.15 dropped that permission together with its Mermaid, so there `export` never
+answers `not-permitted`: the installed plugin is the consent.
 
 ## Which diagram
 
@@ -90,7 +91,7 @@ uploaded does not carry the note's path.
 | `not-found` | no such note |
 | `no-block` | the note has no mermaid block of its own |
 | `ambiguous-block` | several blocks and no `block=` |
-| `not-permitted` | Mermaid is not allowed in this vault yet (Obsidian 1.13+) |
+| `not-permitted` | Mermaid is not allowed in this vault yet (Obsidian 1.13 and 1.14) |
 | `too-large` | the diagram text is over 64 KB, or the drawing is too large for a PNG |
 | `render-failed` | Mermaid cannot draw the text (its message follows) |
 | `not-a-file` | `out=` names a folder |

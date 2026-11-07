@@ -18,7 +18,7 @@ Editing covers Wardley maps and flowcharts; zoom and export work for every diagr
 
 ## What it does
 
-**1. Renders with a current Mermaid.** Obsidian bundles its own, older Mermaid (11.13 in Obsidian 1.14). This plugin draws every native ` ```mermaid ` block with a pinned Mermaid **12.1.0**, so newer diagram types such as `wardley-beta` work in reading view, live preview and PDF export. It keeps the classic look (`look: classic`, `layout: dagre`, `theme: default`). Disable the plugin to return to Obsidian's own Mermaid.
+**1. Renders with a current Mermaid.** Up to version 1.14 Obsidian bundles its own, older Mermaid (11.13 in Obsidian 1.14); from 1.15 on it draws diagrams with its own renderer, Pele. This plugin draws every native ` ```mermaid ` block with a pinned Mermaid **12.1.0** in either case, so newer diagram types such as `wardley-beta` work in reading view, live preview and PDF export, and a note shows a diagram the way Mermaid draws it everywhere else (a static site, a book, slides). It keeps the classic look (`look: classic`, `layout: dagre`, `theme: default`). Disable the plugin to return to Obsidian's own renderer.
 
 **2. Lets you edit Wardley maps directly.** In a rendered `wardley-beta` map you can:
 
@@ -108,7 +108,7 @@ The plugin is not yet in Obsidian's community plugin list. Until then:
 - **With [BRAT](https://github.com/TfTHacker/obsidian42-brat):** add the beta plugin `CurlyPeter/obsidian-mermaid-direct-edit`.
 - **By hand:** download `main.js`, `manifest.json` and `styles.css` from the [latest release](https://github.com/CurlyPeter/obsidian-mermaid-direct-edit/releases/latest) into `<your vault>/.obsidian/plugins/mermaid-direct-edit/`, then enable **Mermaid Direct Edit** under Settings → Community plugins.
 
-Requires Obsidian with Mermaid enabled for the vault. `main.js` is about 5 MB because it contains Mermaid; it is evaluated only when the first diagram is drawn.
+On Obsidian 1.13 and 1.14, Mermaid must be enabled for the vault (Obsidian asks on the first diagram); from 1.15 on there is no such switch, and installing the plugin brings Mermaid back for every note. `main.js` is about 5 MB because it contains Mermaid; it is evaluated only when the first diagram is drawn.
 
 ## Settings
 
@@ -123,7 +123,7 @@ Requires Obsidian with Mermaid enabled for the vault. `main.js` is about 5 MB be
 - **Highlights are Mermaid's `class` statement, commented out.** Wardley maps cannot mark an element or a link yet, so the plugin reads `%% class Kettle highlight` and `%% class Kettle -> Power highlight` (a link, either order of the names) and draws them in your theme's accent colour: a thick outline and a bold label, a link in that colour (up to 8 classes per element, class names up to 40 characters). `%% classDef highlight stroke:#8000F0,stroke-width:3px` gives a map its own colour (stroke, stroke-width, stroke-dasharray, fill, color and font-weight, plain values only; the colour names red, orange, yellow, green, cyan, blue, purple and pink take your theme's shade, in light and dark mode). The Highlight toggle in the element and link dialogs writes these lines, and renaming, deleting and re-linking keep them in step. Other renderers ignore the comments; once Mermaid supports `class` for Wardley maps, deleting `%% ` is the migration.
 - **Flowcharts that render but are not editable:** very large ones (as below), and the rare ones whose drawing cannot be matched to the code exactly. Edit those in the code.
 - **Maps that render but are not editable:** maps written on the 0-100 scale (the editor writes 0-1), maps inside a callout, list or quote, maps embedded from another note (open that note), maps with a multi-line `accDescr { … }` block, and very large maps (a line over 1000 characters or more than 64 KB). Edit those in the code.
-- **Security:** Mermaid runs with `securityLevel: strict`, as in Obsidian. The plugin makes no network requests. Edits only ever change the one code block they belong to. An export writes only the files you asked for: next to the note from the dialog, or the vault path given to the CLI (never outside the vault or into a hidden folder). An exported file carries no note path.
+- **Security:** Mermaid runs with `securityLevel: strict`, as it did in Obsidian. Obsidian 1.15 replaced Mermaid with its own renderer and dropped the per-vault Mermaid permission with it; with this plugin installed, every note's diagrams go through Mermaid again, as before Obsidian 1.13, so install it in vaults whose notes you trust as you would have then. The plugin makes no network requests. Edits only ever change the one code block they belong to. An export writes only the files you asked for: next to the note from the dialog, or the vault path given to the CLI (never outside the vault or into a hidden folder). An exported file carries no note path.
 
 ## Contributing
 

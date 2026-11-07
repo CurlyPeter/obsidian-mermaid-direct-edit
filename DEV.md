@@ -1180,7 +1180,130 @@ no earlier case touches, and print what lies under a clicked point when they fai
 desktop build: `wardley-apply` with `pipeline` changed moved the component and wrote its link to
 the parent `P -> C`.
 
+## Obsidian 1.15 and Pele (0.28.0, 2026-11-07)
+
+Report (maintainer): after Obsidian updated itself to 1.15.0, the plugin's drawing and buttons were
+gone and nothing could be edited. `status`: `state: waiting`, `rendering: none yet`; the maps were
+`svg.pele-wardley` without `data-mp-src`.
+
+Measured in the 1.15.0 asar (`app.js`, `lib/`) against the 1.14.5 installer asar in the app bundle:
+
+- **Obsidian ships no Mermaid any more.** `lib/mermaid.min.js` is gone; `lib/pele.min.js` is
+  **Pele 1.8.0** (MIT, `github.com/obsidianmd/pele`), Obsidian's own renderer for Mermaid syntax,
+  `wardley-beta` included. Exports: `PeleError, detectType, enableZoom, forgetTextWidths, mount,
+  parse, register, registered, render, supports`.
+- **Every block goes through `pele.mount(box, source, options)`** (the post-processor for
+  `code.language-mermaid`, Live Preview's code block widget and the reading-view recycler share it):
+  Obsidian creates the `.mermaid` box, mounts, and keeps the handle in a map; it uses only
+  `source`, `update(src)` (Live Preview when a block's text changes, the recycler when it reuses a
+  box, after MathJax loaded) and `refresh()` (box inserted, `css-change`). Pele's handle also has
+  `result`, `error`, `zoom` and `destroy`. Options: Obsidian's diagram settings (`zoom` labels,
+  `links`), `math`, `sanitize`, `onRender` (marks links that are not internal `external-link`).
+- **`window.mermaid` is a shim** (`loadMermaid()` assigns it with `??=` and returns it), built on
+  `pele.render`; Obsidian itself never calls it. The plugin's accessor on it was therefore never
+  read, which is the whole failure.
+- **Gone with Mermaid:** the per-vault permission (`mermaid-vault-trust`, no trace in 1.15's app.js;
+  the stale key stays in local storage) and the dark-mode rule
+  `.theme-dark .mermaid > svg { filter: invert(100%) hue-rotate(180deg) saturate(1.25) }` (Pele draws
+  with `--pele-*` variables mapped onto the theme).
+- **The global can be swapped, the method cannot.** Pele is a classic script ending in
+  `var pele = …`: once loaded, `window.pele` is a writable, non-configurable data property;
+  `pele.mount` is a non-configurable getter of esbuild's namespace object (assignment fails). Pele
+  is loaded on the first diagram, after the plugins at a cold start. app.js reads the global on
+  every call.
+
+Decisions (maintainer, 2026-11-07):
+
+- **Every block is drawn with the pinned Mermaid again**, whatever its type, not only the types the
+  plugin edits. A note then shows what the book, the site and the slides show (all render with
+  Mermaid); types Pele lacks keep working; one look for all. Pele's theme colours and its own
+  pan/zoom are not used. The hook's choice is one function (`drawsWith`), so a per-type split stays
+  possible.
+- **Installing the plugin is the consent to Mermaid**, as before Obsidian 1.13. 1.15 offers no
+  permission any more; a guard of the plugin's own would be a click per vault and device for a risk
+  that matters only in shared vaults. The CLI export keeps its `not-permitted` check on 1.13 and
+  1.14, where Obsidian still guards, and drops it on 1.15, where nobody could ever grant it.
+
+How (`pele.ts`):
+
+- **`PeleHook`** puts a `Proxy` in place of the global (assigned when Pele is loaded, else an
+  accessor whose setter receives Pele's `var pele = …`); only `mount` is answered by the plugin, the
+  rest passes through, so later Pele members need no change here. Unload restores the original (an
+  accessor is deleted and the original assigned). Both hooks, `window.mermaid` and `window.pele`,
+  are always installed: phones may still run 1.14.
+- **`Drawing`** is the handle Obsidian keeps, and Obsidian 1.14.5's block render (`Oj` in its
+  app.js) in the box 1.15 gives: hidden measuring box as wide as the block, `mermaid.render`, the SVG
+  string into the box (the plugin's buttons in it stay), the 1.14.5 fix-ups (labels of
+  `internal-link` nodes become links, SVG link hrefs, marker ids per drawing), `decorate`,
+  Obsidian's `onRender`. Marker ids Mermaid 12 already namespaced with the svg id are kept: by its
+  code, 1.14.5 prefixed every marker of a drawing with a `<style>`, so `styles.css`'s
+  `marker[id^="link-arrow-"]` would miss there (read, not measured).
+  One render at a time, the newest source wins (as in the zoom); a parse error shows
+  `pre.mde-render-error` with the text 1.14 showed. Unloaded, or the pinned bundle failed: the
+  drawing hands its block to Pele's own `mount` on its next update. Render ids `mde-draw-…`, which
+  the after-render step of `wrapRender` skips (a drawing decorates itself).
+- **No label into `href` (security review).** 1.14.5 turned the label of a node with class `internal-link`
+  into `<a href=LABEL>`, after Mermaid's sanitizer; with 1.15's permission gone, a label
+  `javascript:…` ran when clicked wherever no link handler cancels the click (measured by the
+  security review in a container a third-party plugin renders). The label now goes into
+  `data-href` only, which Obsidian's link handling reads first, and the class must be a whole word,
+  as in Pele.
+- **PDF export waits (code review).** Obsidian 1.15 expects `mount` to draw at once: once Pele is
+  loaded its post-processor returns nothing, and `print` awaits only the promises post-processors
+  return. 1.14 returned its render's promise. A post-processor of the plugin (sort order 1000,
+  after Obsidian's, registered on 1.15+ only) returns the drawings' promise (`settled`); before Pele
+  is loaded it first waits, bounded to 5 s, for Obsidian to mount the blocks.
+- **After unload (code review):** Obsidian calls `refresh()` on every handle on each theme change
+  and re-insertion; a drawing decorates only while the hook is live, and a render finishing after
+  the unload hands its block to Pele.
+- **The hook never adopts a proxy** of its own or of an earlier load (a module-level map from proxy
+  to Pele), should one be assigned back to the global; else a handover would call the hook again.
+- **Pinned instance configured by the plugin:** 1.15 never calls `initialize`, so `configured()`
+  in `main.ts` applies `OBSIDIAN_CONFIG` (1.14's call) plus `CLASSIC` before the first drawing,
+  the same step the CLI export already took.
+- **Dark mode:** 1.14's rule in `styles.css`, for every SVG that is not Pele's (`:not(.pele)`), the
+  zoom's included; on 1.14 it is the same rule twice. The export is drawn under `.theme-light`.
+- `status`: `obsidianRenderer` (`pele` | `mermaid` | `none yet`), `peleHook` (`live` | `refused` |
+  `off`), `peleRenders`; `rendering` says `obsidian` when the hook was refused.
+Verification (2026-11-07):
+
+- **Live, Obsidian 1.15.0 (macOS):** the plugin loaded after Pele: the redraw took a Wardley map
+  in Live Preview over (our drawing, `data-mp-kind=wardley`, 5 groups and 12 class marks drawn,
+  menu, Zoom and Share buttons). Dark theme: the drawing gets 1.14's filter, light none. Plugin
+  off, then a redraw: Pele draws (`pele-wardley`); on again: ours. CLI export on 1.15: drawn, no
+  `not-permitted`.
+- **PDF path:** Obsidian's own post-processing (`MarkdownPreviewView.postProcess`, what `print`
+  runs) on an off-screen container with a flowchart and a Wardley map: nothing drawn when it
+  returns, both drawn once its promises are awaited. Control, the plugin's post-processor taken
+  out for one run: the promises resolve with nothing drawn.
+- **Labels into `data-href`:** the same run with `A["javascript:…"]:::internal-link`: no `href`,
+  `data-href` set, nothing ran.
+- **After unload:** a drawing kept no buttons through `refresh()`, and its next `update()` was
+  drawn by Pele.
+- **E2E, both generations, cold start of a separate instance** (Linux, the installer 1.14.5 and
+  1.15.0): Wardley 66/66 and flowchart 31/31 on each. Two cases changed with the behaviour:
+  `export_limits` expects `not-permitted` only where Obsidian guards (1.13, 1.14), the export is
+  drawn on 1.15; `zoom_group` presses the component where nothing covers it (circle or label): on
+  1.15 the note sits higher in the window, the earlier drags land elsewhere, and an annotation box
+  had ended up over the circle. Same drawing size on both (960 x 640 for a 900 x 600 map).
+- Unit 459/459, among them `pele.test.ts` (the hook in every start state, a proxy assigned back,
+  the handover, marker ids), each shown to fail with its feature switched off.
+- **Not verified:** the iPhone (Pele's `var` landing in the accessor under JavaScriptCore, a phone
+  still on 1.14), a real PDF export.
+
+- Declined from the code review: sharing the newest-wins render loop with the zoom's (about 15
+  lines alike). The zoom's render is E2E-proven and differs in what it does around the loop; the
+  change would touch it for no behaviour.
+
 ## Changelog
+
+- **0.28.0 (2026-11-07)** Works again on Obsidian 1.15. Obsidian 1.15 replaced its bundled
+  Mermaid with its own renderer Pele and stopped calling `window.mermaid`, so the plugin drew
+  nothing: no extensions (groups, highlights, inertia positions), no buttons, no editing. The
+  plugin now takes the blocks over from `pele.mount` (`pele.ts`) and draws them with the pinned
+  Mermaid as Obsidian 1.14 did, in reading view and Live Preview; the old hook stays for 1.14. It
+  brings 1.14's dark-mode rule along, and the CLI export no longer answers `not-permitted` on 1.15,
+  which has no Mermaid permission to grant. See "Obsidian 1.15 and Pele (0.28.0)".
 
 - **0.27.0 (2026-10-17)** Pipelines edited in the drawing, the way groups are. The menu's
   *Pipeline* offers *New pipeline* and the map's pipelines, and a click on a pipeline box starts
