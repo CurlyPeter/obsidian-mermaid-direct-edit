@@ -1297,6 +1297,12 @@ Verification (2026-11-07):
 
 ## Changelog
 
+- **CI (2026-11-09, no release)** CI sets `MDE_TIME_SCALE=3`. It had been red on every push since
+  2026-10-13: all 21 failures in those 13 runs were timing limits of the unit tests, missed by at
+  most 2.7x on a GitHub runner, and the failing run skipped the build step behind it. The factor
+  keeps the cases' purpose: the case that failed most often (12 of the 21) took 2111 ms before its
+  fix, and on CI its limit is now 900 ms.
+
 - **0.28.0 (2026-11-07)** Works again on Obsidian 1.15. Obsidian 1.15 replaced its bundled
   Mermaid with its own renderer Pele and stopped calling `window.mermaid`, so the plugin drew
   nothing: no extensions (groups, highlights, inertia positions), no buttons, no editing. The

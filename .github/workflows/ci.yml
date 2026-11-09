@@ -20,4 +20,7 @@ jobs:
       - run: npm ci
       - run: npx tsc -noEmit -skipLibCheck
       - run: npx vitest run
+        env:
+          # The timing limits are tuned on a fast laptop; on a GitHub runner the slowest case needed 2.7x its limit.
+          MDE_TIME_SCALE: "3"
       - run: node esbuild.config.mjs production
