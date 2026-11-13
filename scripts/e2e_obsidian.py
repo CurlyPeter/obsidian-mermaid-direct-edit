@@ -210,6 +210,21 @@ def export_differences(source, svg_path):
         return {'error': raw[:300]}
 
 
+def portable_sheets(sheets):
+    """
+    For each style sheet, [resolveVars(css), portableSheet(resolveVars(css))] as this checkout's own
+    `export-format.ts` computes them (bundled with its esbuild, run with node): the export's code,
+    not a copy of it.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    bundle = subprocess.run([os.path.join(root, 'node_modules', '.bin', 'esbuild'), os.path.join(root, 'export-format.ts'), '--bundle',
+                             '--format=iife', '--global-name=EF', '--log-level=warning'], capture_output=True, text=True, check=True, timeout=60).stdout
+    code = bundle + (';let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.stringify('
+                     'JSON.parse(s).map(c=>{const r=EF.resolveVars(c,()=>"");return [r,EF.portableSheet(r)];}))));')
+    r = subprocess.run(['node', '-e', code], input=json.dumps(sheets), capture_output=True, text=True, check=True, timeout=60)
+    return json.loads(r.stdout)
+
+
 class Scratch:
     """A note with a unique name at the vault root, open in Live Preview; trashed afterwards."""
 

@@ -1,6 +1,6 @@
 {
   "name": "mermaid-direct-edit",
-  "version": "0.28.0",
+  "version": "0.29.0",
   "description": "Edit Mermaid diagrams (Wardley maps, flowcharts) directly in the rendered drawing in Obsidian; renders with a pinned, current Mermaid",
   "main": "main.js",
   "private": true,
@@ -15,7 +15,7 @@
   "license": "MIT",
   "dependencies": {
     "@mermaid-js/parser": "2.0.1",
-    "mermaid": "12.1.0"
+    "mermaid": "12.3.0"
   },
   "devDependencies": {
     "@types/node": "24.19.2",

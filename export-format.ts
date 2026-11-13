@@ -25,10 +25,26 @@ export const EXPORT_FONT = 'Helvetica, Arial, sans-serif';
  * goes in as top-level `fontFamily`: `themeVariables.fontFamily` in a directive drops the font from
  * Mermaid's style sheet altogether (measured on 12.1.0).
  */
-const EXPORT_INIT = `%%{init: ${JSON.stringify({ htmlLabels: false, flowchart: { htmlLabels: false }, fontFamily: EXPORT_FONT })}}%%`;
+const EXPORT_CONFIG = { htmlLabels: false, flowchart: { htmlLabels: false }, fontFamily: EXPORT_FONT };
+const EXPORT_INIT = `%%{init: ${JSON.stringify(EXPORT_CONFIG)}}%%`;
 
 /** The block text as drawn for an export. Mermaid removes directives before any diagram parser sees the text. */
 export const withExportConfig = (src: string) => `${src}\n${EXPORT_INIT}`;
+
+/**
+ * Whether `config`, the config Mermaid reports it will draw with (`mermaid.parse(text).config`),
+ * holds every value of the export's directive. One unreadable `%%{…}%%` directive makes Mermaid
+ * ignore every directive, this one too, and frontmatter alone can set some of its keys
+ * (`htmlLabels: false` while `flowchart.htmlLabels` stays true draws flowchart labels as HTML), so
+ * all of them are compared.
+ */
+export function exportConfigApplied(config: unknown): boolean {
+	const holds = (want: Record<string, unknown>, got: unknown): boolean => typeof got === 'object' && got !== null
+		&& Object.entries(want).every(([k, v]) => (typeof v === 'object' && v !== null
+			? holds(v as Record<string, unknown>, (got as Record<string, unknown>)[k])
+			: (got as Record<string, unknown>)[k] === v));
+	return holds(EXPORT_CONFIG, config);
+}
 
 /** Largest PNG in pixels: iOS refuses larger canvases (16.7 M), and a crafted map must not take the memory. */
 export const MAX_PIXELS = 4096 * 4096;
@@ -161,6 +177,257 @@ export function pngText(png: Uint8Array, key: string): string | null {
  * drawing (`url(#id)`, gradients and markers), never to anything outside it.
  */
 export const portableValue = (v: string) => !v.includes('url(') || /^url\(\s*["']?#[^)]*\)$/.test(v.trim());
+
+/**
+ * Names of functions that take a URL, as `url()` or as a string (`image-set("…")`), vendor prefixes
+ * included. A name `url` followed by `(` is read apart (its argument decides); this list also catches
+ * it where CSS reads no function at all: as a number's unit (`1url(`) or a hash (`#url(`). Those
+ * fetch nothing in any engine, and are dropped anyway on purpose: nothing legitimate looks like that.
+ */
+const URL_TAKING = /(?:^|-)(?:url|src|image|image-set|cross-fade|element|attr)$/;
+/**
+ * CSS Syntax 3's non-ASCII ident code points. Every engine reads them as part of a name; any other
+ * non-ASCII character is a name character to engines that follow the older rule and a separate
+ * token to those that follow the newer one, so a rule holding one outside strings, URLs and
+ * comments is dropped (it could end a name where one engine sees `url(` and the other does not).
+ */
+const identCode = (n: number) => n === 0xb7 || (n >= 0xc0 && n <= 0xd6) || (n >= 0xd8 && n <= 0xf6) || (n >= 0xf8 && n <= 0x37d)
+	|| (n >= 0x37f && n <= 0x1fff) || n === 0x200c || n === 0x200d || n === 0x203f || n === 0x2040 || (n >= 0x2070 && n <= 0x218f)
+	|| (n >= 0x2c00 && n <= 0x2fef) || (n >= 0x3001 && n <= 0xd7ff) || (n >= 0xf900 && n <= 0xfdcf) || (n >= 0xfdf0 && n <= 0xfffd) || n >= 0x10000;
+const isDigit = (c: string | undefined) => c !== undefined && c >= '0' && c <= '9';
+const isHex = (c: string | undefined) => c !== undefined && /^[0-9a-fA-F]$/.test(c);
+const isSpace = (c: string | undefined) => c === ' ' || c === '\t' || c === '\n';
+const isNameStart = (c: string | undefined) => c !== undefined && (/^[A-Za-z_]$/.test(c) || c >= '\u0080');
+const isNameChar = (c: string | undefined) => isNameStart(c) || isDigit(c) || c === '-';
+const isEscape = (s: string, i: number) => s[i] === '\\' && s[i + 1] !== '\n';
+const startsName = (s: string, i: number) =>
+	s[i] === '-' ? isNameStart(s[i + 1]) || s[i + 1] === '-' || isEscape(s, i + 1) : isNameStart(s[i]) || isEscape(s, i);
+const startsNumber = (s: string, i: number) =>
+	s[i] === '+' || s[i] === '-' ? isDigit(s[i + 1]) || (s[i + 1] === '.' && isDigit(s[i + 2])) : s[i] === '.' ? isDigit(s[i + 1]) : isDigit(s[i]);
+const nonPrintable = (c: string) => { const n = c.charCodeAt(0); return n <= 8 || n === 11 || (n >= 14 && n <= 31) || n === 127; };
+
+/** The escape starting at `s[i]` (a backslash): the character it stands for and where it ends. */
+function cssEscape(s: string, i: number): { ch: string; end: number } {
+	let j = i + 1;
+	if (j >= s.length) return { ch: '\uFFFD', end: j };
+	if (!isHex(s[j])) return { ch: s[j], end: j + 1 };
+	const from = j;
+	while (j < s.length && j - from < 6 && isHex(s[j])) j++;
+	const cp = parseInt(s.slice(from, j), 16);
+	if (isSpace(s[j])) j++;
+	return { ch: cp === 0 || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff) ? '\uFFFD' : String.fromCodePoint(cp), end: j };
+}
+
+/** The name starting at `s[i]`, escapes decoded, ASCII lower case; `odd` when it holds, as written, a non-ASCII character outside `identCode`. */
+function cssName(s: string, i: number): { value: string; end: number; odd: boolean } {
+	let value = '', odd = false;
+	while (i < s.length) {
+		if (s[i] >= '\u0080') {
+			const cp = s.codePointAt(i) ?? 0xfffd;
+			odd ||= !identCode(cp);
+			const n = cp > 0xffff ? 2 : 1;
+			value += s.slice(i, i + n);
+			i += n;
+		} else if (isNameChar(s[i])) value += s[i++];
+		else if (isEscape(s, i)) { const e = cssEscape(s, i); value += e.ch; i = e.end; }
+		else break;
+	}
+	return { value: value.replace(/[A-Z]/g, c => c.toLowerCase()), end: i, odd };
+}
+
+/** The string whose quote is `s[i]`, decoded. Ends at its quote, before a line break (CSS drops such a string) or at the end. */
+function cssString(s: string, i: number): { value: string; end: number } {
+	const quote = s[i];
+	let value = '', j = i + 1;
+	while (j < s.length) {
+		const c = s[j];
+		if (c === quote) return { value, end: j + 1 };
+		if (c === '\n') return { value, end: j };
+		if (c !== '\\') { value += c; j++; }
+		else if (j + 1 >= s.length) j++;
+		else if (s[j + 1] === '\n') j += 2;
+		else { const e = cssEscape(s, j); value += e.ch; j = e.end; }
+	}
+	return { value, end: j };
+}
+
+/** An unquoted `url(` token from `s[i]` (just after the parenthesis): its value, or null where CSS reads a bad URL. */
+function cssUrl(s: string, i: number): { value: string | null; end: number } {
+	while (isSpace(s[i])) i++;
+	let value = '';
+	for (;;) {
+		if (i >= s.length) return { value, end: i };
+		const c = s[i];
+		if (c === ')') return { value, end: i + 1 };
+		if (isSpace(c)) {
+			while (isSpace(s[i])) i++;
+			if (i >= s.length) return { value, end: i };
+			if (s[i] === ')') return { value, end: i + 1 };
+			break;
+		}
+		if (c === '"' || c === "'" || c === '(' || nonPrintable(c) || (c === '\\' && !isEscape(s, i))) break;
+		if (c === '\\') { const e = cssEscape(s, i); value += e.ch; i = e.end; }
+		else { value += c; i++; }
+	}
+	// A bad URL: CSS skips to the next `)` that is not escaped.
+	while (i < s.length && s[i] !== ')') i = isEscape(s, i) ? cssEscape(s, i).end : i + 1;
+	return { value: null, end: Math.min(s.length, i + 1) };
+}
+
+/**
+ * The drawing's style sheet `css` without each top-level rule that would fetch something outside
+ * the file: `@import`, `@font-face`, a `url()` other than `url(#id)`, or a function that takes a URL
+ * as a string (`image-set`, `src`, `cross-fade`, …). A note reaches this sheet (`themeCSS`,
+ * `classDef`), and a browser that opens the file fetches what it names (security review 0.29.0).
+ *
+ * Read the way CSS tokenizes (comments, strings, escapes, numbers with units, unquoted `url(`), so
+ * `\75 rl(` is the function it spells and a string or comment cannot hide a rule from this scan but
+ * not from a browser. A rule ends at a `;` or `}` back at the top level, so every kept rule starts
+ * and ends between tokens and is read the same in the file. A rule goes too where engines read the
+ * text differently: a non-ASCII character outside strings, URLs and comments that is not an ident
+ * code point (`identCode`), and `u+…` (a unicode range to some). Mermaid's own rules have none of
+ * this (a `classDef grün` keeps its rule); the frozen element styles keep the look of whatever a
+ * dropped rule set. One pass, linear.
+ */
+export function portableSheet(css: string): string {
+	const s = css.replace(/\r\n?|\f/g, '\n').replace(/\0/g, '\uFFFD');
+	let out = '', start = 0, depth = 0, foreign = false, i = 0;
+	const cut = (at: number) => {
+		if (!foreign) out += s.slice(start, at);
+		start = at;
+		foreign = false;
+	};
+	while (i < s.length) {
+		const c = s[i];
+		if (c === '/' && s[i + 1] === '*') {
+			const close = s.indexOf('*/', i + 2);
+			i = close < 0 ? s.length : close + 2;
+		} else if (c === '"' || c === "'") {
+			i = cssString(s, i).end;
+		} else if (c === '#' && (isNameChar(s[i + 1]) || isEscape(s, i + 1))) {
+			const name = cssName(s, i + 1);
+			foreign ||= name.odd || (s[name.end] === '(' && URL_TAKING.test(name.value));  // `#url(`: over-blocking, see URL_TAKING
+			i = name.end;
+		} else if (c === '@' && startsName(s, i + 1)) {
+			const name = cssName(s, i + 1);
+			foreign ||= name.odd || name.value === 'import' || name.value === 'font-face';
+			i = name.end;
+		} else if (c === '<' && s.startsWith('!--', i + 1)) {
+			i += 4;
+		} else if (startsNumber(s, i)) {
+			if (s[i] === '+' || s[i] === '-') i++;
+			while (isDigit(s[i])) i++;
+			if (s[i] === '.' && isDigit(s[i + 1])) { i++; while (isDigit(s[i])) i++; }
+			if ((s[i] === 'e' || s[i] === 'E') && (isDigit(s[i + 1]) || ((s[i + 1] === '+' || s[i + 1] === '-') && isDigit(s[i + 2])))) {
+				i += 2;
+				while (isDigit(s[i])) i++;
+			}
+			if (startsName(s, i)) {
+				const unit = cssName(s, i);
+				foreign ||= unit.odd || (s[unit.end] === '(' && URL_TAKING.test(unit.value));  // `1url(`: over-blocking, see URL_TAKING
+				i = unit.end;
+			}
+			else if (s[i] === '%') i++;
+		} else if (c === '-' && s[i + 1] === '-' && s[i + 2] === '>') {
+			i += 3;
+		} else if (startsName(s, i)) {
+			const name = cssName(s, i);
+			// `u+…`: an engine that still tokenizes unicode ranges ends that token elsewhere than a number.
+			foreign ||= name.odd || (name.value === 'u' && s[name.end] === '+');
+			i = name.end;
+			if (s[i] !== '(') continue;
+			i++;
+			if (name.value === 'url') {
+				while (isSpace(s[i]) && isSpace(s[i + 1])) i++;
+				const q = isSpace(s[i]) ? i + 1 : i;
+				if (s[q] === '"' || s[q] === "'") {
+					const str = cssString(s, q);
+					foreign ||= !str.value.startsWith('#');
+					i = str.end;
+				} else {
+					const url = cssUrl(s, i);
+					foreign ||= url.value === null || !url.value.startsWith('#');
+					i = url.end;
+				}
+			} else foreign ||= URL_TAKING.test(name.value);
+		} else {
+			i++;
+			if (c === '{') depth++;
+			// A stray `}` at the top level is part of the rule being read (CSS takes it into its prelude):
+			// no cut there. A cut before it would let the text in front of it run into the next kept rule
+			// once the rule between is dropped, and two tokens merge (`@impor` and `t "…"`: `@import "…"`).
+			// Every cut is right after a `;` or `}`, which no token can run into.
+			else if (c === '}') { if (depth > 0) { depth--; if (depth === 0) cut(i); } }
+			else if (c === ';' && depth === 0) cut(i);
+		}
+	}
+	cut(s.length);
+	return out;
+}
+
+/** Attributes through which an element loads something: `href` covers `xlink:href` (pass the local name). */
+const LOADING = new Set(['src', 'srcset', 'imagesrcset', 'srcdoc', 'poster', 'data', 'background', 'href', 'lowsrc', 'dynsrc', 'codebase', 'archive', 'classid', 'manifest', 'ping']);
+/** Presentation attributes that take a CSS value with a `url()`. */
+const CSS_URL = new Set(['fill', 'stroke', 'filter', 'mask', 'clip-path', 'marker-start', 'marker-mid', 'marker-end', 'cursor']);
+/** Where a `data:` URL is drawn as a picture, which loads nothing further; anywhere else it may be a document that does. */
+const DATA_IMAGE = new Set(['img src', 'image href', 'feimage href', 'input src', 'video poster']);
+/** Elements that run code or load a document of their own. */
+const ACTIVE = new Set(['script', 'iframe', 'frame', 'frameset', 'object', 'embed', 'applet', 'link', 'meta', 'base', 'portal']);
+const ANIMATION = new Set(['animate', 'set', 'animatemotion', 'animatetransform', 'animatecolor']);
+
+/** Where an attribute sits, for `portableAttribute`. */
+export interface AttributeContext {
+	/**
+	 * The attribute is in no namespace. An HTML element in a label keeps `xlink:href` or `xmlns` as a
+	 * plain attribute, which the serializer writes as it is: read back as XML, it is a real one.
+	 */
+	plain: boolean;
+	/**
+	 * The element is Mermaid's image shape (`A@{ img: … }`): an `<image>` whose parent `<g>` has the
+	 * class `image-shape`, outside any `foreignObject`. Mermaid sets that class on the shape's group;
+	 * a diagram's own class lands elsewhere (a sequence participant's on its rect).
+	 */
+	imageShape: boolean;
+}
+
+/**
+ * What an exported file keeps of the attribute `name` (the local name of a namespaced attribute, the
+ * whole name of a plain one) = `value` on element `tag`: the value, a cleaned value, or null to drop
+ * it. Nothing that loads when the file is opened stays: handlers, `srcdoc`, `srcset`, a loading
+ * attribute whose value is not `#…` (a `data:` picture only where it is drawn as one), a `style` or
+ * presentation value naming an outside URL, a plain attribute with a prefix or named `xmlns`.
+ * `<a href>` stays, a link fetches only when followed. So does the `href` of Mermaid's image shape,
+ * a picture the diagram itself draws, kept until that is decided (DEV.md 0.29.0); any other
+ * `<image>` (a sequence participant's `icon`, an `<image>` in a label) loses it.
+ */
+export function portableAttribute(tag: string, name: string, value: string, at: AttributeContext): string | null {
+	const t = tag.toLowerCase(), n = name.toLowerCase();
+	if (at.plain && (n.includes(':') || n === 'xmlns')) return null;
+	if (n.startsWith('on') || n === 'srcdoc' || n === 'srcset' || n === 'imagesrcset') return null;
+	if (n === 'style') return portableSheet(value);
+	if (CSS_URL.has(n)) return portableSheet(value) === value ? value : null;
+	if (!LOADING.has(n)) return value;
+	if (n === 'href' && (t === 'a' || (t === 'image' && at.imageShape))) return value;
+	const v = value.trim();
+	if (v.startsWith('#') || (/^data:/i.test(v) && DATA_IMAGE.has(`${t} ${n}`))) return value;
+	return null;
+}
+
+/**
+ * Whether element `tag` (its qualified name) may stay in an exported file: not one that runs code or
+ * loads a document, no `<template>` (its content is not part of the document the pass walks, and
+ * read back as XML it is), no name with a prefix (`svg:image` in a label is an HTML element in the
+ * DOM and a real SVG image once the file is read as XML), and no animation that sets a loading or
+ * URL-taking attribute (`<set attributeName="href" to=…>` loads the moment the file is shown).
+ * `attributeName` is the animation's, when it has one.
+ */
+export function portableElement(tag: string, attributeName: string | null): boolean {
+	const t = tag.toLowerCase();
+	if (ACTIVE.has(t) || t === 'template' || t.includes(':')) return false;
+	if (!ANIMATION.has(t) || attributeName === null) return true;
+	const n = attributeName.toLowerCase().replace(/^xlink:/, '');
+	return !LOADING.has(n) && !CSS_URL.has(n) && n !== 'style';
+}
 
 /** The checksum an exported file carries (SVG text or PNG bytes), or null. */
 export function fileChecksum(format: ExportFormat, data: string | Uint8Array): string | null {

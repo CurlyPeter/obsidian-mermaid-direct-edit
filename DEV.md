@@ -1295,7 +1295,192 @@ Verification (2026-11-07):
   lines alike). The zoom's render is E2E-proven and differs in what it does around the loop; the
   change would touch it for no behaviour.
 
+## Exports fetch nothing from outside; Mermaid 12.3.0 (0.29.0, 2026-11-13)
+
+Report (an outside security review, measured by the maintainer): a diagram's `themeCSS` directive
+put an outside URL into the exported SVG's style sheet (`mask:url("https://…")` survived the
+export), and Chromium fetched it when the `.svg` was opened directly; embedded as `<img>` it
+fetched nothing. The frozen element styles were already clean (`portableValue`, 0.25.0); the
+sheet only had its variables resolved. Mermaid parses `themeCSS` with the browser's own
+`CSSStyleSheet.replaceSync` and writes it back (`createCssStyles`), which drops `@import` and
+rewrites an escaped `url(` into its plain form, and its stylis step drops `@font-face`; a `url()`
+in a declaration passes all of it.
+
+Before release, a fresh-context code review and a security review of that fix found more:
+
+- **A second route, since 0.25.0 (security review).** One unreadable `%%{…}%%` directive
+  (`%%{init: {x}}%%`, or an unclosed `%%{init: ` at the end) makes Mermaid's `detectDirective` drop
+  every directive, the export's appended `htmlLabels: false` included. The labels then come back
+  as HTML in a `foreignObject`, and `<img src>`, `srcset`, `<video poster>`, `<input type=image>`,
+  and `<image>`/`<feImage href>` inside an inline `<svg>` load when the file is opened.
+- **Over-blocking (code review):** any raw non-ASCII character marked its rule, so Mermaid's rule
+  for `classDef grün fill:#9f9,rx:12,ry:12` was dropped and `rx` went missing from the export.
+- Two guards without a test of their own (`u+…`, a vendor-prefixed `image-set("…")`), blind spots
+  in the random test, a stray `}` kept with the rule before it, and comments that claimed less
+  than the code does (`#url(`, `1url(`).
+
+A second round over those fixes found:
+
+- **Any `<image>` outside a `foreignObject` kept its address (security review)**, not only the
+  image shape's: a sequence participant with `properties A: {"icon": "https://…"}` is drawn as
+  `<image xlink:href>`, and Chromium loaded it when the file was opened.
+- **The directive check looked at one key.** Frontmatter can keep `htmlLabels: false` while it
+  turns `flowchart.htmlLabels` on; with an unreadable directive besides, swimlane labels came back
+  as HTML in a `foreignObject`, and the check passed.
+- **Namespaces (defense in depth, Mermaid's sanitizer stops these on the real label path):** HTML in
+  a label keeps `<svg:image xlink:href>` (an element whose name holds the prefix) or
+  `<x xmlns="…/2000/svg"><use xlink:href>` (a plain `xmlns` attribute) as they are; the serializer
+  writes them out verbatim, and read back as XML they are a real SVG image and use, which Chromium
+  fetched. `<template>` content was never visited by the pass.
+- **No test of the pass or of `exportSvg` itself:** taking the pass out left the suite green, and 4
+  of 30 mutants survived (among them `v.includes('#')` for `v.startsWith('#')`).
+- **A valid JSON directive was refused without a hint:** Mermaid turns every `'` inside `%%{…}%%`
+  into `"` before reading it, so `"themeCSS": ".a { font-family: 'Comic Sans MS'; }"` breaks, and
+  such a note, exported with HTML labels before 0.29.0, now got `bad-directive` with no reason.
+- **And the round's own fix of the stray `}` was unsafe** (found while a surviving mutant was looked
+  at): cutting before a stray `}` let the kept text in front of it run into the next kept rule once
+  the rule between was dropped, and two tokens merged: `@impor}b{mask:url(…)}t "…";` came out as
+  `@import "…";`, a fetch.
+
+Decisions:
+
+- **Drop rules, not the sheet.** The sheet stays for Mermaid's animations and for HTML in a
+  `foreignObject` (journey draws its labels there whatever the config). Only a rule that names an
+  outside URL goes; what it painted is already in the frozen styles, which are read before the
+  sheet is cleaned (`portableSheet` in `export-format.ts`).
+- **Read like a browser, not by pattern.** A pattern over the text misses `\75 rl(` (an escape
+  spelling `url(`), and wherever a scan reads a string or comment differently from a browser, a
+  whole rule can hide behind it: an unquoted `url(` holding a quote ends at its `)` in CSS, so a
+  scan that took the quote for a string would read past a later rule. `portableSheet` follows CSS
+  Syntax's tokenizer for comments, strings, escapes, numbers with units, hash and at-keywords and
+  unquoted `url(` tokens, and cuts only right after a `;` or `}` back at the top level. A stray `}`
+  there cuts nothing: CSS reads it into the rule being read, so it goes with that rule. A cut
+  anywhere else lets kept text merge with the first token of the next kept rule (above); after a
+  `;` or `}` nothing can, so the kept rules read the same in the file, token for token, and a
+  browser reads no URL into one; at worst the remains of a dropped neighbour make it drop a kept
+  rule. Where engines read text differently the rule goes:
+  a non-ASCII character outside strings, URLs and comments that is not one of CSS Syntax 3's
+  ident code points (`identCode`: these are name characters to every engine, any other is one only
+  to engines on the older rule), and `u+…` (an engine that still tokenizes unicode ranges ends that
+  token elsewhere). `#url(` and `1url(` are no function to CSS and are dropped anyway, on purpose:
+  nothing legitimate looks like that.
+- **Outside means:** a `url()` other than `url(#…)` (the yardstick of `portableValue`, so `data:`
+  too), `@import`, `@font-face`, and the functions that take a URL as a string (`image-set`,
+  `image`, `src`, `cross-fade`, `element`, `attr`, any vendor prefix).
+- **A last pass over the finished SVG** (`portableElements` in `export.ts`, the decisions pure in
+  `portableAttribute` and `portableElement`) removes whatever loads on open, wherever it came from:
+  `src`, `srcset`, `poster`, `data`, `background`, `href` and their kin unless the value is `#…`, a
+  `data:` URL only where it is drawn as a picture (an `<iframe>`, `<object>` or `<embed>` would load
+  a document that loads more), handlers, `srcdoc`, active elements (`script`, `iframe`, `object`,
+  `link`, `meta`, `base`, …), `<template>`, animations that set such an attribute
+  (`<set attributeName="href">`). `style` and presentation values (`fill`, `mask`, `filter`, …) go
+  through `portableSheet`. A link's `href` stays: it fetches only when followed.
+- **Namespaces, by what the serializer writes.** A plain (no-namespace) attribute whose name holds a
+  `:` or is `xmlns`, and an element whose qualified name holds a `:`, go: the serializer writes them
+  as they are, and an XML reader turns them into real namespaced ones. Measured over about 60 real
+  exports (the review): they carry only properly namespaced `xlink:href`, `xmlns:xlink` and
+  `xml:space`, so nothing legitimate is lost. The element test uses the qualified name (`nodeName`),
+  since a browser makes `svg:image` in HTML the local name and other parsers make `svg` a prefix.
+- **An unreadable directive is refused, not worked around.** `mermaid.parse` returns the config
+  Mermaid will draw with (frontmatter and directives merged), so `exportSvg` checks that every
+  value of the export's own directive arrived (`exportConfigApplied`: `htmlLabels`,
+  `flowchart.htmlLabels`, `fontFamily`) and otherwise throws `DirectiveError` (CLI
+  `bad-directive`). One key is not enough, since frontmatter can supply it alone (above). Cheap
+  (one parse, queued with the renders), and it reads Mermaid's own result rather than guessing at
+  its parser; the note meanwhile shows the diagram without any directive, as Mermaid does. The
+  message names the common cause, valid JSON with a `'` inside a string, since such a note used to
+  export (with HTML labels) and now does not. Weighed:
+  a warning beside a written file (a new field in the CLI's answer and a notice in the dialog, more
+  surface for a broken diagram) and stripping the directives before drawing (a second directive
+  parser that must match Mermaid's). The last pass stays as the second layer.
+- **No CSS parser as a dependency.** The reviewers compared `portableSheet` with lightningcss on
+  200,000 generated sheets; the plugin does not take it on, to keep the dependency surface of this
+  repo as it is. The unit tests carry an independent, rougher reading instead (`outsideUrls`).
+- **Open: the image shape.** Mermaid's image shape (`A@{ img: "https://…" }`) draws
+  `<image href="https://…">` in a `<g class="image-shape …">`; the last pass keeps that one
+  address, and only there (fail-closed: an `<image>` whose parent `<g>` lacks the class, or that
+  sits in a `foreignObject`, loses it; a diagram's own `class` on a sequence participant lands on
+  its rect, not on such a `<g>`). A browser opening the file loads that picture (measured below).
+  It is the diagram's content, not its style, and dropping it would drop the picture; embedding it
+  (fetched once at export) is the other way. Undecided.
+
+**Mermaid 12.3.0** (from 12.1.0): KaTeX 0.18.10 inside, so GHSA-238p-pmpm-9mq7 (low) is gone from
+`npm audit`; DOMPurify 3.4.17; elkjs 0.12.1, now `EPL-2.0 OR GPL-3.0-or-later`. Release notes of
+12.2.0 and 12.3.0: no changed default for look, layout or theme (`CLASSIC` unchanged); flowchart
+edge ids may no longer contain `[ ] ( ) { } |`; new: a flowchart `step` animation, BPMN shapes, the
+open-arrow and hollow-circle markers, mindmap `colorBy: depth`. The Wardley renderer chunk is
+byte-identical to 12.1.0's apart from chunk names, so its SVG classes and the inertia constants in
+`wardley-model.ts` hold. `@mermaid-js/parser` stays 2.0.1 (deduped).
+
+Verification (2026-11-13):
+
+- Unit 481/481 (459 before), on the build machine and on the Linux test machine. In
+  `export-format.test.ts`: Mermaid's own sheet unchanged, and a `classDef grün` rule kept (with
+  `größe`, CJK, `·` and an emoji); each URL form (quoted, unquoted, `URL(`, escaped, an escape ended
+  by CRLF, `data:`, `image-set`, `-webkit-image-set` with a string, `cross-fade`, `src`, `image`,
+  `element`); `@import` and `@font-face` however written; a style attribute; strings, comments,
+  bad URLs, braces in an unquoted URL, units, `u+1`, `u+a-b`, CDO, U+00A0 and other characters
+  outside the ident ranges, stray `}`s and the `@impor`/`t` merge; 5000 random joins of hostile
+  pieces (escaped `url(`, `image-set`, `src(`, CDO, CDC, `u+a-b`, `@impor`, `t`, `rl(` among them),
+  each result unchanged by a second pass and free of outside URLs by the independent reading
+  (300,000 more with other seeds while writing, none flagged); linear on crafted text; every
+  loading attribute (`ping` too, and an outside address ending in `#…`), the `data:` rule, plain
+  prefixed and `xmlns` attributes, the link and image-shape exceptions, styles and presentation
+  values, active elements, `<template>`, prefixed element names and animations; the export
+  config check against `mermaid.parse` itself (an unreadable directive, the `'` trap, `\"` that
+  works). New `export.test.ts` runs `exportSvg` in happy-dom with a stand-in for Mermaid: the
+  image shape's picture kept, a participant's icon, other `<image>`s and one in a
+  `foreignObject` dropped, `xlink:href` on `<use>`, `<script>`, `onload`, `<set>`, the two
+  namespace routes, `<template>`; `DirectiveError` for a partial config; a text that does not parse
+  keeps `render`'s own error. 40 mutants (the reviewers' 30, adapted where the code changed, and 10
+  for the last pass, the namespace rules, the image-shape test and the config check): all fail at
+  least one test, none survives.
+- E2E on a separate instance, cold start: Obsidian 1.14.5 Wardley 66/66, flowchart 33/33;
+  Obsidian 1.15.1 Wardley 66/66, flowchart 33/33. `export_no_fetch` (flowchart suite): a
+  `themeCSS` with `@import`, `mask:url(…)`, an escaped `\75 rl(`, `image-set(…)` and `@font-face`
+  leaves no outside URL in the file, with the diagram's own rule and Mermaid's `.flowchart-link`
+  kept (of these, Mermaid itself already drops `@import`, `@font-face` and the escape; the plain
+  `mask:url` is what depends on `portableSheet`); four unreadable directives (`{x}`, an unclosed
+  `%%{init: ` at the end, an unclosed string, and one beside frontmatter that keeps `htmlLabels:
+  false` but turns flowchart labels to HTML) are refused with `bad-directive` and write no file;
+  a valid directive with an `<img>` label exports SVG text and no loading attribute; a sequence
+  participant's `icon` is exported without its outside address. With `portableSheet` taken out of
+  `export.ts` it fails (`no_outside_url`), with the directive check taken out or reduced to
+  `htmlLabels` it fails (`bad_directive_refused`), with every `<image>` keeping its address it
+  fails (`icon_dropped`). New `export_mermaid_sheets`: 26 sources (every
+  diagram type, a `classDef grün`, journey, flowchart `step`, neo with gradient and shadow) drawn
+  with the pinned 12.3.0 and the export's directive; every sheet unchanged by `resolveVars` +
+  `portableSheet`, run by node on this checkout's own `export-format.ts`; a `classDef grün` export
+  keeps `rx:12`. With the ident ranges switched off it fails (one sheet changed, `rx` gone).
+- In headless Chromium, through `exportSvg` itself and Mermaid 12.3.0 (a harness outside Obsidian,
+  the security reviewers' 46 probes over every diagram type; 33 export, 8 are refused for an
+  unreadable directive, 5 do not parse): the files opened directly make no outside request except
+  the image shape's. With the directive check taken out, the last pass alone leaves the 8 without
+  any loading attribute (only a link's `href`) and without a request. The image shape served from
+  loopback is exported with its `href`, and Chromium requests it when the file is opened. The
+  second round's probes: a participant's `icon` (participant and actor) loads nothing; the
+  frontmatter swimlane case and the `'` directive are refused; with the check off, the namespace
+  routes (`svg:image`, a plain `xmlns`, an `<image>` in an inline `<svg>`, `srcset`) and eight
+  crafted drawings (prefixed elements, plain `xmlns` and `XLINK:HREF`, `<template>`, `<animate>`
+  with an outside value, `<use>` with an outside fragment) load nothing either.
+- **Not verified:** the iPhone (WebKit's tokenizer, a share from the phone), Affinity, Inkscape and
+  librsvg opening a cleaned file (the E2E `rsvg` check still passes).
+
 ## Changelog
+
+- **0.29.0 (2026-11-13)** An exported SVG fetches nothing from outside when it is opened, except a
+  picture the diagram itself draws with Mermaid's image shape (an open decision). A diagram's
+  `themeCSS` reached the drawing's style sheet, and a `url()` in it (`mask:url(https://…)`) stayed
+  in the file, so a browser that opened the file asked that server; one unreadable `%%{…}%%`
+  directive (since 0.25.0) turned the labels into HTML whose `<img src>` loaded on opening; and a
+  sequence participant's `icon` loaded too. The export now drops every rule of the sheet that
+  names something outside the file, read the way CSS reads it (escapes, strings, comments;
+  Mermaid's own rules stay, `classDef grün` too), removes in a last pass every attribute and
+  element that loads from outside (namespace tricks included), and refuses a diagram whose
+  directives Mermaid ignores (`bad-directive`; the message names the usual cause, a `'` inside a
+  directive's string). Mermaid 12.3.0 (from 12.1.0): KaTeX 0.18 inside, so the low advisory
+  GHSA-238p-pmpm-9mq7 is gone; new flowchart step animation, BPMN shapes and markers. See "Exports
+  fetch nothing from outside; Mermaid 12.3.0 (0.29.0)".
 
 - **CI (2026-11-09, no release)** CI sets `MDE_TIME_SCALE=3`. It had been red on every push since
   2026-10-13: all 21 failures in those 13 runs were timing limits of the unit tests, missed by at

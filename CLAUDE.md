@@ -100,7 +100,7 @@ with its kind (`data-mp-kind`), so the editors never see each other's diagrams.
 | `gestures.ts` | `DragGesture` (tap vs drag threshold), `Stub` (with a round handle at its free end) and `NewLinkDrag` (the "+" link, its end under the pointer: onto an element links, into free space creates one, back on its own element waits), `TapPress`, `DeletePress`, `DropHighlight` | E2E |
 | `legend.ts`, `modals.ts`, `write.ts`, `blocks.ts`, `geometry.ts` | the legend of the menu button (opens below it on hover or a tap, rows as the diagram's height allows, on the popover layer, closed once an entry is chosen or a moment after the mouse left), `NameModal` and the two-click Delete, writing into the note (`viewOf` also answers for a zoomed diagram), `locateBlock`/`mermaidBlocks`/`blockAt`/`followBlock`/limits/`EditError`, thresholds, `fitInside` and `TapDetector` | vitest (`blocks`, `geometry`), E2E |
 | `actions.ts`, `zoom.ts` | the buttons of a drawing (share and Zoom in top right, the menu top left) and the zoom (see "Buttons and the zoom") | vitest (`render`: the zoom key), E2E |
-| `export-format.ts`, `export.ts`, `export-ui.ts`, `export-cli.ts`, `cli-blocks.ts` | a drawing as a PNG or SVG file: the parts without a DOM (checksum, PNG text chunk, `out=` check, scale), drawing and freezing the styles, the share button and export dialog, the CLI commands `export`/`export-check`, the block a CLI command works on (see "Export") | vitest (`export-format`), E2E (both suites) |
+| `export-format.ts`, `export.ts`, `export-ui.ts`, `export-cli.ts`, `cli-blocks.ts` | a drawing as a PNG or SVG file: the parts without a DOM (checksum, PNG text chunk, `out=` check, scale, what a file may keep), drawing and freezing the styles, the share button and export dialog, the CLI commands `export`/`export-check`, the block a CLI command works on (see "Export") | vitest (`export-format`; `export`: `exportSvg` with a stand-in for Mermaid, the last pass and the directive check), E2E (both suites) |
 
 `npm run e2e` runs both suites (`scripts/e2e-wardley.py`, `scripts/e2e-flowchart.py`, sharing
 `scripts/e2e_obsidian.py`); each drives every gesture with real input through `obs dev:cdp` on a
@@ -201,7 +201,40 @@ Any diagram as a standalone PNG or SVG file. Contract of the CLI commands: `docs
   the drawing under Obsidian's CSS. Then the registry keys and Mermaid's `max-width` go,
   `width`/`height` come from the viewBox, `resolveVars` clears the style sheet of `var()` (fallbacks
   only, never a theme value: a note's `classDef` reaches that sheet), and no frozen value keeps a
-  `url()` other than `url(#…)` (`portableValue`; security review 0.25.0, I-3). Obsidian's
+  `url()` other than `url(#…)` (`portableValue`; security review 0.25.0, I-3). **Opened, the file
+  fetches nothing from outside, except a picture the diagram draws with Mermaid's image shape
+  (`A@{ img: … }`), an open decision (DEV.md 0.29.0).** Three parts (0.29.0):
+  - after `resolveVars`, `portableSheet` drops every top-level rule of the sheet that names
+    `@import`, `@font-face`, a `url()` other than `url(#…)` or a function that takes a URL as a
+    string (`image-set`, `src`, `cross-fade`, …); a diagram's `themeCSS` lands in that sheet. It
+    reads the text token by token as CSS does (comments, strings, escapes, numbers with units,
+    unquoted `url(`), so `\75 rl(` counts as `url(` and no string or comment can hide a rule. It
+    cuts only right after a top-level `;` or `}` (a stray `}` is part of the rule being read): a cut
+    anywhere else lets kept text run into the next kept rule once the one between is dropped, and
+    two tokens merge (`@impor` + `t "…"` reads `@import "…"`, found in review 0.29.0). A
+    rule goes too where engines read the text differently: a non-ASCII character outside strings,
+    URLs and comments that is not a CSS Syntax 3 ident code point (`identCode`; `classDef grün`
+    keeps its rule), and `u+…`. Mermaid's own sheets pass unchanged (their references are
+    `url(#<svg id>-…)`);
+  - the last pass before the file is written (`portableElements` over `portableElement` and
+    `portableAttribute`) drops what loads: `src`, `srcset`, `poster`, `data`, `background`, `href`
+    unless `#…` or a `data:` picture, handlers, `srcdoc`, active elements (`script`, `iframe`,
+    `object`, `link`, …), `<template>`, animations that set such attributes; `style` and
+    presentation values go through `portableSheet`. A link's `href` stays, and so does the `href` of
+    Mermaid's image shape only: an `<image>` whose parent `<g>` has the class `image-shape`, outside
+    any `foreignObject` (fail-closed: a sequence participant's `icon` is an `<image>` too, and goes).
+    **Namespaces:** HTML in a label keeps `xlink:href` or `xmlns` as plain attributes and `svg:image`
+    as an element name, which the serializer writes out as they are and an XML reader then takes as
+    real SVG; so a plain attribute with a prefix or named `xmlns` goes, and so does an element whose
+    qualified name (`nodeName`) holds a `:`. Real exports carry only properly namespaced
+    `xlink:href`, `xmlns:xlink` and `xml:space`;
+  - an unreadable `%%{…}%%` directive makes Mermaid ignore every directive, the export's own too,
+    and labels come back as HTML in a `foreignObject` (where `<img src>` loads). `exportSvg` asks
+    `mermaid.parse` for the config it will draw with and refuses unless every value of the export's
+    directive arrived (`exportConfigApplied`: frontmatter alone can keep `htmlLabels: false` and
+    still turn `flowchart.htmlLabels` on), `DirectiveError`, CLI `bad-directive`. Its message names
+    the common trap: Mermaid reads every `'` inside `%%{…}%%` as `"`. The check is on the config,
+    not the output: journey draws its labels in a `foreignObject` whatever the config. Obsidian's
   dark mode is `filter: invert(…)` on `.theme-dark .mermaid > svg`, not other colours, so an export
   is always the light drawing (the filter is not a frozen property).
 - **PNG** (`svgToPng`): the SVG as an image on a canvas, white unless transparent, `fitScale` keeps
@@ -683,6 +716,10 @@ bundled version is read from `node_modules/mermaid/package.json` at build time
    classes changed, `wardley-editor.ts` stops finding nodes silently: check that first. For
    flowcharts, `flowchart-scan.test.ts` against the new parser comes first (lexer rules and edge
    ids), then the SVG naming in `flowchart-map.ts` (a mismatch shows as "not editable here").
+4. The E2E case `export_mermaid_sheets` (flowchart suite) checks that `portableSheet` leaves
+   Mermaid's own style sheets of every diagram type unchanged: a new Mermaid feature that styles
+   with a `url()` to something outside the drawing would otherwise lose that rule in every export.
+   Add a new diagram type to its list.
 
 ## Rules
 

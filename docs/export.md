@@ -60,8 +60,22 @@ it is opened (a browser, Affinity, Miro, a mail, librsvg):
   left (each takes its fallback, never a value of the theme): a highlight in the theme's accent
   colour stays that colour outside Obsidian, and a mark a style takes away (`stroke:none` in a
   Wardley group's `classDef`, a flowchart `style` or `linkStyle`) stays away. A `url()` goes into the file only as a reference
-  inside the drawing (`url(#…)`). Always the light drawing: Obsidian's dark mode is a filter over
-  the diagram, not other colours.
+  inside the drawing (`url(#…)`), in the frozen values and in the style sheet alike: a rule of the
+  sheet that would fetch from outside the file (`@import`, `@font-face`, any other `url()`,
+  `image-set()` and its kin, however escaped) is left out (a diagram's `themeCSS` reaches that
+  sheet), and so is every attribute that loads something (`src`, `srcset`, `href` other than a
+  link's, handlers, …) unless it points inside the file. Always the light drawing: Obsidian's dark
+  mode is a filter over the diagram, not other colours.
+- **Opened, the file asks no server for anything, with one exception:** a picture the diagram
+  itself draws with Mermaid's image shape (`A@{ img: "https://…" }`) keeps its address and loads
+  from there, as it does in the note. Whether the export should embed or drop such pictures is
+  still open. Every other picture with an outside address goes, a sequence participant's `icon`
+  among them.
+- **A diagram with an unreadable `%%{…}%%` directive is refused** (`bad-directive`): Mermaid then
+  ignores every directive, the export's own too, and would draw the labels as HTML. Fix or remove
+  the directive; the note shows the diagram without any directive meanwhile. A common trap is
+  valid JSON: Mermaid reads every `'` inside `%%{…}%%` as `"`, so a `'` inside a string breaks it
+  (`"themeCSS": ".a { font-family: 'Comic Sans MS'; }"`); leave the quotes out or write `\"`.
 
 ## `export-check`
 
@@ -94,4 +108,5 @@ uploaded does not carry the note's path.
 | `not-permitted` | Mermaid is not allowed in this vault yet (Obsidian 1.13 and 1.14) |
 | `too-large` | the diagram text is over 64 KB, or the drawing is too large for a PNG |
 | `render-failed` | Mermaid cannot draw the text (its message follows) |
+| `bad-directive` | a `%%{…}%%` directive in the text cannot be read: Mermaid then ignores every directive, the export's own too, and would draw the labels as HTML (fix or remove it; the note itself shows the diagram without any directive). Mermaid reads every `'` inside `%%{…}%%` as `"`, so a `'` inside a string breaks it |
 | `not-a-file` | `out=` names a folder |

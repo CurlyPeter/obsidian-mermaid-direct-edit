@@ -15,7 +15,7 @@
  * Node-free like the rest of the plugin (phone): Web Crypto, canvas, Blob.
  */
 import type { Mermaid } from 'mermaid';
-import { CHECKSUM_ATTR, CHECKSUM_KEY, EXPORT_FONT, ExportFormat, MAX_PIXELS, fitScale, pngSize, pngWithText, portableValue, resolveVars, sha256Hex, withExportConfig } from './export-format';
+import { CHECKSUM_ATTR, CHECKSUM_KEY, EXPORT_FONT, ExportFormat, MAX_PIXELS, exportConfigApplied, fitScale, pngSize, pngWithText, portableAttribute, portableElement, portableSheet, portableValue, resolveVars, sha256Hex, withExportConfig } from './export-format';
 import { KEY_ATTR, KIND_ATTR, ZOOM_ATTR } from './render';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -55,6 +55,18 @@ let renders = 0;
 export class TooLargeError extends Error {}
 
 /**
+ * The diagram holds a `%%{…}%%` directive Mermaid cannot read, so Mermaid ignores every directive,
+ * the export's own included, and would draw the labels as HTML: the CLI answers `bad-directive`.
+ * A common cause is valid JSON: Mermaid turns every `'` inside `%%{…}%%` into `"` before reading it.
+ */
+export class DirectiveError extends Error {
+	constructor() {
+		super('A %%{…}%% directive in this diagram cannot be read, so Mermaid ignores every directive and the labels cannot be exported as text. '
+			+ 'Mermaid reads every \' inside %%{…}%% as ", so a \' inside a string breaks it. Fix or remove the directive.');
+	}
+}
+
+/**
  * The block text `src` drawn and frozen into a standalone SVG string, its size in px and the
  * text's checksum. Throws Mermaid's message when the text does not draw.
  */
@@ -66,9 +78,15 @@ export async function exportSvg(m: Mermaid, src: string, doc: Document, opts: Pi
 	const box = host.createDiv({ cls: 'mermaid' });
 	const id = EXPORT_ID_PREFIX + String(++renders);
 	try {
+		const drawn = withExportConfig(src);
+		// Mermaid reports the config it will draw with (frontmatter and directives, merged): without the
+		// export's own, one unreadable directive made it ignore them all. A text that does not parse is
+		// left to `render`, which says why.
+		const parsed = await m.parse(drawn, { suppressErrors: true });
+		if (parsed && !exportConfigApplied(parsed.config)) throw new DirectiveError();
 		let svg: string;
 		try {
-			({ svg } = await m.render(id, withExportConfig(src), box));
+			({ svg } = await m.render(id, drawn, box));
 		} catch (e) {
 			doc.getElementById(`d${id}`)?.remove();
 			throw e;
@@ -86,6 +104,7 @@ export async function exportSvg(m: Mermaid, src: string, doc: Document, opts: Pi
 		// own and would inherit Obsidian's font chain (placeholders like '??' included).
 		root.style.setProperty('font-family', EXPORT_FONT);
 		freezeStyles(root, doc);
+		portableElements(root);
 		root.setAttribute(CHECKSUM_ATTR, checksum);
 		if (opts.white) {
 			const vb = root.viewBox.baseVal;
@@ -114,6 +133,8 @@ function sizeOf(root: SVGSVGElement): { width: number; height: number } {
  * Writes every element's computed presentation values onto it (`style`), and resolves the
  * variables in Mermaid's style sheet: the file must look the same where neither the plugin's
  * rules nor Obsidian's variables exist. HTML inside a `foreignObject` keeps the style sheet.
+ * No frozen `url()` but `url(#…)`, and the sheets lose every rule that fetches from outside
+ * (`portableSheet`).
  * A value equal to the parent's (or the initial one) is left out only where nothing in the file
  * sets it (`setInFile`); where the file's own sheet sets it `!important`, so is the frozen value.
  */
@@ -153,10 +174,37 @@ function freezeStyles(root: SVGSVGElement, doc: Document) {
 		else el.removeAttribute('style');
 		el.removeAttribute('cursor');
 	}
-	// Variables only with their fallback: never a theme value (see resolveVars).
+	// Variables only with their fallback: never a theme value (see resolveVars). Then nothing that
+	// fetches: the sheet is where a note's `themeCSS` and `classDef` end up.
 	for (const sheet of Array.from(root.querySelectorAll('style'))) {
-		sheet.textContent = resolveVars(sheet.textContent ?? '', () => '');
+		sheet.textContent = portableSheet(resolveVars(sheet.textContent ?? '', () => ''));
 	}
+}
+
+/**
+ * The last pass before the file is written: no element and no attribute that loads anything when
+ * the file is opened (`portableElement`, `portableAttribute`), wherever it came from: a label's HTML
+ * in a `foreignObject`, Mermaid, the render hooks. Last, so nothing added before it escapes it.
+ */
+function portableElements(root: SVGSVGElement) {
+	const drop: Element[] = [];
+	for (const el of [root, ...Array.from(root.querySelectorAll('*'))]) {
+		// The qualified name: an HTML element `svg:image` has it as its local name, a parser that reads the
+		// prefix gives it as a prefix; either way it holds the `:`.
+		if (!portableElement(el.nodeName, el.getAttribute('attributeName'))) { drop.push(el); continue; }
+		let inForeign = false;
+		for (let p = el.parentElement; p && p !== root.parentElement; p = p.parentElement) if (p.localName === 'foreignObject') { inForeign = true; break; }
+		const parent = el.parentElement;
+		const imageShape = !inForeign && el.namespaceURI === SVG_NS && el.localName === 'image'
+			&& parent?.namespaceURI === SVG_NS && parent.localName === 'g' && parent.classList.contains('image-shape');
+		for (const a of Array.from(el.attributes)) {
+			const plain = a.namespaceURI === null;
+			const v = portableAttribute(el.localName, plain ? a.name : a.localName, a.value, { plain, imageShape });
+			if (v === null) el.removeAttributeNS(a.namespaceURI, a.localName);
+			else if (v !== a.value) el.setAttributeNS(a.namespaceURI, a.name, v);
+		}
+	}
+	for (const el of drop) el.remove();
 }
 
 /**

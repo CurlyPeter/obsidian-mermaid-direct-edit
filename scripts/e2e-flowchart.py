@@ -586,6 +586,144 @@ def case_export_faithful():
         E.trash_path(d)
 
 
+# A diagram whose `themeCSS` names outside URLs in every way a style sheet can, next to one rule
+# of its own that must stay. Mermaid copies `themeCSS` into the drawing's style sheet unchecked.
+NO_FETCH = ('%%{init: {"themeCSS": "@import url(https://probe.invalid/i.css); '
+            '.node rect{stroke-width:3px} '
+            '.node rect{mask:url(https://probe.invalid/m.svg#m)} '
+            '.edgePath path{mask:\\\\75 rl(https://probe.invalid/e.svg#e)} '
+            '.cluster rect{mask-image:image-set(\\"https://probe.invalid/s.png\\" 1x)} '
+            '@font-face{font-family:trk;src:url(https://probe.invalid/f.woff)} text{font-family:trk}"}}%%\n'
+            'flowchart LR\n  A[One] --> B[Two]')
+
+
+# One unreadable `%%{…}%%` directive makes Mermaid ignore every directive, the export's own too, and
+# the labels come back as HTML in a `foreignObject`, where `<img src>` loads when the file is opened.
+BAD_DIRECTIVES = [
+    '%%{init: {x}}%%\nflowchart LR\n  A["<img src=\'https://probe.invalid/a.png\'> x"] --> B',
+    'flowchart LR\n  A["<img src=\'https://probe.invalid/b.png\'> x"] --> B\n%%{init: ',
+    'flowchart LR\n  A["<img srcset=\'https://probe.invalid/c.png 1x\'> x"] --> B\n%%{init: {"x": "',
+    # Frontmatter keeps `htmlLabels: false` but turns flowchart labels back to HTML: the whole export
+    # directive must arrive, not its first key.
+    '---\nconfig:\n  htmlLabels: false\n  flowchart:\n    htmlLabels: true\n  layout: swimlane\n---\nflowchart LR\n'
+    '  subgraph L1["<img src=\'https://probe.invalid/d.png\'> lane"]\n    A --> B\n  end\n  subgraph L2[two]\n    C\n  end\n  B --> C\n%%{init: {"x": "',
+]
+# A picture that is not Mermaid's image shape: a sequence participant's `icon` is drawn as an
+# `<image xlink:href>` outside any foreignObject, and loaded when the file is opened.
+ICON = 'sequenceDiagram\n  participant A\n  properties A: {"icon": "https://probe.invalid/icon.png"}\n  A->>B: hi'
+
+
+def case_export_no_fetch():
+    """An exported SVG fetches nothing from outside when it is opened. (1) `themeCSS` reaches the
+    drawing's style sheet: before 0.29.0 a `mask:url(…)` there stayed in the file, and a browser that
+    opened it asked the diagram author's server. Mermaid itself already drops `@import` and
+    `@font-face` and rewrites an escaped `url(`; the plain `mask:url` is what `portableSheet` stops.
+    (2) An unreadable directive put the labels back into HTML with `<img src>` (since 0.25.0): the
+    export now refuses it (`bad-directive`) and writes no file, also where frontmatter keeps one of
+    the directive's keys. A text whose directive is fine keeps exporting with SVG text labels.
+    (3) A sequence participant's `icon` loses its outside address (only Mermaid's image shape keeps
+    one, an open decision)."""
+    d = f'E2E flowchart no fetch {time.strftime("%H%M%S")}'
+    try:
+        got = E.cli('export', source=NO_FETCH.replace('\n', '\\n'), out=f'{d}/flow.svg')
+        if not got.get('ok'):
+            return False, f'export {got}'
+        with open(os.path.join(E.vault_dir(), d, 'flow.svg'), encoding='utf-8') as f:
+            text = f.read()
+        sheet = ''.join(re.findall(r'<style[^>]*>(.*?)</style>', text, re.S))
+        refused = [E.cli('export', source=src.replace('\n', '\\n'), out=f'{d}/bad{i}.svg') for i, src in enumerate(BAD_DIRECTIVES)]
+        written = [os.path.exists(os.path.join(E.vault_dir(), d, f'bad{i}.svg')) for i in range(len(BAD_DIRECTIVES))]
+        good = E.cli('export', source='%%{init: {"theme": "forest"}}%%\\nflowchart LR\\n  A["<img src=\'https://probe.invalid/g.png\'> x"] --> B', out=f'{d}/good.svg')
+        good_text = ''
+        if good.get('ok'):
+            with open(os.path.join(E.vault_dir(), d, 'good.svg'), encoding='utf-8') as f:
+                good_text = f.read()
+        icon = E.cli('export', source=ICON.replace('\n', '\\n'), out=f'{d}/icon.svg')
+        icon_text = ''
+        if icon.get('ok'):
+            with open(os.path.join(E.vault_dir(), d, 'icon.svg'), encoding='utf-8') as f:
+                icon_text = f.read()
+        checks = {
+            'no_outside_url': 'probe.invalid' not in text,
+            'no_import': '@import' not in sheet and '@font-face' not in sheet,
+            'own_rule_kept': 'stroke-width:3px' in sheet,
+            'mermaid_kept': '.flowchart-link' in sheet,
+            'bad_directive_refused': all(r.get('error', {}).get('code') == 'bad-directive' for r in refused) and not any(written),
+            # The label is SVG text then: its `<img src=…>` is text in a tspan, never an attribute.
+            'good_directive_exported': bool(good_text) and '<foreignObject' not in good_text
+                                       and not re.search(r'<[^<>]*\s(?:src|srcset|href|xlink:href)=["\']https?:', good_text),
+            'icon_dropped': bool(icon_text) and '<image' in icon_text and 'probe.invalid' not in icon_text,
+        }
+        failed = [k for k, v in checks.items() if not v]
+        return not failed, f'{failed or "all checks"}; sheet {len(sheet)} chars; refused {[r.get("error", {}).get("code") for r in refused]}'
+    finally:
+        E.trash_path(d)
+
+
+# Every diagram type, a class whose name holds an umlaut, and journey (its labels are HTML in a
+# `foreignObject` whatever the config says): Mermaid's own style sheets must pass `portableSheet`
+# untouched, or an export loses a rule of the diagram (CLAUDE.md, "Bumping Mermaid").
+SHEET_SOURCES = [
+    "flowchart LR\nA[One] --> B{Two}\nB -->|yes| C((Three))\nsubgraph S[Group]\nC\nend\nclassDef x fill:#f96,stroke:#333\nclass A x\nstyle B fill:#bbf\nlinkStyle 0 stroke:#f00",
+    "flowchart LR\nA:::grün --> B\nclassDef grün fill:#9f9,rx:12,ry:12",
+    "flowchart LR\nA e1@--> B\nB e2@--> C\ne1@{ step: 1 }\ne2@{ step: 2, animate: true }",
+    "---\nconfig:\n  look: neo\n  themeVariables:\n    useGradient: true\n    dropShadow: 'url(#drop-shadow)'\n---\nflowchart LR\nA[One] --> B[Two]",
+    "sequenceDiagram\nAlice->>Bob: Hi\nBob-->>Alice: Hello\nNote over Alice,Bob: note",
+    "classDiagram\nclass Animal{\n+name\n+eat()\n}\nAnimal <|-- Duck",
+    "stateDiagram-v2\n[*] --> Still\nStill --> Moving\nMoving --> [*]",
+    "erDiagram\nCUSTOMER ||--o{ ORDER : places",
+    "gantt\ntitle T\ndateFormat YYYY-MM-DD\nsection A\nTask :a1, 2026-01-01, 3d",
+    "pie title Pets\n\"Dogs\" : 3\n\"Cats\" : 2",
+    "journey\ntitle Day\nsection Work\nCode: 5: Me",
+    "gitGraph\ncommit\nbranch dev\ncommit\ncheckout main\nmerge dev",
+    "mindmap\n  root((Root))\n    A\n    B",
+    "timeline\ntitle T\n2026 : A\n2027 : B",
+    "quadrantChart\ntitle Q\nx-axis Low --> High\ny-axis Low --> High\nA: [0.3, 0.6]",
+    "xychart-beta\nx-axis [a, b]\ny-axis 0 --> 10\nbar [3, 5]",
+    "sankey-beta\nA,B,10\nB,C,5",
+    "block-beta\ncolumns 2\na b",
+    "packet-beta\n0-15: \"Source\"\n16-31: \"Dest\"",
+    "architecture-beta\ngroup api(cloud)[API]\nservice db(database)[DB] in api",
+    "kanban\nTodo\n  t1[Task]",
+    "radar-beta\naxis a, b, c\ncurve x{1, 2, 3}",
+    "treemap-beta\n\"A\"\n  \"B\": 10",
+    "requirementDiagram\nrequirement r {\nid: 1\ntext: t\n}",
+    "C4Context\nPerson(a, \"A\")\nSystem(b, \"B\")\nRel(a, b, \"uses\")",
+    "wardley-beta\ntitle Tea\nanchor Business [0.95, 0.63]\ncomponent Cup [0.73, 0.78]\nBusiness -> Cup"
+]
+
+
+def case_export_mermaid_sheets():
+    """Mermaid's own style sheets, of every diagram type drawn with the pinned Mermaid (as the
+    export draws them, its directive appended), pass `resolveVars` + `portableSheet` unchanged; and
+    a `classDef grün` keeps its rule in an exported file (`rx:12`): before the review of 0.29.0 any
+    non-ASCII name dropped it."""
+    code = ('(async()=>{const srcs=' + json.dumps([src + '\n' + E.EXPORT_INIT for src in SHEET_SOURCES], ensure_ascii=False) + ';const out=[];let n=0;'
+            'for(const s of srcs){try{const r=await window.mermaid.render("mde-sheets-"+Date.now()+"-"+(++n),s);'
+            'const d=new DOMParser().parseFromString(r.svg,"image/svg+xml");out.push([...d.querySelectorAll("style")].map(x=>x.textContent).join("\\n"));}'
+            'catch(e){out.push("ERROR "+(e&&e.message||e));}}return JSON.stringify(out);})()')
+    try:
+        sheets = json.loads(E.js(code))
+    except json.JSONDecodeError as e:
+        return False, f'no sheets: {e}'
+    errors = [s[:80] for s in sheets if s.startswith('ERROR ')]
+    pairs = E.portable_sheets([s for s in sheets if not s.startswith('ERROR ')])
+    changed = [i for i, (before, after) in enumerate(pairs) if before != after]
+    d = f'E2E flowchart sheets {time.strftime("%H%M%S")}'
+    try:
+        got = E.cli('export', source=SHEET_SOURCES[1].replace('\n', '\\n'), out=f'{d}/gruen.svg')
+        sheet = ''
+        if got.get('ok'):
+            with open(os.path.join(E.vault_dir(), d, 'gruen.svg'), encoding='utf-8') as f:
+                sheet = ''.join(re.findall(r'<style[^>]*>(.*?)</style>', f.read(), re.S))
+        rx = bool(re.search(r'\.grün[^{]*\{[^}]*rx:12', sheet))
+    finally:
+        E.trash_path(d)
+    ok = not errors and not changed and len(pairs) == len(SHEET_SOURCES) and rx
+    return ok, f'{len(pairs)} sheets, changed {changed}, render errors {errors}, classDef grün rx kept {rx}'
+
+
+
 def case_unload_cleanup():
     p = locate(s=['plus', 'Lone'], c=['menu'])
     click(*p['s']); wait(0.3)
@@ -605,7 +743,7 @@ CASES = [
     ('legend_add_node', case_legend_add_node), ('legend_direction', case_legend_direction), ('legend_group', case_legend_group),
     ('group_dialog', case_group_dialog), ('group_ungroup', case_group_ungroup), ('node_delete', case_node_delete),
     ('hover_cursors', case_hover_cursors), ('touch', case_touch), ('zoom_add_node', case_zoom_add_node),
-    ('export_svg_text', case_export_svg_text), ('export_faithful', case_export_faithful),
+    ('export_svg_text', case_export_svg_text), ('export_faithful', case_export_faithful), ('export_no_fetch', case_export_no_fetch), ('export_mermaid_sheets', case_export_mermaid_sheets),
     # Replaces the note with a diagram the editor refuses: after every case that needs the test diagram.
     ('not_editable', case_not_editable),
     ('unload_cleanup', case_unload_cleanup),

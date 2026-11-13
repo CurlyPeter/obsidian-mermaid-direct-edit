@@ -6,7 +6,7 @@ import { App, TFile, requireApiVersion } from 'obsidian';
 import { MAX_SOURCE, mermaidBlocks } from './blocks';
 import { CliCommandSpec, CliError, enumFlag } from './cli';
 import { cliBlock, noteOf } from './cli-blocks';
-import { ExportOptions, Exported, TooLargeError } from './export';
+import { DirectiveError, ExportOptions, Exported, TooLargeError } from './export';
 import { ExportFormat, MAX_SCALE, MIN_SCALE, checkOutPath, fileChecksum, sha256Hex } from './export-format';
 
 /** Layout width of a CLI export when none is given (px). */
@@ -86,6 +86,7 @@ export function exportCliSpecs(app: App, draw: Draw): CliCommandSpec[] {
 				file = await draw(b.source, out.format, { width, scale, white });
 			} catch (e) {
 				if (e instanceof TooLargeError) throw new CliError('too-large', e.message);
+				if (e instanceof DirectiveError) throw new CliError('bad-directive', e.message);
 				throw new CliError('render-failed', `Mermaid cannot draw this diagram: ${e instanceof Error ? e.message : String(e)}`);
 			}
 			await writeExport(app, out.path, file.data);

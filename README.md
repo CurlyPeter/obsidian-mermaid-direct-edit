@@ -4,7 +4,7 @@ Edit Mermaid diagrams in Obsidian by dragging the drawing itself. Every change i
 
 At a glance:
 
-- **A current Mermaid in every note.** Native Mermaid blocks are drawn with Mermaid 12.1.0 instead of Obsidian's older bundled one, so `wardley-beta` and other new diagram types work in reading view, live preview and PDF export.
+- **A current Mermaid in every note.** Native Mermaid blocks are drawn with Mermaid 12.3.0 instead of Obsidian's older bundled one, so `wardley-beta` and other new diagram types work in reading view, live preview and PDF export.
 - **Wardley maps editable in the drawing** (`wardley-beta`): move, link and re-link, evolve arrows and inertia, pipelines, annotations, highlights and groups.
 - **Flowcharts editable in the drawing** (`flowchart` / `graph`): labels, shapes, colours, links, groups and direction, with Undo.
 - **Zoom any diagram to the whole window**; Wardley maps and flowcharts stay editable there.
@@ -18,7 +18,7 @@ Editing covers Wardley maps and flowcharts; zoom and export work for every diagr
 
 ## What it does
 
-**1. Renders with a current Mermaid.** Up to version 1.14 Obsidian bundles its own, older Mermaid (11.13 in Obsidian 1.14); from 1.15 on it draws diagrams with its own renderer, Pele. This plugin draws every native ` ```mermaid ` block with a pinned Mermaid **12.1.0** in either case, so newer diagram types such as `wardley-beta` work in reading view, live preview and PDF export, and a note shows a diagram the way Mermaid draws it everywhere else (a static site, a book, slides). It keeps the classic look (`look: classic`, `layout: dagre`, `theme: default`). Disable the plugin to return to Obsidian's own renderer.
+**1. Renders with a current Mermaid.** Up to version 1.14 Obsidian bundles its own, older Mermaid (11.13 in Obsidian 1.14); from 1.15 on it draws diagrams with its own renderer, Pele. This plugin draws every native ` ```mermaid ` block with a pinned Mermaid **12.3.0** in either case, so newer diagram types such as `wardley-beta` work in reading view, live preview and PDF export, and a note shows a diagram the way Mermaid draws it everywhere else (a static site, a book, slides). It keeps the classic look (`look: classic`, `layout: dagre`, `theme: default`). Disable the plugin to return to Obsidian's own renderer.
 
 **2. Lets you edit Wardley maps directly.** In a rendered `wardley-beta` map you can:
 
