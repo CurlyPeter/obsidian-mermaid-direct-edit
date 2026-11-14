@@ -199,7 +199,8 @@ the note and in the zoom. The plugin makes no request of its own for it.
   null otherwise (embed, canvas, callout). Resolved again on every click: a click acts on the block as
   the note holds it then.
 - **Presses** on `.mde-ext-button` go through `onZoomButton`: every event of the press is swallowed
-  in the capture phase, the click calls the owner.
+  in the capture phase, the click calls the owner. **Hovering one opens no legend** (0.30.1):
+  `Legend.onMenu` is the menu button and the legend itself, not the whole row.
 - **Visibility:** with editing off only `.mde-menu-button` is hidden, not the row. `update` returning
   false (or throwing) hides a button (`mde-hidden`). A button with `mde-pinned` keeps its row visible
   without hover (`mde-has-pinned` on the row); the row's other buttons still show on hover only.

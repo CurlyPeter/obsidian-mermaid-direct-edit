@@ -1495,6 +1495,11 @@ Linux test machine, a separate Obsidian instance (own Xvfb display, profile and 
 
 ## Changelog
 
+- **0.30.1 (2026-11-14)** Hovering another plugin's button beside the menu no longer opens the legend
+  over it: the legend opens on the menu button and stays open on itself, not on the whole row
+  (`Legend.onMenu`). E2E `diagram_button` now hovers the button (no legend) and then the menu (the
+  legend), and fails with the old rule.
+
 - **0.30.0 (2026-11-14)** Other plugins can put a button beside a diagram's menu and learn which note
   and block it is (`api.addDiagramButton`, README → "For plugin developers"); this plugin itself still
   makes no network request. With editing switched off, only the menu button goes. An edit in the drawing

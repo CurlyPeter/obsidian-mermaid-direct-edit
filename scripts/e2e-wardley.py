@@ -1084,6 +1084,10 @@ return {button: r ? [Math.round(r.left+r.width/2), Math.round(r.top+r.height/2)]
   left: document.querySelectorAll('.mde-ext-button[data-mde-button="e2e-probe"]').length}})())"""
 
 
+LEGEND_OPEN = "String(!!app.workspace.activeLeaf.view.contentEl.querySelector('.markdown-source-view .mermaid .mp-legend.is-visible'))"
+MENU_POINT = r"""JSON.stringify((()=>{const m=app.workspace.activeLeaf.view.contentEl.querySelector('.markdown-source-view .mermaid > .mde-actions-left .mde-menu-button'); const r=m?.getBoundingClientRect(); return r ? [Math.round(r.left+r.width/2), Math.round(r.top+r.height/2)] : null})())"""
+
+
 def probe_state(root="app.workspace.activeLeaf.view.contentEl.querySelector('.markdown-source-view')"):
     return json.loads(js(PROBE_STATE.replace('__ROOT__', root)))
 
@@ -1103,6 +1107,16 @@ def case_diagram_button():
         if not s['button']:
             return False, f'api {version}: no button {s}'
         placed = s['afterMenu'] and s['opacity'] == '1' and s['menuOpacity'] == '0'
+        # Hovering the button opens no legend (0.30.1: it did, as the button sits in the menu's row);
+        # hovering the menu button still does.
+        mouse('mouseMoved', *s['button']); wait(0.6)
+        legend_on_button = js(LEGEND_OPEN)
+        menu = json.loads(js(MENU_POINT))
+        if menu:
+            mouse('mouseMoved', *menu); wait(0.6)
+        legend_on_menu = js(LEGEND_OPEN)
+        mouse('mouseMoved', 5, 5); wait(0.8)
+        hover = legend_on_button == 'false' and legend_on_menu == 'true'
         mouse('mouseMoved', *s['button']); wait(0.2)
         click(*s['button']); wait(0.8)
         s = probe_state()
@@ -1126,8 +1140,8 @@ def case_diagram_button():
         zoomed = (z['clicks'][-1] if z['clicks'] else {}).get('zoomed') is True
         js('(()=>{window.__mdeProbe.off(); return "x"})()'); wait(0.3)
         gone = probe_state()['left'] == 0
-        ok = version == '1' and placed and clicked and off and zoomed and gone
-        return ok, f'api {version}; placed {placed}; click {c}; editing off {off}; zoom {zoomed}; removed {gone}'
+        ok = version == '1' and placed and hover and clicked and off and zoomed and gone
+        return ok, f'api {version}; placed {placed}; legend on the button {legend_on_button}, on the menu {legend_on_menu}; click {c}; editing off {off}; zoom {zoomed}; removed {gone}'
     finally:
         js('(()=>{window.__mdeProbe?.off?.(); delete window.__mdeProbe; return "x"})()')
         E.plugin_setting('editWardley', True)

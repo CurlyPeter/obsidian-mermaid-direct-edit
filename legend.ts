@@ -44,9 +44,12 @@ export class Legend {
 		return isElement(target) && !!target.closest('.mde-menu-button');
 	}
 
-	/** Whether the target is on a menu: its button or its legend. */
+	/**
+	 * Whether the target is on a menu: its button or its legend. Not the rest of the button's row: other
+	 * plugins' buttons sit there (`buttons.ts`), and hovering one must not open the legend over it.
+	 */
 	static onMenu(target: EventTarget | null): boolean {
-		return isElement(target) && !!target.closest('.mde-actions-left');
+		return isElement(target) && !!target.closest('.mde-menu-button, .mp-legend');
 	}
 
 	isShown(): boolean {
