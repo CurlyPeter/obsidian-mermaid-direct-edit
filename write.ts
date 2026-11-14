@@ -1,5 +1,5 @@
 import { App, MarkdownView, TFile } from 'obsidian';
-import { blockAt, fenceBreak, locateBlock, mermaidBlocks } from './blocks';
+import { blockAt, fenceBreak, lineEdits, locateBlock, mermaidBlocks } from './blocks';
 import type { SourceRegistry } from './render';
 
 /**
@@ -71,7 +71,8 @@ export function originOf(app: App, registry: SourceRegistry, box: HTMLElement, d
  *   `Editor.replaceRange`: it scrolls the selection into view, and the note jumped to its top
  *   after every edit. The cursor is parked on the line below the block first (outside it, or
  *   Live Preview would open the source), so undo, which restores that selection and scrolls to
- *   it, also stays at the map; the scroll position is held through the redraw.
+ *   it, also stays at the map; the scroll position is held through the redraw. Only the characters
+ *   that differ are written (`lineEdits`).
  */
 export async function writeBlock(app: App, view: MarkdownView, src: string, next: string): Promise<string | null> {
 	if (view.getMode() === 'preview') {
@@ -100,7 +101,7 @@ export async function writeBlock(app: App, view: MarkdownView, src: string, next
 	const top = scroller?.scrollTop;
 	const fenceEnd = text.indexOf('\n', at + src.length + 1);
 	if (fenceEnd >= 0) cm.dispatch({ selection: { anchor: fenceEnd + 1 } });
-	cm.dispatch({ changes: { from: at, to: at + src.length, insert: next }, userEvent: 'input.wardley' });
+	cm.dispatch({ changes: lineEdits(src, next, at), userEvent: 'input.wardley' });
 	if (scroller && top !== undefined) {
 		const hold = () => { if (Math.abs(scroller.scrollTop - top) > 1) scroller.scrollTop = top; };
 		hold();

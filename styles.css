@@ -193,10 +193,27 @@ body.mp-wardley-edit .mermaid svg[data-mp-src] g.wardley-node.mp-group-editing {
 .mde-actions .embed-action:hover {
 	background-color: var(--background-modifier-hover);
 }
-/* The menu only while editing that diagram type is switched on. */
-body:not(.mp-wardley-edit) .mde-actions-left[data-kind="wardley"],
-body:not(.mp-flowchart-edit) .mde-actions-left[data-kind="flowchart"] {
+/* The menu only while editing that diagram type is switched on. Other plugins' buttons beside it
+   (buttons.ts) decide for themselves. */
+body:not(.mp-wardley-edit) .mde-actions-left[data-kind="wardley"] > .mde-menu-button,
+body:not(.mp-flowchart-edit) .mde-actions-left[data-kind="flowchart"] > .mde-menu-button,
+.mde-actions > .mde-ext-button.mde-hidden {
 	display: none;
+}
+/* A pinned button (`mde-pinned`, set by its owner, e.g. for a state worth seeing at a glance) stays
+   visible without hovering the drawing; the other buttons of its row still show on hover only. */
+.mde-actions.mde-has-pinned {
+	opacity: 1;
+}
+.mde-actions.mde-has-pinned > :not(.mde-pinned) {
+	opacity: 0;
+	transition: opacity 0.07s ease-out;
+}
+.mermaid.mde-host:hover > .mde-actions.mde-has-pinned > *,
+.cm-embed-block:hover > .mermaid.mde-host > .mde-actions.mde-has-pinned > *,
+.mde-actions.mde-has-pinned.is-open > *,
+.mde-zoom .mde-actions.mde-has-pinned > * {
+	opacity: 1;
 }
 
 /* Legend: the menu of the menu button, adds elements to the diagram. Opens below the button while

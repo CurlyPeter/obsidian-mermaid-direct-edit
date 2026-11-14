@@ -1466,7 +1466,41 @@ Verification (2026-11-13):
 - **Not verified:** the iPhone (WebKit's tokenizer, a share from the phone), Affinity, Inkscape and
   librsvg opening a cleaned file (the E2E `rsvg` check still passes).
 
+## Buttons for other plugins; edits write only what differs (0.30.0, 2026-11-14)
+
+**What for.** A plugin that does something with one diagram (for example: share a block live with someone, which needs the network) wants a button beside the diagram and to know which note and block it is. This plugin stays without network requests, so it offers only the place: `api.addDiagramButton({ id, icon, tooltip, update, click })` and `api.refreshDiagramButtons(id?)` on the plugin instance, `api.version` 1 (README → "For plugin developers").
+
+- **In the menu's row**, after the menu button, of every editable drawing (Wardley, flowchart) in a note and in the zoom. Not on embeds or callouts: no row there (`decorate`'s rule), and a target could not be named.
+- **Placed through `decorate`**, which every place that draws already calls (the note, Pele's `Drawing`, the zoom), via a module hook (`setExtraButtons`), so the zoom and `pele.ts` needed no new parameter. The owner's `update` runs once per drawing (the svg id is kept on the button) and on `refreshDiagramButtons`, not on every hover, which also decorates: the target is found through the note's text, and a hover fires many times.
+- **`add` places the button into the drawings already on screen**, so an owner loading after the diagrams (or after this plugin was reloaded) shows at once, not on the next hover.
+- **The target is resolved again on each click** (`targetOf`), so a click acts on the block as the note holds it then; in the zoom from the zoom's own origin, which follows its block.
+- **With editing switched off only the menu button goes**, not the row: an owner may still want to show a state there (`update` returning false hides its button). A button with `mde-pinned` keeps the row visible without hover, while the row's other buttons still appear on hover only (`mde-has-pinned`, a class rather than `:has()` so it is set where the state changes).
+- **Presses** on such a button are taken in the capture phase like Zoom in's, so Live Preview opens no source and no editor sees a press.
+- **`api` belongs to one load:** a reload makes a new `DiagramButtons` with no owners. Owners compare the object and add their button again (README).
+
+**Edits write only the lines that change** (`lineEdits` in `blocks.ts`, used by `writeBlock`): one change per run of changed lines, each trimmed to the characters that differ, all in one transaction. Until 0.29.0 an edit replaced the whole block. Undo of such an edit puts the whole old block back, and CodeMirror maps that through later changes from elsewhere (another plugin, a sync) by widening it over them: a change of another line made meanwhile was undone too. Found while building a plugin that writes a partner's changes into an open note: its own undo protection had to treat every partner change after a gesture as touching the user's edit. A first version trimmed only the common start and end, which leaves one range from the first changed line to the last; the E2E case `undo_keeps_outside_change` showed that a gesture changes lines far apart (Alpha moved, and the link `Alpha -> Beta` turned to `Beta -> Alpha`), so a line between them was still put back. Hence a line diff (a longest common subsequence of the changed middle, one range beyond 4 million table cells). One undo step per edit as before; a cursor inside the block's source no longer moves to its start. Hosts that read the transaction must take an array of changes, in the original document's positions.
+
+## Verification (0.30.0, 2026-11-14)
+
+Linux test machine, a separate Obsidian instance (own Xvfb display, profile and CLI socket, test vault), both generations: Obsidian 1.15.1 (Pele) and 1.14.5 (Mermaid).
+
+- `npx vitest run`: 486 tests, among them `narrowed` and `lineEdits` (every edit shape round-trips, an untouched line between two changed ones stays out of every change, a crafted block of 3000 changed lines stays within the time limit).
+- E2E, both suites on both generations: Wardley 68 of 68, flowchart 33 of 33. New cases: `diagram_button` (a button another plugin adds: placed right after the menu, pinned visible without hover while the menu is not, a real click hands over note, block 0 of 1, the fence line and `editing`, no source opened and the note unchanged; with editing off only the menu goes and the owner learns `editing: false`; in the zoom it answers `zoomed`; removed, it is gone from every drawing) and `undo_keeps_outside_change` (a gesture, then a change of another line of the block made from elsewhere and kept out of the undo history, then Cmd+Z: the gesture is undone, the other change stays).
+- Shown to fail with their feature switched off: `diagram_button` without the click routing in `onZoomButton` (no click, none in the zoom); `undo_keeps_outside_change` with whole-block writes and with one trimmed range (both: the other change was put back; the moved element turned a link, so the changed lines lay far apart).
+- The full Wardley suite also found a placement that depended on order: after a legend had been opened (it lives in the same row), a button was appended behind it. Buttons now go right after the menu button.
+- The first run of the flowchart suite on 1.15.1, on a freshly started instance, failed 17 cases; both later runs with this code passed in full, and so did one with 0.29.0. Not reproduced.
+- Reviewed in fresh context together with the plugin that uses the hook (code and security review): no internal names in this repository's files; the narrowed write was found to need its own E2E case (added above).
+
+**Not verified:** a Mac, the phone (the hook is the same code there; the button owner decides what it shows).
+
 ## Changelog
+
+- **0.30.0 (2026-11-14)** Other plugins can put a button beside a diagram's menu and learn which note
+  and block it is (`api.addDiagramButton`, README → "For plugin developers"); this plugin itself still
+  makes no network request. With editing switched off, only the menu button goes. An edit in the drawing
+  now writes only the lines that change, as separate changes in one step: undo of a gesture no longer
+  takes back a change another plugin or a sync made to another line of the block meanwhile, and a cursor
+  in the block's source stays put. See "Buttons for other plugins; edits write only what differs (0.30.0)".
 
 - **0.29.0 (2026-11-13)** An exported SVG fetches nothing from outside when it is opened, except a
   picture the diagram itself draws with Mermaid's image shape (an open decision). A diagram's

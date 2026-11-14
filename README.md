@@ -123,7 +123,35 @@ On Obsidian 1.13 and 1.14, Mermaid must be enabled for the vault (Obsidian asks 
 - **Highlights are Mermaid's `class` statement, commented out.** Wardley maps cannot mark an element or a link yet, so the plugin reads `%% class Kettle highlight` and `%% class Kettle -> Power highlight` (a link, either order of the names) and draws them in your theme's accent colour: a thick outline and a bold label, a link in that colour (up to 8 classes per element, class names up to 40 characters). `%% classDef highlight stroke:#8000F0,stroke-width:3px` gives a map its own colour (stroke, stroke-width, stroke-dasharray, fill, color and font-weight, plain values only; the colour names red, orange, yellow, green, cyan, blue, purple and pink take your theme's shade, in light and dark mode). The Highlight toggle in the element and link dialogs writes these lines, and renaming, deleting and re-linking keep them in step. Other renderers ignore the comments; once Mermaid supports `class` for Wardley maps, deleting `%% ` is the migration.
 - **Flowcharts that render but are not editable:** very large ones (as below), and the rare ones whose drawing cannot be matched to the code exactly. Edit those in the code.
 - **Maps that render but are not editable:** maps written on the 0-100 scale (the editor writes 0-1), maps inside a callout, list or quote, maps embedded from another note (open that note), maps with a multi-line `accDescr { … }` block, and very large maps (a line over 1000 characters or more than 64 KB). Edit those in the code.
-- **Security:** Mermaid runs with `securityLevel: strict`, as it did in Obsidian. Obsidian 1.15 replaced Mermaid with its own renderer and dropped the per-vault Mermaid permission with it; with this plugin installed, every note's diagrams go through Mermaid again, as before Obsidian 1.13, so install it in vaults whose notes you trust as you would have then. The plugin makes no network requests. Edits only ever change the one code block they belong to. An export writes only the files you asked for: next to the note from the dialog, or the vault path given to the CLI (never outside the vault or into a hidden folder). An exported file carries no note path.
+- **Security:** Mermaid runs with `securityLevel: strict`, as it did in Obsidian. Obsidian 1.15 replaced Mermaid with its own renderer and dropped the per-vault Mermaid permission with it; with this plugin installed, every note's diagrams go through Mermaid again, as before Obsidian 1.13, so install it in vaults whose notes you trust as you would have then. The plugin makes no network requests. Edits only ever change the one code block they belong to. Buttons other plugins add beside the menu (see below) do what those plugins do. An export writes only the files you asked for: next to the note from the dialog, or the vault path given to the CLI (never outside the vault or into a hidden folder). An exported file carries no note path.
+
+## For plugin developers: buttons on a diagram
+
+Since 0.30.0 another plugin can put a button of its own beside the menu button of every diagram this plugin edits (Wardley maps and flowcharts, in a note and in the zoom), and learns which note and block the diagram is. What the button does is entirely that plugin's; this plugin itself still makes no network requests.
+
+```ts
+const api = this.app.plugins.getPlugin('mermaid-direct-edit')?.api;  // version 1 since 0.30.0
+const remove = api?.addDiagramButton({
+	id: 'my-plugin',                 // lower-case letters, digits and "-"
+	icon: 'lucide-users',
+	tooltip: 'Do something with this diagram',
+	update(button, target) {         // once per drawing (each render), and on refreshDiagramButtons()
+		if (!target) return false;     // not a block of its own in a note (an embed, a callout)
+		button.toggleClass('mde-pinned', false);  // pinned: visible without hovering the drawing
+		return target.editing;         // false hides the button on this drawing
+	},
+	click(target, button, evt) {
+		// target.file, .index (of .count), .fence, .source, .kind, .editing, .zoomed
+	},
+});
+// When your state changes: api.refreshDiagramButtons('my-plugin'). On unload: remove().
+```
+
+- **`target`:** the note (`file`), the block's place among the note's fenced mermaid blocks of their own (`index` of `count`), its opening fence line as the note holds it (`fence`, e.g. ```` ```mermaid ````), its text (`source`), the editor that owns the drawing (`kind`: `wardley` or `flowchart`), whether editing that kind is switched on, on this device (`editing`), and whether the drawing is the zoom's (`zoomed`). A click is handed the block as the note holds it at that moment.
+- **Every event of a press on the button** is taken before anything else, so neither Live Preview nor an editor sees it.
+- **With editing switched off** only the menu button goes; your button stays unless `update` returns false.
+- **Plugins load in any order:** ask for `api` once the workspace layout is ready, and check `api.version`. A member's meaning never changes; new members raise the version.
+- **`api` belongs to one load of this plugin.** After it was reloaded (an update), `getPlugin('mermaid-direct-edit').api` is a new object that knows no buttons: compare it with the one you used, and add your button again. A button added while diagrams are on screen appears on them at once.
 
 ## Contributing
 

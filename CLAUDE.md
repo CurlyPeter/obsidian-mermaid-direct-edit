@@ -98,8 +98,9 @@ with its kind (`data-mp-kind`), so the editors never see each other's diagrams.
 | `render.ts` | `wrapRender` with one `RenderHook` per diagram type (which `aria-roledescription`, when it stays untagged, SVG transforms), `SourceRegistry`, `diagramOf`/`diagramIn`, `isElement` | E2E |
 | `editor.ts` | `DiagramEditor`: the DOM handlers (registered by `main.ts` on every window, incl. `contextmenu`), one active gesture (`ended` when it ends), the waiting stub, legend, double tap, swallowing the clicks a gesture leaves, dialogs closed on unload (`open(modal, onClosed)`), `apply` (edit → `mermaid.parse` → write) and `applyThen` (the same with a notice that has an Undo button). A subclass implements `modelOf`, `press`, `claims`, `cursorAt`, `legendAction`, `stubDrag`, and may add `stubPress` (click, then click links), `hoverAt`, `contextMenu`, `stubWaits` and refuse a diagram (`blockedReason`) | E2E (both suites) |
 | `gestures.ts` | `DragGesture` (tap vs drag threshold), `Stub` (with a round handle at its free end) and `NewLinkDrag` (the "+" link, its end under the pointer: onto an element links, into free space creates one, back on its own element waits), `TapPress`, `DeletePress`, `DropHighlight` | E2E |
-| `legend.ts`, `modals.ts`, `write.ts`, `blocks.ts`, `geometry.ts` | the legend of the menu button (opens below it on hover or a tap, rows as the diagram's height allows, on the popover layer, closed once an entry is chosen or a moment after the mouse left), `NameModal` and the two-click Delete, writing into the note (`viewOf` also answers for a zoomed diagram), `locateBlock`/`mermaidBlocks`/`blockAt`/`followBlock`/limits/`EditError`, thresholds, `fitInside` and `TapDetector` | vitest (`blocks`, `geometry`), E2E |
+| `legend.ts`, `modals.ts`, `write.ts`, `blocks.ts`, `geometry.ts` | the legend of the menu button (opens below it on hover or a tap, rows as the diagram's height allows, on the popover layer, closed once an entry is chosen or a moment after the mouse left), `NameModal` and the two-click Delete, writing into the note (`viewOf` also answers for a zoomed diagram), `locateBlock`/`mermaidBlocks`/`blockAt`/`followBlock`/`lineEdits`/limits/`EditError`, thresholds, `fitInside` and `TapDetector` | vitest (`blocks`, `geometry`), E2E |
 | `actions.ts`, `zoom.ts` | the buttons of a drawing (share and Zoom in top right, the menu top left) and the zoom (see "Buttons and the zoom") | vitest (`render`: the zoom key), E2E |
+| `buttons.ts` | other plugins' buttons beside the menu (`api.addDiagramButton`, see "Buttons of other plugins") | E2E (`diagram_button`) |
 | `export-format.ts`, `export.ts`, `export-ui.ts`, `export-cli.ts`, `cli-blocks.ts` | a drawing as a PNG or SVG file: the parts without a DOM (checksum, PNG text chunk, `out=` check, scale, what a file may keep), drawing and freezing the styles, the share button and export dialog, the CLI commands `export`/`export-check`, the block a CLI command works on (see "Export") | vitest (`export-format`; `export`: `exportSvg` with a stand-in for Mermaid, the last pass and the directive check), E2E (both suites) |
 
 `npm run e2e` runs both suites (`scripts/e2e-wardley.py`, `scripts/e2e-flowchart.py`, sharing
@@ -177,6 +178,34 @@ in reading view (no toolbar there) in a toolbar of the plugin's own at the same 
 - **Known limit:** like Obsidian's own edit button, the toolbars lie over the drawing's top
   corners and take presses there (a flowchart group title at the top right edge, E2E
   `group_ungroup` uses the group's border instead).
+
+## Buttons of other plugins (0.30.0)
+
+`api.addDiagramButton(spec)` (on the plugin instance, `version` 1, README → "For plugin developers"):
+another plugin's button goes into the menu's row (`.mde-actions-left`) of every editable drawing, in
+the note and in the zoom. The plugin makes no request of its own for it.
+
+- **`decorate` places them** through a module hook (`setExtraButtons` in `actions.ts`, set while the
+  plugin is loaded): every place that draws decorates (the note, Pele's `Drawing`, the zoom), and a
+  host without other plugins (a web page running the editors) leaves it unset. `add` puts the new
+  button into the drawings already on screen at once. A button goes right after the menu button (and
+  the buttons added before it), ahead of the legend, which lives in the same row once opened. `DiagramButtons.place`
+  creates a missing button and asks its owner (`update`) once per drawing: the drawing's svg id is
+  kept on the button (`data-mde-drawn`), so hovering, which decorates again, costs nothing.
+  `refreshDiagramButtons(id?)` asks again for every drawing on screen; switching an editing setting
+  does so too (`editing` changed).
+- **The target** (`targetOf` in `main.ts`): in a note through `originOf` (the drawing's place in
+  Live Preview, else the n-th identical text), in the zoom the block it follows (`DiagramZoom.originOf`),
+  null otherwise (embed, canvas, callout). Resolved again on every click: a click acts on the block as
+  the note holds it then.
+- **Presses** on `.mde-ext-button` go through `onZoomButton`: every event of the press is swallowed
+  in the capture phase, the click calls the owner.
+- **Visibility:** with editing off only `.mde-menu-button` is hidden, not the row. `update` returning
+  false (or throwing) hides a button (`mde-hidden`). A button with `mde-pinned` keeps its row visible
+  without hover (`mde-has-pinned` on the row); the row's other buttons still show on hover only.
+- `undecorate` removes them; the function `addDiagramButton` returns removes one owner's buttons.
+- **The `api` object belongs to one load of the plugin.** A reload makes a new one that knows no
+  button: an owner compares `getPlugin(…).api` with the one it used and adds its button again.
 
 ## Export (0.25.0)
 
@@ -335,7 +364,10 @@ delete).
   goes through it too (security review 0.19.0: a link kind with line breaks had passed the model
   check and Mermaid's parse). Any new write path must call it.
 - **Write path differs by mode:** Live Preview/source dispatches to CodeMirror directly
-  (undoable with Cmd+Z); reading view writes the file with `vault.process`, because the
+  (undoable with Cmd+Z), each changed run of lines on its own, trimmed to the characters that differ,
+  in one transaction (`lineEdits` in `blocks.ts`, 0.30.0: a whole-block change, or one range from the
+  first changed line to the last, would put that whole range back on undo, taking along whatever else
+  changed in it meanwhile); reading view writes the file with `vault.process`, because the
   editor buffer is not saved from there. **Never `Editor.replaceRange`:** it scrolls the
   selection into view, and the note jumped to its top after every edit. Before the change
   the cursor is parked on the line below the block (outside it, so Live Preview keeps the

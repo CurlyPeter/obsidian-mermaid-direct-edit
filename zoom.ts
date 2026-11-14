@@ -54,6 +54,11 @@ export class DiagramZoom {
 		return !!this.el;
 	}
 
+	/** The note and block the zoom shows, when `box` is its drawing and that tab still shows the note. */
+	originOf(box: HTMLElement): Origin | null {
+		return box === this.box && this.origin?.view.file === this.origin?.file ? this.origin : null;
+	}
+
 	/**
 	 * Zooms the diagram in `box` (a `.mermaid` with a rendered SVG). It draws the block as the
 	 * note holds it now, which may be newer than the drawing on screen.

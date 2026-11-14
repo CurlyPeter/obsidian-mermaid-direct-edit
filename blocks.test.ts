@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { timeLimit } from './test-timing';
-import { blockAt, followBlock, mermaidBlocks } from './blocks';
+import { blockAt, followBlock, lineEdits, mermaidBlocks, narrowed } from './blocks';
 
 const note = (...bodies: string[]) => bodies.map(b => '```mermaid\n' + b + '\n```').join('\n\ntext\n\n');
 const bodiesOf = (text: string) => mermaidBlocks(text).map(b => b.body);
@@ -81,5 +81,63 @@ describe('mermaidBlocks on crafted lines (security review 0.24.0, O77)', () => {
 	it('reads the same blocks as before', () => {
 		expect(mermaidBlocks('~~~mermaid  \nA\n~~~\n```mermaid x\nB\n```\n```mermaidx\nC\n```\n```js\n```mermaid\n```').map(b => b.body)).toEqual(['A', 'B']);
 		expect(mermaidBlocks('```mermaid\u2028\nA\n```')).toEqual([]);
+	});
+});
+
+describe('narrowed (an edit writes only the characters that differ)', () => {
+	const apply = (text: string, c: { from: number; to: number; insert: string }) => text.slice(0, c.from) + c.insert + text.slice(c.to);
+	it('keeps the same text and touches only what changed', () => {
+		const note = 'before\n```mermaid\nwardley-beta\ncomponent Tea [0.63, 0.81]\ncomponent Kettle [0.43, 0.35]\n```\nafter';
+		const src = 'wardley-beta\ncomponent Tea [0.63, 0.81]\ncomponent Kettle [0.43, 0.35]';
+		const at = note.indexOf(src);
+		for (const next of [src.replace('0.35', '0.45'), src.replace('Tea', 'Green Tea'), `${src}\nTea -> Kettle`, src.replace('\ncomponent Kettle [0.43, 0.35]', ''), '', src]) {
+			const c = narrowed(src, at, at + src.length, next);
+			expect(apply(note, c)).toBe(note.slice(0, at) + next + note.slice(at + src.length));
+			expect(c.from).toBeGreaterThanOrEqual(at);
+			expect(c.to).toBeLessThanOrEqual(at + src.length);
+		}
+		expect(narrowed(src, at, at + src.length, src.replace('0.35', '0.45'))).toEqual({ from: at + src.indexOf('0.35') + 2, to: at + src.indexOf('0.35') + 3, insert: '4' });
+		expect(narrowed(src, at, at + src.length, src)).toEqual({ from: at + src.length, to: at + src.length, insert: '' });
+	});
+	it('stays linear on long repeated text', () => {
+		const long = 'a'.repeat(64 * 1024);
+		const t0 = performance.now();
+		narrowed(long, 0, long.length, `${long}b`);
+		expect(performance.now() - t0).toBeLessThan(timeLimit(50));
+	});
+});
+
+describe('lineEdits (an edit writes each changed run of lines on its own)', () => {
+	const apply = (text: string, cs: { from: number; to: number; insert: string }[]) => {
+		let out = '';
+		let at = 0;
+		for (const c of cs) { out += text.slice(at, c.from) + c.insert; at = c.to; }
+		return out + text.slice(at);
+	};
+	const src = 'wardley-beta\ncomponent Alpha [0.80, 0.30]\ncomponent Epsilon [0.15, 0.90]\nAlpha -> Beta';
+	it('turns the old text into the new one, for edits of every shape', () => {
+		for (const next of [
+			src.replace('0.80, 0.30', '0.72, 0.30').replace('Alpha -> Beta', 'Beta -> Alpha'),
+			`${src}\nAlpha -> Gamma`, src.replace('component Alpha [0.80, 0.30]\n', ''), 'x', '', src,
+			src.replace('wardley-beta\n', ''), `title T\n${src}`, src.split('\n').reverse().join('\n'),
+		]) {
+			const changes = lineEdits(src, next);
+			expect(apply(src, changes)).toBe(next);
+			for (let i = 1; i < changes.length; i++) expect(changes[i].from).toBeGreaterThanOrEqual(changes[i - 1].to);
+		}
+	});
+	it('leaves an untouched line between two changed ones out of every change', () => {
+		const next = src.replace('0.80, 0.30', '0.72, 0.30').replace('Alpha -> Beta', 'Beta -> Alpha');
+		const epsilon = src.indexOf('component Epsilon');
+		const changes = lineEdits(src, next, 100);
+		expect(changes.length).toBe(2);
+		expect(changes.every(c => c.to <= 100 + epsilon || c.from >= 100 + epsilon + 'component Epsilon [0.15, 0.90]'.length)).toBe(true);
+	});
+	it('stays fast on a crafted block', () => {
+		const a = Array.from({ length: 3000 }, (_, i) => `a${i}`).join('\n');
+		const b = Array.from({ length: 3000 }, (_, i) => `b${i}`).join('\n');
+		const t0 = performance.now();
+		expect(apply(a, lineEdits(a, b))).toBe(b);
+		expect(performance.now() - t0).toBeLessThan(timeLimit(300));
 	});
 });

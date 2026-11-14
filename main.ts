@@ -1,6 +1,8 @@
 import { App, Plugin, PluginSettingTab, Setting, requireApiVersion } from 'obsidian';
 import type { Mermaid, MermaidConfig } from 'mermaid';
-import { boxAt, boxOfButton, decorate, undecorate } from './actions';
+import { boxAt, boxOfButton, decorate, setExtraButtons, undecorate } from './actions';
+import { mermaidBlocks } from './blocks';
+import { DiagramButtonSpec, DiagramButtons, DiagramTarget, EXT_BUTTON } from './buttons';
 import { registerCliCommands } from './cli';
 import { DiagramEditor } from './editor';
 import { EXPORT_ID_PREFIX, ExportOptions, exportDrawing } from './export';
@@ -9,10 +11,11 @@ import { ExportFormat } from './export-format';
 import { ExportUi } from './export-ui';
 import { FlowchartEditor, flowchartRender } from './flowchart-editor';
 import { DRAWING_ID_PREFIX, PeleHook } from './pele';
-import { SourceRegistry, isElement, wrapRender } from './render';
+import { KIND_ATTR, SourceRegistry, isElement, wrapRender } from './render';
 import { WardleyEditor } from './wardley-editor';
 import { wardleyCliSpecs } from './wardley-cli';
 import { wardleyRender } from './wardley-render';
+import { originOf } from './write';
 import { DiagramZoom, ZOOM_ID_PREFIX } from './zoom';
 
 declare const __MERMAID_VERSION__: string;
@@ -106,6 +109,20 @@ export default class MermaidDirectEditPlugin extends Plugin {
 	private readonly pele = new PeleHook(() => this.configured());
 	/** `window.pele` could not be replaced: Obsidian's renderer draws every block. */
 	private peleRefused = false;
+	/** Other plugins' buttons beside the menu (`buttons.ts`). */
+	private readonly buttons = new DiagramButtons(box => this.targetOf(box), button => boxOfButton(button));
+
+	/**
+	 * For other plugins (README → "For plugin developers"): `app.plugins.getPlugin('mermaid-direct-edit')?.api`.
+	 * `version` grows when a member is added; a member never changes its meaning.
+	 */
+	readonly api = {
+		version: 1,
+		/** A button beside the menu of every editable diagram; the function returned removes it. */
+		addDiagramButton: (spec: DiagramButtonSpec): (() => void) => this.buttons.add(spec, () => this.docs),
+		/** Every drawing on screen asks the owner of button `id` (of every button without one) to set it up again. */
+		refreshDiagramButtons: (id?: string) => this.buttons.refresh(this.docs, id),
+	};
 
 	async onload() {
 		registerCliCommands(this, [{
@@ -114,6 +131,7 @@ export default class MermaidDirectEditPlugin extends Plugin {
 			run: () => this.status(),
 		}, ...wardleyCliSpecs(this.app, () => this.current()), ...exportCliSpecs(this.app, (src, format, opts) => this.draw(src, format, opts, document))]);
 		for (const ed of this.editors) ed.onExport = box => this.exporter.openDialog(box);
+		setExtraButtons((left, box) => this.buttons.place(left, box));
 
 		const w = window as any;
 		const loadedFirst: Mermaid | undefined = w.mermaid;
@@ -189,12 +207,14 @@ export default class MermaidDirectEditPlugin extends Plugin {
 	async setEditWardley(on: boolean) {
 		this.settings.editWardley = on;
 		this.applyEditClass();
+		this.buttons.refresh(this.docs);
 		await this.saveData(this.settings);
 	}
 
 	async setEditFlowchart(on: boolean) {
 		this.settings.editFlowchart = on;
 		this.applyEditClass();
+		this.buttons.refresh(this.docs);
 		await this.saveData(this.settings);
 	}
 
@@ -219,19 +239,49 @@ export default class MermaidDirectEditPlugin extends Plugin {
 	}
 
 	/**
-	 * A press on a "Zoom in" or share button: the zoom or the share/export opens on click, every
-	 * other event of the press is swallowed.
+	 * A press on a "Zoom in" or share button, or on another plugin's button: the zoom, the
+	 * share/export or that plugin's action on click, every other event of the press is swallowed.
 	 */
 	private onZoomButton = (e: MouseEvent) => {
-		const button = isElement(e.target) ? e.target.closest('.mde-zoom-button, .mde-share-button') : null;
+		const button = isElement(e.target) ? e.target.closest<HTMLElement>(`.mde-zoom-button, .mde-share-button, .${EXT_BUTTON}`) : null;
 		if (!button) return;
 		e.preventDefault();
 		e.stopImmediatePropagation();
-		const box = e.type === 'click' ? boxOfButton(button) : null;
+		if (e.type !== 'click') return;
+		if (button.hasClass(EXT_BUTTON)) return this.buttons.click(button, e);
+		const box = boxOfButton(button);
 		if (!box) return;
 		if (button.hasClass('mde-share-button')) void this.exporter.share(box);
 		else void this.zoom.open(box);
 	};
+
+	/**
+	 * The block a drawing shows, for other plugins' buttons: in a note by the drawing's place (as
+	 * the zoom finds it), in the zoom the block it follows. Null for a block that is not one of a
+	 * note's own mermaid blocks (an embed, a canvas, a callout).
+	 */
+	private targetOf(box: HTMLElement): DiagramTarget | null {
+		const svg = box.querySelector(':scope > svg');
+		if (!svg) return null;
+		const zoomed = !!box.closest('.mde-zoom');
+		const origin = zoomed ? this.zoom.originOf(box) : originOf(this.app, this.registry, box, this.registry.zoomSourceOf(svg))?.origin;
+		if (!origin) return null;
+		const text = origin.view.getViewData();
+		const blocks = mermaidBlocks(text);
+		const block = blocks[origin.index];
+		if (!block) return null;
+		const kind = svg.getAttribute(KIND_ATTR) ?? 'wardley';  // a map drawn before 0.18.0 has no kind
+		return {
+			file: origin.file,
+			index: origin.index,
+			count: blocks.length,
+			fence: text.slice(block.start, Math.max(block.start, block.from - 1)),
+			source: block.body,
+			kind,
+			editing: kind === 'flowchart' ? this.settings.editFlowchart : this.settings.editWardley,
+			zoomed,
+		};
+	}
 
 	/** A drawing as a file (`export.ts`), with the pinned Mermaid configured even before any diagram was drawn. */
 	private async draw(src: string, format: ExportFormat, opts: ExportOptions, doc: Document) {
@@ -278,6 +328,7 @@ export default class MermaidDirectEditPlugin extends Plugin {
 	}
 
 	onunload() {
+		setExtraButtons(null);
 		this.zoom.close();
 		this.exporter.destroy();
 		for (const ed of this.editors) ed.destroy(this.docs);

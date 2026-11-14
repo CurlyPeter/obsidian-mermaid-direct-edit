@@ -124,3 +124,95 @@ export function fenceBreak(text: string, at: number, next: string): string | nul
 	if (next.split('\n').some(l => isClosingFence(l, open[1]))) return 'The edit would end the diagram\'s code block early, nothing was written.';
 	return null;
 }
+
+/** A change of a document: the characters `from` to `to` replaced by `insert`. */
+export interface Change {
+	from: number;
+	to: number;
+	insert: string;
+}
+
+/** The change that replaces `from`..`to` (holding `old`) by `insert`, trimmed to the characters that differ. */
+export function narrowed(old: string, from: number, to: number, insert: string): Change {
+	let head = 0;
+	while (head < old.length && head < insert.length && old[head] === insert[head]) head++;
+	let tail = 0;
+	while (tail < old.length - head && tail < insert.length - head && old[old.length - 1 - tail] === insert[insert.length - 1 - tail]) tail++;
+	return { from: from + head, to: to - tail, insert: insert.slice(head, insert.length - tail) };
+}
+
+/** Lines `from` up to `to` of the old text replaced by `lines` (`from === to` inserts). */
+interface Hunk {
+	from: number;
+	to: number;
+	lines: string[];
+}
+
+/** Beyond this size of the comparison table the changed middle counts as one block: a crafted note must not stall. */
+const MAX_CELLS = 4_000_000;
+
+/** The line changes that turn `a` into `b`, in order: a longest common subsequence of the changed middle. */
+function lineHunks(a: string[], b: string[]): Hunk[] {
+	let start = 0;
+	while (start < a.length && start < b.length && a[start] === b[start]) start++;
+	let endA = a.length;
+	let endB = b.length;
+	while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) { endA--; endB--; }
+	const n = endA - start;
+	const m = endB - start;
+	if (n === 0 && m === 0) return [];
+	if (n === 0 || m === 0 || n * m > MAX_CELLS) return [{ from: start, to: endA, lines: b.slice(start, endB) }];
+	const width = m + 1;
+	const common = new Uint16Array((n + 1) * width);
+	for (let i = n - 1; i >= 0; i--) {
+		for (let j = m - 1; j >= 0; j--) {
+			common[i * width + j] = a[start + i] === b[start + j]
+				? common[(i + 1) * width + j + 1] + 1
+				: Math.max(common[(i + 1) * width + j], common[i * width + j + 1]);
+		}
+	}
+	const hunks: Hunk[] = [];
+	let open: Hunk | null = null;
+	let i = 0;
+	let j = 0;
+	while (i < n || j < m) {
+		if (i < n && j < m && a[start + i] === b[start + j]) {
+			open = null;
+			i++;
+			j++;
+			continue;
+		}
+		if (!open) hunks.push(open = { from: start + i, to: start + i, lines: [] });
+		if (j < m && (i === n || common[i * width + j + 1] >= common[(i + 1) * width + j])) {
+			open.lines.push(b[start + j++]);
+		} else {
+			i++;
+			open.to = start + i;
+		}
+	}
+	return hunks;
+}
+
+/**
+ * The changes that turn `old` (at offset `at` of a document) into `next`: one per run of changed lines,
+ * each trimmed to the characters that differ, in order and not overlapping (0.30.0). An edit hands over
+ * the whole block. Written whole, or as one range from the first change to the last, undo later puts
+ * that whole range back and takes along whatever else changed in it meanwhile (another plugin, a sync):
+ * a gesture often changes lines far apart (a moved element and a link that turned with it). Written
+ * this way, a cursor inside the block's source stays put too.
+ */
+export function lineEdits(old: string, next: string, at = 0): Change[] {
+	const lines = old.split('\n');
+	const offsets = [0];
+	for (const line of lines) offsets.push(offsets[offsets.length - 1] + line.length + 1);
+	return lineHunks(lines, next.split('\n')).map(h => {
+		let from = Math.min(offsets[h.from], old.length);
+		const to = Math.min(offsets[h.to], old.length);
+		let insert = h.lines.join('\n');
+		if (h.to < lines.length) insert += h.lines.length ? '\n' : '';  // the range ends after its line break
+		else if (h.from === lines.length) insert = `\n${insert}`;  // after the last line, which has none
+		else if (!h.lines.length && from > 0) from--;  // the last lines go, and the break before them
+		const c = narrowed(old.slice(from, to), from, to, insert);
+		return { from: c.from + at, to: c.to + at, insert: c.insert };
+	});
+}

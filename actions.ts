@@ -7,6 +7,16 @@ export const HOST = 'mde-host';
 export const STATIC = 'mde-static';
 
 /**
+ * Puts other plugins' buttons beside the menu (`buttons.ts`), set while the plugin is loaded. Module
+ * state, because every place that draws decorates (the note, Pele's drawings, the zoom); a host
+ * without other plugins (a web page running the editors) leaves it unset.
+ */
+let placeExtra: ((left: HTMLElement, box: HTMLElement) => void) | null = null;
+export function setExtraButtons(place: typeof placeExtra) {
+	placeExtra = place;
+}
+
+/**
  * One button in the look of Obsidian's own embed actions ("Edit this block"): an icon, a tooltip,
  * `embed-action` so Live Preview's styles apply, `extra` to find it again.
  */
@@ -46,6 +56,7 @@ export function decorate(box: HTMLElement, zoomed = false) {
 		// No tooltip: the legend opens on hover right where it would show.
 		actionButton(left, 'lucide-menu', null, 'mde-menu-button').setAttr('aria-label', 'Diagram menu');
 	}
+	if (left) placeExtra?.(left, box);
 	if (zoomed || !svg.hasAttribute(ZOOM_ATTR)) return;
 	const toolbar = box.parentElement?.matches('.cm-embed-block') ? box.parentElement.querySelector<HTMLElement>(':scope > .embed-actions') : null;
 	if (toolbar) {
@@ -85,7 +96,7 @@ export function boxOfButton(button: Element): HTMLElement | null {
 /** Removes every button and mark the plugin added (unload), in each of `docs` (the app's windows). */
 export function undecorate(docs: Iterable<Document>) {
 	for (const doc of docs) {
-		doc.querySelectorAll('.mde-actions, .mde-zoom-button, .mde-share-button').forEach(el => el.remove());
+		doc.querySelectorAll('.mde-actions, .mde-zoom-button, .mde-share-button, .mde-ext-button').forEach(el => el.remove());
 		doc.querySelectorAll(`.${HOST}`).forEach(el => el.removeClass(HOST));
 	}
 }

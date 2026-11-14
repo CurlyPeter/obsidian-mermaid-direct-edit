@@ -194,6 +194,38 @@ def case_undo():
     return got == 'component Alpha [0.80, 0.30]', got
 
 
+OUTSIDE = r"""(()=>{const cm=app.workspace.activeLeaf.view.editor.cm; const T=cm.state.update({}).constructor; const d=cm.state.doc.toString();
+const at=d.indexOf(__FROM__); if(at<0) return 'missing';
+cm.dispatch({changes:{from:at, to:at+__FROM__.length, insert:__TO__}, annotations:[T.remote.of(true), T.addToHistory.of(false)]}); return 'ok'})()"""
+
+
+def outside(old, new):
+    """A change of the block from elsewhere (another plugin, a sync), as such a change is made: outside the undo history."""
+    return js(OUTSIDE.replace('__FROM__', json.dumps(old)).replace('__TO__', json.dumps(new)))
+
+
+def case_undo_keeps_outside_change():
+    """Undo of a gesture takes back that gesture only (0.30.0): a change of another line of the block
+    made from elsewhere in the meantime stays. Before, every edit replaced the whole block, and its undo
+    put the whole old block back."""
+    before = line(r'^component Alpha .*$')
+    try:
+        p = locate(a=['node', 'Alpha'])
+        drag(*p['a'], 0, 30); wait(1)
+        moved = line(r'^component Alpha .*$')
+        if outside('component Epsilon [0.15, 0.90]', 'component Epsilon [0.15, 0.85]') != 'ok':
+            return False, 'no Epsilon line'
+        wait(0.8)
+        js('(app.workspace.activeLeaf.view.editor.focus(),"f")')
+        key('z', 'KeyZ', 90, E.MOD, ['undo']); wait(1)
+        alpha, epsilon = line(r'^component Alpha .*$'), line(r'^component Epsilon .*$')
+        ok = moved != before and alpha == before and epsilon == 'component Epsilon [0.15, 0.85]'
+        return ok, f'{before} -> {moved} -> undo {alpha}; outside change {epsilon}'
+    finally:
+        outside('component Epsilon [0.15, 0.85]', 'component Epsilon [0.15, 0.90]')
+        wait(0.8)
+
+
 def case_label_drag():
     p = locate(l=['label', 'Beta'])
     drag(*p['l'], -60, 20); wait()
@@ -1036,6 +1068,71 @@ def case_share_button():
     return ok, f'{title!r}; clipboard {clip}; in the zoom {zoom_title!r}'
 
 
+PROBE_ADD = r"""(()=>{const api=app.plugins.plugins[__ID__].api; window.__mdeProbe?.off?.();
+const p=window.__mdeProbe={clicks:[], updates:[]};
+p.off=api.addDiagramButton({id:'e2e-probe', icon:'lucide-users', tooltip:'E2E probe',
+  update:(b,t)=>{b.addClass('mde-pinned'); p.updates.push(t && {kind:t.kind, editing:t.editing, zoomed:t.zoomed}); return !!t && t.kind==='wardley'},
+  click:(t,b,e)=>p.clicks.push({path:t.file.path, index:t.index, count:t.count, fence:t.fence, kind:t.kind, editing:t.editing, zoomed:t.zoomed, first:t.source.split('\n')[0], button:b.getAttribute('data-mde-button'), type:e.type})});
+return String(api.version)})()"""
+
+PROBE_STATE = r"""JSON.stringify((()=>{const root=__ROOT__; const b=root?.querySelector('.mermaid > .mde-actions-left > .mde-ext-button[data-mde-button="e2e-probe"]');
+const r=b?.getBoundingClientRect(), m=b?.parentElement.querySelector('.mde-menu-button');
+return {button: r ? [Math.round(r.left+r.width/2), Math.round(r.top+r.height/2)] : null, afterMenu: b?.previousElementSibling === m,
+  opacity: b && getComputedStyle(b).opacity, menuOpacity: m && getComputedStyle(m).opacity, display: b && getComputedStyle(b).display,
+  menuDisplay: m && getComputedStyle(m).display, clicks: window.__mdeProbe?.clicks ?? [], last: window.__mdeProbe?.updates.at(-1),
+  widget: !!app.workspace.activeLeaf.view.contentEl.querySelector('.markdown-source-view .cm-embed-block.cm-lang-mermaid'),
+  left: document.querySelectorAll('.mde-ext-button[data-mde-button="e2e-probe"]').length}})())"""
+
+
+def probe_state(root="app.workspace.activeLeaf.view.contentEl.querySelector('.markdown-source-view')"):
+    return json.loads(js(PROBE_STATE.replace('__ROOT__', root)))
+
+
+def case_diagram_button():
+    """Another plugin's button (`api.addDiagramButton`, 0.30.0): beside the menu, pinned visible
+    without hover while the menu is not, a real click hands over note, block and fence and opens no
+    source; with editing off only the menu goes; in the zoom it answers `zoomed`; removed again, it
+    is gone from every drawing."""
+    text = SCRATCH.text()
+    try:
+        # No redraw: a drawing already on screen gets the button when it is added.
+        version = js(PROBE_ADD.replace('__ID__', json.dumps(PLUGIN_ID)))
+        wait(0.5)
+        mouse('mouseMoved', 5, 5); wait(0.4)
+        s = probe_state()
+        if not s['button']:
+            return False, f'api {version}: no button {s}'
+        placed = s['afterMenu'] and s['opacity'] == '1' and s['menuOpacity'] == '0'
+        mouse('mouseMoved', *s['button']); wait(0.2)
+        click(*s['button']); wait(0.8)
+        s = probe_state()
+        c = s['clicks'][-1] if s['clicks'] else {}
+        clicked = (len(s['clicks']) == 1 and c.get('path') == SCRATCH.path and c.get('index') == 0 and c.get('count') == 1
+                   and c.get('fence') == '```mermaid' and c.get('kind') == 'wardley' and c.get('editing') is True
+                   and c.get('zoomed') is False and c.get('first') == 'wardley-beta' and c.get('type') == 'click'
+                   and s['widget'] and SCRATCH.text() == text)
+        E.plugin_setting('editWardley', False); wait(0.5)
+        s = probe_state()
+        off = s['display'] == 'flex' and s['menuDisplay'] == 'none' and (s['last'] or {}).get('editing') is False
+        E.plugin_setting('editWardley', True); wait(0.5)
+        err = open_zoom()
+        if err:
+            return False, err
+        z = probe_state("document.querySelector('.mde-zoom')")
+        if z['button']:
+            click(*z['button']); wait(0.8)
+        z = probe_state("document.querySelector('.mde-zoom')")
+        close_zoom()
+        zoomed = (z['clicks'][-1] if z['clicks'] else {}).get('zoomed') is True
+        js('(()=>{window.__mdeProbe.off(); return "x"})()'); wait(0.3)
+        gone = probe_state()['left'] == 0
+        ok = version == '1' and placed and clicked and off and zoomed and gone
+        return ok, f'api {version}; placed {placed}; click {c}; editing off {off}; zoom {zoomed}; removed {gone}'
+    finally:
+        js('(()=>{window.__mdeProbe?.off?.(); delete window.__mdeProbe; return "x"})()')
+        E.plugin_setting('editWardley', True)
+
+
 def case_component_on_shaft():
     # Review #1: Zeta lies on Gamma's evolve arrow; a click on Zeta must not delete the arrow,
     # and a drag must move Zeta.
@@ -1655,7 +1752,7 @@ def case_pipeline_touch_tap():
 
 
 CASES = [
-    ('node_drag', case_node_drag), ('undo', case_undo), ('label_drag', case_label_drag),
+    ('node_drag', case_node_drag), ('undo', case_undo), ('undo_keeps_outside_change', case_undo_keeps_outside_change), ('label_drag', case_label_drag),
     ('evolve_tip', case_evolve_tip), ('inertia_drag', case_inertia_drag), ('evolve_delete', case_evolve_delete),
     ('relink', case_relink), ('link_dialog', case_link_dialog), ('new_link_stub', case_new_link_stub),
     ('new_component_drop', case_new_component_drop), ('click_click_link', case_click_click_link),
@@ -1676,6 +1773,7 @@ CASES = [
     ('pipeline_refuse_and_switch', case_pipeline_refuse_and_switch), ('pipeline_new_component', case_pipeline_new_component),
     ('pipeline_touch_tap', case_pipeline_touch_tap),
     ('export_cli', case_export_cli), ('export_limits', case_export_limits), ('export_faithful', case_export_faithful), ('export_menu', case_export_menu), ('share_button', case_share_button),
+    ('diagram_button', case_diagram_button),
     ('component_on_shaft', case_component_on_shaft), ('swallow_scope', case_swallow_scope),
     ('zoom_fit', case_zoom_fit), ('zoom_edit_source', case_zoom_edit_source), ('zoom_drag', case_zoom_drag), ('zoom_touch_drag', case_zoom_touch_drag),
     ('zoom_dialog_escape', case_zoom_dialog_escape), ('zoom_legend_escape', case_zoom_legend_escape), ('zoom_legend_add', case_zoom_legend_add),
